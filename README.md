@@ -24,6 +24,7 @@ math_utils/: Hosts essential utility functions for elastic deformations, primari
 
 model/: Stores model files utilized in the demonstrations and testing phases.
 
+Please use ubuntu system, the performance of our code in windows is worse than ubuntu.
 
 #### TODO:
 Further documentation detailing specific implementation details will be provided separately to offer clear insight into the methodologies employed.
