@@ -24,6 +24,10 @@ math_utils/: Hosts essential utility functions for elastic deformations, primari
 
 model/: Stores model files utilized in the demonstrations and testing phases.
 
+#### note
+The newest version of Numpy may cause Core Dumped, I don't figure out why it happens. It seems to due to the version difference of meshtaichi package and Numpy. Older version such as numpy1.26, is fine.
+
+
 Please use ubuntu system, the performance of our code in windows is worse than ubuntu.
 
 #### TODO:
