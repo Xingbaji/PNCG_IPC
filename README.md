@@ -27,7 +27,7 @@ The workflow starts with base_deformer, progresses through collision_detection_v
 ### Note
 - The newest version of Numpy may cause Core Dumped, I don't figure out why it happens. It seems to due to the version difference of meshtaichi package and Numpy. Older version such as numpy1.26, is fine.
 - When using MeshTaichi to load a model, the xxxx.face file is necessary, while the face information is not required. So some .face files contain just one face.
-Or You can just delete following code in __init__.py in meshtaichi_pathcer
+Or You can just delete following code in \_\_init\_\_.py in meshtaichi_patcher
 ```
         ans["face"] = read_tetgen(f'{base_name}.face')[0].reshape(-1, 3)
 ```
