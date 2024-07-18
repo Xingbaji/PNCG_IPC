@@ -1,9 +1,9 @@
-Test 
-This repository hosts the official implementation of the paper 
-"Preconditioned Nonlinear Conjugate Gradient Method for Real-time Interior-point Hyperelasticity"。
+This repository hosts the official implementation of the paper "Preconditioned Nonlinear Conjugate Gradient Method for Real-time Interior-point Hyperelasticity"。
+
+The webpage of the paper is [here](https://xingbaji.github.io/PNCG_project_page/).
 
 Requirements：
-```python3 -m pip install -U taichi meshtaichi_patcher```
+```pip install -r requirements.txt```
 
 Run：
 ```

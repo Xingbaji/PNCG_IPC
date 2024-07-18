@@ -1,0 +1,4 @@
+taichi
+meshtaichi-patcher
+scipy
+imageio
