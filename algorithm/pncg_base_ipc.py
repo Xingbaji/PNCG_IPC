@@ -87,7 +87,7 @@ class pncg_ipc_deformer(collision_detection_module_v2):
     @ti.func
     def barrier_H(self, d):
         dHat = self.dHat
-        H = self.kappa * (-2) * ti.log(d / dHat) - 4 + 4 * dHat / d + (d - dHat) ** 2 / d ** 2
+        H = self.kappa * ((-2) * ti.log(d / dHat) - 4 + 4 * dHat / d + (d - dHat) ** 2 / d ** 2)
         return H
 
     @ti.kernel
