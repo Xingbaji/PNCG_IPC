@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 current_file_path = os.path.abspath(__file__)
 parent_dir = os.path.dirname(os.path.dirname(current_file_path))
 sys.path.append(parent_dir)
@@ -7,6 +8,10 @@ from algorithm.pncg_base_ipc import *
 
 @ti.data_oriented
 class squeeze_armadillo_demo(pncg_ipc_deformer):
+    def __init__(self, demo='cube_0'):
+        super().__init__(demo)
+        self.time_log = False  # Enable/disable timing
+
     def init_visual(self):
         self.boundary_barriers = ti.Vector.field(1, dtype=ti.f32, shape=(6,)) # left, right, down, up, back, front
         self.per_vertex_color =  ti.Vector.field(3, dtype=ti.f32,shape=self.n_verts)
@@ -124,6 +129,10 @@ class squeeze_armadillo_demo(pncg_ipc_deformer):
                 vert.diagH[2] += self.barrier_H(dist_front)
 
     def step(self):
+        if self.time_log:
+            ti.sync()
+            t_frame_start = time.perf_counter()
+
         print('Frame', self.frame)
         if self.frame < 450:
             self.update_boundary(0.2)
@@ -132,8 +141,10 @@ class squeeze_armadillo_demo(pncg_ipc_deformer):
         else:
             self.set_barrier_init_value(500)
         self.assign_xn_xhat()
+
+        total_bvh_time = 0.0
         for iter in range(self.iter_max):
-            self.find_cnts()
+            self.find_cnts(TIME_LOG=self.time_log)
             self.compute_grad_and_diagH()
             if self.ground_barrier == 1:
                 self.add_grad_and_diagH_barriers()
@@ -146,15 +157,17 @@ class squeeze_armadillo_demo(pncg_ipc_deformer):
             if iter == 0:
                 delta_E_init = delta_E
             if delta_E < self.epsilon * delta_E_init:
-                # print('converage at iter', iter, 'rate', delta_E / delta_E_init, 'delta_E', delta_E, 'alpha', alpha,
-                #       'gTp', gTp, 'pHp', pHp)
                 break
-            # else:
-            #     print('iter', iter, 'rate', delta_E / delta_E_init, 'delta_E', delta_E, 'alpha', alpha, 'gTp', gTp,
-            #           'pHp', pHp)
+
         print('converage at iter', iter, 'rate', delta_E / delta_E_init, 'delta_E', delta_E, 'alpha', alpha,
               'gTp', gTp, 'pHp', pHp)
         self.update_v()
+
+        if self.time_log:
+            ti.sync()
+            t_frame_end = time.perf_counter()
+            print(f"[Frame Time] total: {(t_frame_end - t_frame_start)*1000:.2f}ms")
+
         self.frame += 1
         return iter
 
@@ -191,10 +204,22 @@ class squeeze_armadillo_demo(pncg_ipc_deformer):
             self.step()
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Squeeze Armadillo Demo')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
+    parser.add_argument('--time-log', action='store_true', help='enable timing log for BVH performance')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32)#, device_memory_fraction=0.9)#, kernel_profiler=True)
     demo = 'squeeze_four_armadillo'
     ipc_deformer = squeeze_armadillo_demo(demo=demo)
+    ipc_deformer.time_log = args.time_log  # Enable timing if requested
     ipc_deformer.init_visual()
     print('init finish')
-    ipc_deformer.find_cnts(PRINT=True)
-    ipc_deformer.visual()
+    ipc_deformer.find_cnts(PRINT=True, TIME_LOG=args.time_log)
+
+    if args.headless:
+        ipc_deformer.run_headless(args.frames)
+    else:
+        ipc_deformer.visual()

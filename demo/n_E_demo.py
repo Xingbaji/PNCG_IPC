@@ -160,9 +160,19 @@ class pncg_index(pncg_ipc_deformer):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='n E Demo')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32)#, device_memory_fraction=0.9)#, kernel_profiler=True)
     demo = 'eight_E_drop_demo_contact'
     ipc_deformer = pncg_index(demo=demo)
     ipc_deformer.set_index()
-    ipc_deformer.visual()
+    
+    if args.headless:
+        ipc_deformer.run_headless(args.frames)
+    else:
+        ipc_deformer.visual()
     # ipc_deformer.save_new(500, SAVE_OBJ=True)

@@ -1,0 +1,337 @@
+//
+// GIPC_PNCG.cu
+// GIPC - PNCG (Preconditioned Nonlinear Conjugate Gradient) variant
+//
+// This file contains the PNCG-specific implementation.
+//
+
+#include "GIPC_PNCG.cuh"
+#include "cuda_tools/cuda_tools.h"
+#include "gipc_path.h"
+#include <gipc/statistics.h>
+#include <gipc/utils/timer.h>
+#include <linear_system/linear_system/global_linear_system.h>
+#include <iostream>
+#include <cmath>
+
+// External variables from GIPC.cu
+extern double maxCOllisionPairNum;
+extern double totalCollisionPairs;
+extern double total_Cg_count;
+extern double timemakePd;
+extern int    totalNT;
+extern int    total_Frames;
+extern bool   isUpdateBoundary;
+extern double totalTime;
+
+// External function from GIPC.cu
+extern double calcMinMovement(const double3* _moveDir, double* _queue, const int& number);
+
+// stepForward function
+extern void stepForward(double3* _vertexes,
+                        double3* _vertexesTemp,
+                        double3* _moveDir,
+                        int*     bType,
+                        double   rate,
+                        bool     moveBoundary,
+                        int      numbers);
+
+GIPC_PNCG::GIPC_PNCG() : GIPC()
+{
+    m_restart_flag = 0;
+    m_pncg_iter_cap = 10000;  // Aligned with GIPC iteration cap
+}
+
+GIPC_PNCG::~GIPC_PNCG()
+{
+}
+
+int GIPC_PNCG::solve_subIP_PNCG(device_TetraData& TetMesh,
+                                 double&           time0,
+                                 double&           time1,
+                                 double&           time2,
+                                 double&           time3,
+                                 double&           time4)
+{
+    auto& stats_at_current_frame = gipc::Statistics::instance().at_current_frame();
+    std::cout << "solve_subIP [PNCG] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+              << std::endl;
+
+    stats_at_current_frame["newton"] = gipc::Json::array();
+
+    int k = 0;
+    m_restart_flag = 0;
+
+    CUDA_SAFE_CALL(cudaMemset(_moveDir, 0, vertexNum * sizeof(double3)));
+    double totalTimeStep = 0;
+    
+    for (; k < m_pncg_iter_cap; ++k)
+    {
+        stats_at_current_frame["newton"].push_back(gipc::Json::object());
+
+        totalCollisionPairs += h_cpNum[0];
+        maxCOllisionPairNum =
+            (maxCOllisionPairNum > h_cpNum[0]) ? maxCOllisionPairNum : h_cpNum[0];
+        
+        cudaEvent_t start, end0, end1, end2, end3, end4;
+        cudaEventCreate(&start);
+        cudaEventCreate(&end0);
+        cudaEventCreate(&end1);
+        cudaEventCreate(&end2);
+        cudaEventCreate(&end3);
+        cudaEventCreate(&end4);
+
+        cudaEventRecord(start);
+        
+        // Always compute both gradient and Hessian (preconditioner updated every iteration)
+        timemakePd += computeGradientAndHessian(TetMesh);
+
+        double distToOpt_PN = calcMinMovement(_moveDir, pcg_data.squeue, vertexNum);
+
+        bool gradVanish = (distToOpt_PN < sqrt(Newton_solver_threshold * Newton_solver_threshold
+                                               * bboxDiagSize2 * IPC_dt * IPC_dt));
+
+        if (k && gradVanish)
+        {
+            break;
+        }
+        cudaEventRecord(end0);
+
+        // PNCG: use PNCG search direction (pass restart flag and current iteration)
+        auto cg_count = calculateMovingDirection(TetMesh, h_cpNum[0], m_restart_flag, pcg_data.P_type, k);
+        
+        total_Cg_count += cg_count;
+        cudaEventRecord(end1);
+        
+        double alpha = 1.0, slackness_a = 0.8, slackness_m = 0.8;
+
+        alpha = std::min(alpha, ground_largestFeasibleStepSize(slackness_a, pcg_data.squeue));
+        alpha = std::min(alpha, self_largestFeasibleStepSize(slackness_m, pcg_data.squeue, h_cpNum[0]));
+        
+        double temp_alpha = alpha;
+        double alpha_CFL  = alpha;
+
+        double ccd_size = 1.0;
+
+        buildBVH_FULLCCD(temp_alpha);
+        buildFullCP(temp_alpha);
+        if (h_ccd_cpNum > 0)
+        {
+            double maxSpeed = cfl_largestSpeed(pcg_data.squeue);
+            alpha_CFL = sqrt(dHat) / maxSpeed * 0.5;
+            alpha = std::min(alpha, alpha_CFL);
+            if (temp_alpha > 2 * alpha_CFL)
+            {
+                alpha = std::min(temp_alpha,
+                                 self_largestFeasibleStepSize(slackness_m, pcg_data.squeue, h_ccd_cpNum)
+                                     * ccd_size);
+                alpha = std::max(alpha, alpha_CFL);
+            }
+        }
+
+        cudaEventRecord(end2);
+
+        bool isStop = lineSearch(TetMesh, alpha, alpha_CFL);
+
+        cudaEventRecord(end3);
+        postLineSearch(TetMesh, alpha);
+        cudaEventRecord(end4);
+
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+        float time00, time11, time22, time33, time44;
+        cudaEventElapsedTime(&time00, start, end0);
+        cudaEventElapsedTime(&time11, end0, end1);
+        cudaEventElapsedTime(&time22, end1, end2);
+        cudaEventElapsedTime(&time33, end2, end3);
+        cudaEventElapsedTime(&time44, end3, end4);
+        time0 += time00;
+        time1 += time11;
+        time2 += time22;
+        time3 += time33;
+        time4 += time44;
+
+        cudaEventDestroy(start);
+        cudaEventDestroy(end0);
+        cudaEventDestroy(end1);
+        cudaEventDestroy(end2);
+        cudaEventDestroy(end3);
+        cudaEventDestroy(end4);
+        totalTimeStep += alpha;
+    }
+
+    printf("\n\n      Kappa: %f                               iteration k:  %d\n", Kappa, k);
+    return k;
+}
+
+void GIPC_PNCG::IPC_Solver_PNCG(device_TetraData& TetMesh)
+{
+    cudaEvent_t start, end0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&end0);
+    double alpha = 1;
+    cudaEventRecord(start);
+    
+    if (isUpdateBoundary)
+    {
+        updateBoundaryMoveDir(TetMesh, alpha, move_type, total_Frames);
+        buildBVH_FULLCCD(alpha);
+        buildFullCP(alpha);
+        if (h_ccd_cpNum > 0)
+        {
+            double slackness_m = 0.8;
+            alpha = std::min(alpha,
+                             self_largestFeasibleStepSize(slackness_m, pcg_data.squeue, h_ccd_cpNum));
+        }
+
+        CUDA_SAFE_CALL(cudaMemcpy(TetMesh.temp_double3Mem,
+                                  TetMesh.vertexes,
+                                  vertexNum * sizeof(double3),
+                                  cudaMemcpyDeviceToDevice));
+        updateBoundaryMoveDir(TetMesh, alpha, move_type, total_Frames);
+        stepForward(TetMesh.vertexes, TetMesh.temp_double3Mem, _moveDir, TetMesh.BoundaryType, 1, true, vertexNum);
+
+        buildBVH();
+        int numOfIntersect = 0;
+        const int maxIntersectIterations = 64;
+        const double minAlpha = 1e-15;
+        
+        while (isIntersected(TetMesh))
+        {
+            printf("type 6 intersection happened [PNCG]:    %e (iter %d)\n", alpha, numOfIntersect);
+            alpha /= 2.0;
+            numOfIntersect++;
+            
+            if (numOfIntersect > maxIntersectIterations || alpha < minAlpha)
+            {
+                printf("WARNING [PNCG]: Cannot resolve intersection after %d iterations (alpha=%e).\n"
+                       "         Initial mesh may have self-intersection. Proceeding anyway.\n",
+                       numOfIntersect, alpha);
+                break;
+            }
+            
+            updateBoundaryMoveDir(TetMesh, alpha, move_type, total_Frames);
+            stepForward(TetMesh.vertexes,
+                        TetMesh.temp_double3Mem,
+                        _moveDir,
+                        TetMesh.BoundaryType,
+                        1,
+                        true,
+                        vertexNum);
+            buildBVH();
+        }
+
+        buildCP();
+        printf("boundary alpha [PNCG]: %f\n  finished a step\n", alpha);
+    }
+
+    upperBoundKappa(Kappa);
+    if (Kappa < 1e-16)
+    {
+        suggestKappa(Kappa);
+    }
+    initKappa(TetMesh);
+    
+    // Reset PNCG solver state at the start of each frame
+    if (m_global_linear_system)
+    {
+        m_global_linear_system->reset_solver();
+    }
+
+#ifdef USE_FRICTION
+    CUDA_SAFE_CALL(cudaMalloc((void**)&lambda_lastH_scalar, h_cpNum[0] * sizeof(double)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&distCoord, h_cpNum[0] * sizeof(double2)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&tanBasis, h_cpNum[0] * sizeof(__GEIGEN__::Matrix3x2d)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&_collisonPairs_lastH, h_cpNum[0] * sizeof(int4)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&_MatIndex_last, h_cpNum[0] * sizeof(int)));
+
+    CUDA_SAFE_CALL(cudaMalloc((void**)&lambda_lastH_scalar_gd, h_gpNum * sizeof(double)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&_collisonPairs_lastH_gd, h_gpNum * sizeof(uint32_t)));
+    buildFrictionSets();
+#endif
+
+    animation_fullRate = animation_subRate;
+    double time0 = 0, time1 = 0, time2 = 0, time3 = 0, time4 = 0;
+    
+    while (true)
+    {
+        tempMalloc_closeConstraint();
+        CUDA_SAFE_CALL(cudaMemset(_close_cpNum, 0, sizeof(uint32_t)));
+        CUDA_SAFE_CALL(cudaMemset(_close_gpNum, 0, sizeof(uint32_t)));
+
+        // Use PNCG version of solve_subIP
+        totalNT += solve_subIP_PNCG(TetMesh, time0, time1, time2, time3, time4);
+
+        double2 minMaxDist1 = minMaxGroundDist();
+        double2 minMaxDist2 = minMaxSelfDist();
+
+        double minDist = std::min(minMaxDist1.x, minMaxDist2.x);
+        double maxDist = std::max(minMaxDist1.y, minMaxDist2.y);
+
+        bool finishMotion = animation_fullRate > 0.99 ? true : false;
+
+        if (finishMotion)
+        {
+            tempFree_closeConstraint();
+            break;
+        }
+        else
+        {
+            tempFree_closeConstraint();
+        }
+
+        animation_fullRate += animation_subRate;
+
+#ifdef USE_FRICTION
+        CUDA_SAFE_CALL(cudaFree(lambda_lastH_scalar));
+        CUDA_SAFE_CALL(cudaFree(distCoord));
+        CUDA_SAFE_CALL(cudaFree(tanBasis));
+        CUDA_SAFE_CALL(cudaFree(_collisonPairs_lastH));
+        CUDA_SAFE_CALL(cudaFree(_MatIndex_last));
+        CUDA_SAFE_CALL(cudaFree(lambda_lastH_scalar_gd));
+        CUDA_SAFE_CALL(cudaFree(_collisonPairs_lastH_gd));
+
+        CUDA_SAFE_CALL(cudaMalloc((void**)&lambda_lastH_scalar, h_cpNum[0] * sizeof(double)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&distCoord, h_cpNum[0] * sizeof(double2)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&tanBasis, h_cpNum[0] * sizeof(__GEIGEN__::Matrix3x2d)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&_collisonPairs_lastH, h_cpNum[0] * sizeof(int4)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&_MatIndex_last, h_cpNum[0] * sizeof(int)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&lambda_lastH_scalar_gd, h_gpNum * sizeof(double)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&_collisonPairs_lastH_gd, h_gpNum * sizeof(uint32_t)));
+
+        buildFrictionSets();
+#endif
+    }
+
+#ifdef USE_FRICTION
+    CUDA_SAFE_CALL(cudaFree(lambda_lastH_scalar));
+    CUDA_SAFE_CALL(cudaFree(distCoord));
+    CUDA_SAFE_CALL(cudaFree(tanBasis));
+    CUDA_SAFE_CALL(cudaFree(_collisonPairs_lastH));
+    CUDA_SAFE_CALL(cudaFree(_MatIndex_last));
+    CUDA_SAFE_CALL(cudaFree(lambda_lastH_scalar_gd));
+    CUDA_SAFE_CALL(cudaFree(_collisonPairs_lastH_gd));
+#endif
+
+    updateVelocities(TetMesh);
+    computeXTilta(TetMesh, 1);
+
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+    cudaEventRecord(end0);
+    float ttime;
+    cudaEventElapsedTime(&ttime, start, end0);
+
+    totalTime += ttime;
+    total_Frames++;
+    printf("average time cost:     %f,    frame id:   %d\n", totalTime / total_Frames, total_Frames);
+
+    auto& stats = gipc::Statistics::instance();
+    stats.at_current_frame()["timer"] =
+        gipc::GlobalTimer::current()->report_merged_as_json();
+    gipc::GlobalTimer::current()->print_merged_timings();
+    gipc::GlobalTimer::current()->clear();
+    stats.write_to_file(std::string{gipc::output_dir()} + "/stats.json");
+    
+    auto f = stats.frame();
+    stats.frame(f + 1);
+}
+

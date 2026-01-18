@@ -1,0 +1,242 @@
+\documentclass[acmtog,anonymous,review,screen,nonacm]{acmart}
+\citestyle{acmauthoryear}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage[ruled]{algorithm2e} 
+
+\begin{document}
+
+\title[Supplementary Document]{Supplementary Document: MAS-PNCG Details and Derivations}
+
+\maketitle
+
+\section{Introduction}
+This supplementary document provides additional details for the MAS-PNCG framework. Section~\ref{sec:mas_details} describes the implementation of the Multilevel Additive Schwarz (MAS) preconditioner, which is crucial for handling stiff materials. Section~\ref{sec:subspace_derivation} provides a detailed derivation of the $2 \times 2$ subspace minimization system used in our PNCG method (corresponding to Eq.~(6) in the main paper). Section~\ref{sec:accd_derivation} provides a detailed derivation of the improved frame-invariant lower bound for the Additive Continuous Collision Detection (ACCD) step size.
+
+\section{Detailed Implementation of the Multilevel Additive Schwarz (MAS) Preconditioner}
+\label{sec:mas_details}
+
+\subsection{Subdomain Decomposition and Level 0 Preconditioner}
+The Multilevel Additive Schwarz (MAS) preconditioner is designed to handle the severe ill-conditioning inherent in Incremental Potential Contact (IPC) simulations, particularly when dealing with stiff materials and high-resolution meshes. The first step involves decomposing the computational domain $\Omega$ into a set of $D$ non-overlapping subdomains $\{\Omega_d\}_{d=1}^D$. 
+
+For each subdomain $\Omega_d$, we define a selection matrix $\mathbf{S}_d \in \mathbb{R}^{3 N_d \times 3 N}$ that extracts the degrees of freedom (DOFs) belonging to $\Omega_d$ from the global DOF vector. The local Hessian restricted to this subdomain is given by:
+\begin{equation}
+    \mathbf{M}_{(0)}^d = \mathbf{S}_d \mathbf{A} \mathbf{S}_d^T,
+\end{equation}
+where $\mathbf{A}$ is the global system matrix (Hessian of the IPC energy). The level 0 Additive Schwarz preconditioner is then defined as the sum of inverse local Hessians:
+\begin{equation}
+    \mathbf{M}_{(0)}^{-1} = \sum_{d=1}^D \mathbf{S}_d^T (\mathbf{M}_{(0)}^d)^{-1} \mathbf{S}_d.
+\end{equation}
+In our GPU implementation, each subdomain typically contains a small number of nodes (e.g., 16 to 64 nodes). This allows each $\mathbf{M}_{(0)}^d$ to be small enough for efficient batch inversion using parallel Cholesky or LU decomposition on the GPU. Unlike diagonal preconditioning, this approach captures the strong local coupling within each subdomain.
+
+\subsection{Connectivity-Aware Hierarchy Construction}
+A critical challenge in MAS is the construction of the domain hierarchy. Traditional methods, such as those proposed in \cite{wu2022gpu}, often rely on Morton code-based sorting to group nodes spatially. While efficient, Morton ordering does not account for the topological connectivity of the mesh. This can lead to subdomains that contain nodes spatially close but physically disconnected (e.g., across a thin gap), resulting in poor coarse-level approximations.
+
+Following \cite{huang2025stiffgipc}, we adopt a connectivity-aware hierarchy construction. At each level $l$, we build an adjacency graph where nodes (at level 0) or clusters (at level $l>0$) are connected if they share an element in the mesh. We then apply graph partitioning or greedy aggregation to group these entities into larger clusters for the next level $l+1$. Specifically, for level $l+1$, a group of nodes from level $l$ is aggregated into a single coarse DOF. This ensures that the coarse-level basis functions represent the low-frequency modes of the elastic energy more accurately, significantly improving PCG convergence for stiff materials.
+
+\subsection{Restriction and Prolongation Operators}
+Let $N_{(l)}$ be the number of degrees of freedom at level $l$, where $N_{(0)} = 3N$. We define the coarsening (restriction) matrix $\mathbf{C}_{(l)} \in \mathbb{R}^{N_{(l)} \times N_{(0)}}$ that maps fine-level DOFs to level $l$ DOFs. The matrix $\mathbf{C}_{(l)}$ is a binary matrix where the $(i, j)$-th entry is 1 if fine-level DOF $j$ belongs to cluster $i$ at level $l$, and 0 otherwise.
+
+The coarse system matrix at level $l$ is computed via the Galerkin projection:
+\begin{equation}
+    \mathbf{A}_{(l)} = \mathbf{C}_{(l)} \mathbf{A} \mathbf{C}_{(l)}^T.
+\end{equation}
+The multilevel preconditioner $\mathbf{P}$ is then constructed by combining the contributions from all levels:
+\begin{equation}
+    \mathbf{P} = \mathbf{M}_{(0)}^{-1} + \sum_{l=1}^L \mathbf{C}_{(l)}^T \mathbf{M}_{(l)}^{-1} \mathbf{C}_{(l)},
+\end{equation}
+where $\mathbf{M}_{(l)}^{-1}$ represents the Additive Schwarz preconditioner applied to the coarse system $\mathbf{A}_{(l)}$. This hierarchical structure effectively addresses the system's ill-conditioning across the entire frequency spectrum: fine levels handle high-frequency local errors, while coarse levels handle low-frequency global errors.
+
+\section{Derivation of the \texorpdfstring{$2 \times 2$}{2x2} Subspace Minimization System}
+\label{sec:subspace_derivation}
+
+This section provides the detailed derivation of the optimal coefficients for the search direction in our Preconditioned Nonlinear Conjugate Gradient (PNCG) method.
+
+\subsection{Search Direction Formulation}
+In our PNCG method, the search direction $\mathbf{p}_{k+1}$ is constructed as a linear combination of the current preconditioned gradient $\mathbf{z}_{k+1}$ and the previous search direction $\mathbf{p}_k$:
+\begin{equation}
+    \mathbf{p}_{k+1} = -\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k,
+    \label{eq:search_direction}
+\end{equation}
+where $\mathbf{z}_{k+1} = \mathbf{P}^{-1} \mathbf{g}_{k+1}$ is the preconditioned gradient, $\mathbf{P}$ is the MAS preconditioner, and $\mathbf{g}_{k+1}$ is the gradient at the current iterate.
+
+\subsection{Quadratic Model Minimization}
+To determine the optimal coefficients $(\mu^*, \nu^*)$, we minimize a local quadratic model of the objective function. Let $Q(\mathbf{p})$ be the second-order Taylor expansion of the energy function around the current iterate:
+\begin{equation}
+    Q(\mathbf{p}) = E(\mathbf{x}_k) + \mathbf{g}_{k+1}^\top \mathbf{p} + \frac{1}{2} \mathbf{p}^\top \tilde{\mathbf{H}} \mathbf{p},
+\end{equation}
+where $\tilde{\mathbf{H}}$ is an approximation to the Hessian (in practice, the preconditioner $\mathbf{P}$ or a related matrix).
+
+Substituting the search direction from Eq.~\eqref{eq:search_direction}:
+\begin{align}
+    Q(\mu, \nu) &= \mathbf{g}_{k+1}^\top (-\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k) + \frac{1}{2} (-\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k)^\top \tilde{\mathbf{H}} (-\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k) \nonumber \\
+    &= -\mu \mathbf{g}_{k+1}^\top \mathbf{z}_{k+1} + \nu \mathbf{g}_{k+1}^\top \mathbf{p}_k \nonumber \\
+    &\quad + \frac{1}{2} \left( \mu^2 \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} - 2\mu\nu \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k + \nu^2 \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{p}_k \right).
+\end{align}
+
+\subsection{Optimality Conditions}
+Setting the partial derivatives to zero:
+\begin{align}
+    \frac{\partial Q}{\partial \mu} &= -\mathbf{g}_{k+1}^\top \mathbf{z}_{k+1} + \mu \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} - \nu \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k = 0, \\
+    \frac{\partial Q}{\partial \nu} &= \mathbf{g}_{k+1}^\top \mathbf{p}_k - \mu \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k + \nu \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{p}_k = 0.
+\end{align}
+
+Rearranging these equations into matrix form:
+\begin{equation}
+    \begin{bmatrix} 
+    \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} & -\mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k \\ 
+    -\mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} & \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{p}_k 
+    \end{bmatrix} 
+    \begin{bmatrix} \mu \\ \nu \end{bmatrix} 
+    = 
+    \begin{bmatrix} \mathbf{g}_{k+1}^\top \mathbf{z}_{k+1} \\ -\mathbf{g}_{k+1}^\top \mathbf{p}_k \end{bmatrix}.
+\end{equation}
+
+Note that the matrix is symmetric since $\mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k = \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1}$.
+
+\subsection{Efficient Computation via Sparse-Input Woodbury Structure}
+As described in the main paper (Eq.~(2)), we employ a Sparse-Input Woodbury formulation for the Hessian approximation:
+\begin{equation}
+    \tilde{\mathbf{H}} = \mathbf{H}_{\text{base}} + \mathbf{U} \mathbf{U}^T,
+    \label{eq:woodbury_hessian}
+\end{equation}
+where $\mathbf{H}_{\text{base}}$ is the frozen Hessian snapshot from the last global restart, and $\mathbf{U} = [\mathbf{u}_1, \mathbf{u}_2, \dots, \mathbf{u}_m] \in \mathbb{R}^{n \times m}$ is the update matrix collecting rank-1 contributions $\mathbf{u}_i = \sqrt{k_i} \mathbf{n}_i$ from $m$ active contacts. Here $k_i = b''(d_{c_i})$ is the scalar stiffness derived from the barrier function's second derivative, and $\mathbf{n}_i = \nabla d_{c_i}$ is the gradient direction of the distance function for contact $i$.
+
+This structure enables efficient computation of the $2 \times 2$ matrix entries. For any vectors $\mathbf{a}$ and $\mathbf{b}$, the quadratic form with $\tilde{\mathbf{H}}$ can be decomposed as:
+\begin{equation}
+    \mathbf{a}^\top \tilde{\mathbf{H}} \mathbf{b} = \mathbf{a}^\top \mathbf{H}_{\text{base}} \mathbf{b} + \mathbf{a}^\top \mathbf{U} \mathbf{U}^T \mathbf{b} = \mathbf{a}^\top \mathbf{H}_{\text{base}} \mathbf{b} + (\mathbf{U}^T \mathbf{a})^\top (\mathbf{U}^T \mathbf{b}).
+\end{equation}
+
+Applying this to the three unique entries of the $2 \times 2$ system matrix:
+\begin{align}
+    \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} &= \mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{z}_{k+1} + \| \mathbf{U}^T \mathbf{z}_{k+1} \|^2, \label{eq:entry_zz} \\
+    \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k &= \mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{p}_k + (\mathbf{U}^T \mathbf{z}_{k+1})^\top (\mathbf{U}^T \mathbf{p}_k), \label{eq:entry_zp} \\
+    \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{p}_k &= \mathbf{p}_k^\top \mathbf{H}_{\text{base}} \mathbf{p}_k + \| \mathbf{U}^T \mathbf{p}_k \|^2. \label{eq:entry_pp}
+\end{align}
+
+\subsubsection{Computational Procedure}
+In practice, the computation proceeds as follows:
+\begin{enumerate}
+    \item \textbf{Compute low-dimensional projections}: Calculate $\boldsymbol{\xi}_z = \mathbf{U}^T \mathbf{z}_{k+1} \in \mathbb{R}^m$ and $\boldsymbol{\xi}_p = \mathbf{U}^T \mathbf{p}_k \in \mathbb{R}^m$. Since $\mathbf{U}$ is sparse (each column $\mathbf{u}_i$ has only $O(1)$ nonzeros corresponding to the nodes involved in contact $i$), this costs $O(m)$.
+    
+    \item \textbf{Compute base Hessian contributions}: The terms $\mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{z}_{k+1}$, $\mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{p}_k$, and $\mathbf{p}_k^\top \mathbf{H}_{\text{base}} \mathbf{p}_k$ require matrix-vector products with the frozen base Hessian. These can be computed efficiently using the same sparse matrix-vector multiplication routines used elsewhere in the solver.
+    
+    \item \textbf{Assemble the entries}: Using Eqs.~\eqref{eq:entry_zz}--\eqref{eq:entry_pp}:
+    \begin{align}
+        A_{11} &= \mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{z}_{k+1} + \boldsymbol{\xi}_z^\top \boldsymbol{\xi}_z, \\
+        A_{12} = A_{21} &= \mathbf{z}_{k+1}^\top \mathbf{H}_{\text{base}} \mathbf{p}_k + \boldsymbol{\xi}_z^\top \boldsymbol{\xi}_p, \\
+        A_{22} &= \mathbf{p}_k^\top \mathbf{H}_{\text{base}} \mathbf{p}_k + \boldsymbol{\xi}_p^\top \boldsymbol{\xi}_p.
+    \end{align}
+    
+    \item \textbf{Solve the $2 \times 2$ system}: The final system
+    \begin{equation}
+        \begin{bmatrix} A_{11} & -A_{12} \\ -A_{21} & A_{22} \end{bmatrix}
+        \begin{bmatrix} \mu \\ \nu \end{bmatrix}
+        = \begin{bmatrix} \mathbf{g}_{k+1}^\top \mathbf{z}_{k+1} \\ -\mathbf{g}_{k+1}^\top \mathbf{p}_k \end{bmatrix}
+    \end{equation}
+    is solved via direct inversion in $O(1)$ operations.
+\end{enumerate}
+
+\subsubsection{Complexity Analysis}
+The dominant cost is the sparse matrix-vector products with $\mathbf{H}_{\text{base}}$, which scale as $O(\text{nnz}(\mathbf{H}_{\text{base}}))$ where $\text{nnz}$ denotes the number of nonzeros. However, in our PNCG framework, these products are often already computed as part of the gradient evaluation or preconditioner application, allowing them to be reused. The additional overhead from the low-rank update terms is only $O(m)$, where $m$ is the number of active contacts---typically much smaller than the system size $n$.
+
+\subsubsection{Handling Singular or Near-Singular Cases}
+The $2 \times 2$ system matrix
+\begin{equation}
+    \mathbf{A}_{\text{sub}} = \begin{bmatrix} A_{11} & -A_{12} \\ -A_{12} & A_{22} \end{bmatrix}
+\end{equation}
+may become singular or near-singular under certain conditions. Let $\Delta = A_{11} A_{22} - A_{12}^2$ denote its determinant. The matrix is singular when $\Delta = 0$, which occurs when:
+\begin{enumerate}
+    \item \textbf{Linear dependence}: The vectors $\mathbf{z}_{k+1}$ and $\mathbf{p}_k$ become linearly dependent, i.e., $\mathbf{p}_k \approx c \mathbf{z}_{k+1}$ for some scalar $c$. This can happen when the optimization trajectory becomes nearly straight or when the preconditioner quality degrades significantly.
+    \item \textbf{First iteration}: At the very first iteration ($k=0$), no previous search direction $\mathbf{p}_0$ exists, so the two-dimensional subspace degenerates to one dimension.
+\end{enumerate}
+
+To ensure numerical robustness, we employ the following fallback strategy:
+\begin{enumerate}
+    \item \textbf{Singularity detection}: Before solving, we check whether $|\Delta| < \epsilon_{\text{sing}} \cdot \max(A_{11} A_{22}, \epsilon_{\text{abs}})$, where $\epsilon_{\text{sing}}$ is a relative tolerance (e.g., $10^{-12}$) and $\epsilon_{\text{abs}}$ is an absolute tolerance to handle the case when all entries are small.
+    
+    \item \textbf{Fallback to steepest descent}: If the matrix is detected as singular or near-singular, we abandon the two-dimensional subspace optimization and fall back to the preconditioned steepest descent direction:
+    \begin{equation}
+        \mathbf{p}_{k+1} = -\mathbf{z}_{k+1}, \quad \text{i.e., } \mu = 1, \; \nu = 0.
+    \end{equation}
+    This is equivalent to restarting the conjugate gradient iteration from the current point.
+    
+    \item \textbf{First iteration handling}: At $k=0$, we directly set $\mu = 1$ and $\nu = 0$ without attempting to solve the $2 \times 2$ system, since no previous direction is available.
+\end{enumerate}
+
+This fallback mechanism ensures that even in degenerate cases, the algorithm always produces a valid descent direction. The preconditioned steepest descent direction $-\mathbf{z}_{k+1}$ is guaranteed to be a descent direction as long as the preconditioner $\mathbf{P}$ is symmetric positive definite, since:
+\begin{equation}
+    \mathbf{g}_{k+1}^\top (-\mathbf{z}_{k+1}) = -\mathbf{g}_{k+1}^\top \mathbf{P}^{-1} \mathbf{g}_{k+1} < 0.
+\end{equation}
+
+\subsection{Advantages of the \texorpdfstring{$2 \times 2$}{2x2} System}
+\begin{enumerate}
+    \item \textbf{Elimination of Heuristic $\beta$ Selection}: Traditional NCG methods rely on heuristic formulas (e.g., Fletcher-Reeves, Polak-Ribière) to compute the conjugacy parameter $\beta$. Our approach directly optimizes both $\mu$ and $\nu$, eliminating the need for such heuristics.
+    \item \textbf{Natural Step Size}: The coefficient $\mu$ acts as a ``natural step size'' that accounts for second-order curvature information. This allows us to adopt a unit initial trial step ($\alpha = 1.0$), which is only clamped when necessary to enforce non-penetration constraints via Conservative CCD.
+    \item \textbf{Negligible Computational Cost}: Solving a $2 \times 2$ symmetric linear system requires only $O(1)$ operations, which is negligible compared to the cost of the preconditioner application and matrix-vector products.
+\end{enumerate}
+
+\section{Detailed Derivation of the Improved Relative-Displacement Lower Bound for ACCD}
+\label{sec:accd_derivation}
+This section provides a detailed derivation of the improved frame-invariant lower bound for the Additive Continuous Collision Detection (ACCD) step size used in the MAS-PNCG framework. As discussed in the main text, the standard ACCD approach \cite{li2021codimensional} can be overly conservative. We show that by considering relative nodal displacements directly, we obtain a tighter bound that is independent of the global reference frame.
+
+\subsection{Standard ACCD Lower Bound}
+The standard ACCD method computes a conservative lower bound for the step size $\alpha$ for each potentially colliding pair of primitives (e.g., a point $P$ and a triangle $T$). Let $d(t)$ be the distance between the primitives at time $t \in [0, 1]$. The goal is to find a step $\alpha$ such that $d(t) > 0$ for all $t \in [0, \alpha]$.
+
+The standard approach uses the following bound for the denominator $l$ of the time-of-impact estimate:
+\begin{equation}
+    l_{\text{original}} = \max \|\mathbf{p}_P\| + \max_{j \in \{0,1,2\}} \|\mathbf{p}_{T_j}\|,
+\end{equation}
+where $\mathbf{p}_P$ and $\mathbf{p}_{T_j}$ are the search directions (displacements) of the point and the triangle vertices, respectively. This bound stems from the triangle inequality applied to the relative displacement:
+\begin{equation}
+    \|\mathbf{p}_P - \mathbf{p}_T(u, v)\| \le \|\mathbf{p}_P\| + \|\mathbf{p}_T(u, v)\| \le \max \|\mathbf{p}_P\| + \max \|\mathbf{p}_{T_j}\|,
+\end{equation}
+where $\mathbf{p}_T(u, v)$ is the displacement of a point on the triangle via barycentric interpolation.
+
+\subsection{Improved Frame-Invariant Bound}
+We aim to bound the magnitude of the relative displacement vector directly:
+\begin{equation}
+    \Delta \mathbf{p}(u, v) = \mathbf{p}_P - \mathbf{p}_T(u, v).
+\end{equation}
+Since the triangle vertices move linearly along their search directions, the displacement of any point on the triangle is a linear interpolation of the vertex displacements:
+\begin{equation}
+    \mathbf{p}_T(u, v) = (1-u-v)\mathbf{p}_{T_0} + u\mathbf{p}_{T_1} + v\mathbf{p}_{T_2}.
+\end{equation}
+Thus, the relative displacement $\Delta \mathbf{p}(u, v)$ is also a linear function of the barycentric coordinates $(u, v)$:
+\begin{equation}
+    \Delta \mathbf{p}(u, v) = \mathbf{p}_P - [(1-u-v)\mathbf{p}_{T_0} + u\mathbf{p}_{T_1} + v\mathbf{p}_{T_2}] = \sum_{j=0}^2 w_j (\mathbf{p}_P - \mathbf{p}_{T_j}),
+\end{equation}
+where $w_j$ are the barycentric weights ($w_0 = 1-u-v, w_1=u, w_2=v$) satisfying $\sum w_j = 1$ and $w_j \ge 0$.
+
+\subsubsection{Convexity of the Norm}
+We are interested in the maximum magnitude of the relative displacement over the primitives for a Point-Triangle (PT) pair:
+\begin{equation}
+    l_{\text{tight}}^{PT} = \max_{(u, v)} \| \Delta \mathbf{p}(u, v) \|.
+\end{equation}
+Because the Euclidean norm $\|\cdot\|$ is a convex function and $\Delta \mathbf{p}(u, v)$ is a linear map from the coordinate space to the displacement space, the composition $f(u, v) = \| \Delta \mathbf{p}(u, v) \|$ is a convex function over the domain of the triangle.
+
+A well-known property of convex functions is that their maximum over a compact convex set (like a triangle) is always attained at one of its extreme points (the vertices). Therefore, the specific formula for $l_{\text{tight}}$ in the PT case is:
+\begin{equation}
+    l_{\text{tight}}^{PT} = \max_{j \in \{0,1,2\}} \| \mathbf{p}_P - \mathbf{p}_{T_j} \|.
+\end{equation}
+
+\subsubsection{Generalization to Edge-Edge Pairs}
+For an edge-edge pair with vertices $(E_{1a}, E_{1b})$ and $(E_{2a}, E_{2b})$, the relative displacement between any two points on the edges is:
+\begin{equation}
+    \Delta \mathbf{p}(s, t) = [(1-s)\mathbf{p}_{E_{1a}} + s\mathbf{p}_{E_{1b}}] - [(1-t)\mathbf{p}_{E_{2a}} + t\mathbf{p}_{E_{2b}}],
+\end{equation}
+which is a bilinear (and thus also linear along any axis) function of $(s, t)$. By the same convexity argument, the maximum magnitude must occur at one of the four vertex-pair combinations:
+\begin{equation}
+    l_{\text{tight}}^{EE} = \max_{i \in \{a, b\}, j \in \{a, b\}} \| \mathbf{p}_{E_{1i}} - \mathbf{p}_{E_{2j}} \|.
+\end{equation}
+
+\subsection{Advantages}
+\begin{enumerate}
+    \item \textbf{Tightness}: By the triangle inequality, $\|\mathbf{p}_i - \mathbf{p}_j\| \le \|\mathbf{p}_i\| + \|\mathbf{p}_j\|$. Thus, $l_{\text{tight}} \le l_{\text{original}}$ is always satisfied. In many cases, especially when primitives move in the same direction with high velocity, $l_{\text{tight}}$ is significantly smaller, leading to much larger and more efficient step sizes.
+    \item \textbf{Frame Invariance}: The term $\|\mathbf{p}_i - \mathbf{p}_j\|$ only depends on the relative displacement. Adding a constant velocity vector $\mathbf{v}_c$ to all vertices (changing the reference frame) does not change the result: $\|(\mathbf{p}_i + \mathbf{v}_c) - (\mathbf{p}_j + \mathbf{v}_c)\| = \|\mathbf{p}_i - \mathbf{p}_j\|$. The original bound $l_{\text{original}}$ is sensitive to such changes.
+\end{enumerate}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{sample-bibliography}
+
+\end{document}

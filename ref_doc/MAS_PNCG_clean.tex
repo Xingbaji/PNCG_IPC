@@ -1,0 +1,283 @@
+\documentclass[acmtog,anonymous,review,screen,nonacm]{acmart}
+\citestyle{acmauthoryear}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage[ruled]{algorithm2e}
+\SetAlCapSkip{0.5em}
+\SetAlCapHSkip{0pt}
+\newcommand{\tabref}[1]{\autoref{#1}}
+\newcommand{\imgref}[1]{\autoref{#1}}
+\copyrightyear{2025}
+\acmYear{2025}
+\setcopyright{acmlicensed}
+\acmDOI{XXXXXXX.XXXXXXX}
+\acmSubmissionID{1971}
+\begin{document}
+\title[MAS-PNCG]{An Efficient Multilevel Preconditioned Nonlinear Conjugate Gradient Framework for Incremental Potential Contact}
+\begin{abstract} 
+Incremental Potential Contact (IPC) has emerged as an accurate and robust method for simulating complex contact dynamics with guaranteed intersection-free results. However, its computational cost remains high due to the reliance on Newton solvers, especially in large-scale scenarios.
+Although the Preconditioned Nonlinear Conjugate Gradient (PNCG) method provides reasonable convergence rates and greatly reduced computational cost per iteration, it faces critical limitations. Simple preconditioners fail under severe ill-conditioning from stiff materials and near-contact configurations. Additionally, PNCG lacks robust penetration-free guarantees.
+This paper presents MAS-PNCG, a novel framework that overcomes these limitations while preserving IPC's accuracy. We integrate a GPU-accelerated Multilevel Additive Schwarz (MAS) preconditioner with an efficient update strategy. Our approach uses Sparse-Input Woodbury updates for fine-level components and periodic full rebuilds guided by Powell's restart criterion. We introduce a 2D subspace minimization strategy that computes optimal search direction combinations using exact Hessian information, effectively balancing local preconditioning with global second-order curvature.
+Additionally, we develop a fast conservative Continuous Collision Detection (CCD) method that ensures penetration-free trajectories with minimal overhead. Our experiments show that MAS-PNCG achieves accuracy comparable to state-of-the-art GPU Newton-PCG solvers while offering substantially improved computational efficiency. 
+\end{abstract}
+\ccsdesc[500]{Computing methodologies~Physical simulation}
+
+\keywords{Incremental Potential Contact, Nonlinear Conjugate Gradient Method, Preconditioning, Contact Dynamics}
+
+\maketitle
+
+\section{INTRODUCTION}
+The Incremental Potential Contact (IPC) framework~\cite{li2020incremental} revolutionized robust contact simulation by reformulating contact dynamics as an unconstrained optimization problem using barrier functions. This approach guarantees intersection-free results while maintaining high accuracy, leading to widespread adoption in multi-material simulations \cite{li2024dynamic,xie2023contact}, interlocked rigid components \cite{tang2023beyond}, high-order meshes \cite{ferguson2023high}, sticky interactions \cite{fang2023augmented}, and differentiable simulation \cite{huang2024differentiable}. However, IPC's reliance on Newton-type solvers creates a computational bottleneck, particularly in large-scale scenarios.
+
+Existing acceleration approaches fall into two categories: approximation based and exact methods. Approximation-based techniques include medial axis reduction~\cite{lan2021medial}, GPU-accelerated projective dynamics integration~\cite{lan2022penetration}, stencil-wise coordinate descent~\cite{lan2023second}, and subspace methods with iterative relaxation~\cite{li2023subspace}. While these methods achieve substantial speedups, they often sacrifice accuracy through model simplification or introduce additional tuning parameters. In contrast, exact methods maintain IPC's accuracy guarantees. GIPC \cite{huang2024gipc} provides comprehensive GPU acceleration for Newton-PCG solvers, while Stiff-GIPC \cite{huang2025stiffgipc} further optimizes performance using advanced preconditioning strategies. 
+
+Alternatively, Preconditioned Nonlinear Conjugate Gradient method (PNCG)~\cite{shen2024preconditioned} can be applied to solve the nonlinear optimization problem inherent in IPC. PNCG has better convergence rate than Chebyshev accelerated descent method \cite{wang2016descent}, and offers the advantage of avoiding explicit Hessian assembly and factorization, leading to significantly lower per-iteration costs. However, its practical application is hampered by several challenges. First, simple preconditioners (e.g., Jacobi) often struggle to counteract the severe ill-conditioning introduced by stiff materials or near-contact configurations. Second, traditional PNCG relies on heuristic conjugate parameter ($\beta$) formulas and decoupled line searches, which often fail to capture the complex, rapidly changing curvature in contact-rich simulations. Third, logarithmic barriers can cause extremely large Hessian entries when contact distances are very small, leading to tiny global step sizes and impeding convergence to high accuracy.
+
+This paper introduces a novel MAS-preconditioned NCG (MAS-PNCG) framework designed to overcome these limitations and provide an efficient and robust solver for IPC. Our contributions are as follows.
+\vspace{-5pt} 
+\begin{itemize}
+    \item \textbf{Efficient MAS Preconditioning with Optimized Updates}: We integrate a highly efficient Multilevel Additive Schwarz (MAS) preconditioner into the NCG framework with a GPU implementation that significantly improves convergence. Coarse-level MAS components are periodically frozen, while fine-level (level 0) sub-matrix inverses are efficiently approximated via Sparse-Input Woodbury updates.
+    \item \textbf{Hessian-Aware 2D Subspace Descent}: We propose a 2D subspace minimization strategy that dynamically computes optimal weights for combining the preconditioned gradient and the previous search direction using exact Hessian information. This approach replaces heuristic $\beta$ formulas and provides natural step-size scaling.
+    \item \textbf{Conservative CCD with Tighter Lower Bounds}: A super-fast, conservative Continuous Collision Detection method clamps step sizes to ensure penetration-free trajectories without the full cost of exact time of impact (TOI) computation. We introduce a frame-invariant, tighter lower bound for step sizes based on direct relative motion analysis.
+\end{itemize}
+\vspace{-5pt} 
+Experiments demonstrate that our method converges to sufficient accuracy comparable to Newton-PCG methods in complex and large-scale scenerios with up to 3.19$\times$ speedup over state-of-the-art GPU IPC methods \cite{huang2024gipc}. %particularly for complex and stiff simulations. The code will be open source after published.
+
+\section{BACKGOUND}
+\subsection{Preconditioned Nonlinear Conjugate Gradient Method for IPC}
+\label{sec:pncg_method}
+The Incremental Potential Contact (IPC) framework transforms the simulation of deformable bodies with contact and friction into an unconstrained optimization problem. Using implicit Euler time integration, we seek vertex positions $\mathbf{x}^{t+1}$ at the next timestep by minimizing:
+\begin{equation}
+    \mathbf{x}^{t+1} = \arg \min _{\mathbf{x}} E(\mathbf{x}),
+\end{equation}
+the energy function $E(\mathbf{x})$ combines four key components:
+\begin{equation}
+    E(\mathbf{x}) = \underbrace{\frac{1}{2}(\mathbf{x}-\tilde{\mathbf{x}})^{\top} \mathbf{M}(\mathbf{x}-\tilde{\mathbf{x}})}_{\text{inertia}} + \underbrace{h^2 \Psi(\mathbf{x})}_{\text{elasticity}} + \underbrace{B(\mathbf{x})}_{\text{contact}} + \underbrace{D(\mathbf{x})}_{\text{friction}}.
+    \label{eq:ipc_energy}
+\end{equation}
+Here, $\mathbf{x} \in \mathbb{R}^{3N}$ concatenates the positions of $N$ vertices. The inertial term uses $\tilde{\mathbf{x}} = \mathbf{x}^{t} + h\mathbf{v}^{t} + h^2\mathbf{M}^{-1}\mathbf{f}_{\text{ext}}$, incorporating previous positions, velocities, and external forces. The contact barrier $B(\mathbf{x})$ ensures non-penetration through:
+\begin{equation}
+    B(\mathbf{x}) = \kappa \sum_{c \in \mathcal{C}} b(d_c(\mathbf{x})),
+\end{equation}
+% \vspace{-5pt} 
+where $b(d)$ is a logarithmic barrier function active when distance $d < \hat{d}$ (the activation threshold).
+
+To solve this optimization problem, the PNCG method \cite{shen2024preconditioned} iteratively generates a sequence of approximations $\{\mathbf{x}_k\}$ via:
+\begin{equation}
+    \mathbf{x}_{k+1} = \mathbf{x}_k + \alpha_k \mathbf{p}_{k+1},
+\end{equation}
+where $\mathbf{x}_k$ is the current vertex position at iteration $k$, $\mathbf{p}_k$ is the search direction, and $\alpha_k$ is the step size. The next search direction $\mathbf{p}_{k+1}$ is computed as:
+\begin{equation}
+    \mathbf{p}_{k+1} = -\mathbf{P}_{k+1} \mathbf{g}_{k+1} + \beta_k \mathbf{p}_{k},
+    \label{eq:pncg_search_direction}
+\end{equation}
+with the initial search direction set to $\mathbf{p}_0 = -\mathbf{P}_0 \mathbf{g}_0$. Here, $\mathbf{g}_k = \nabla E(\mathbf{x}_k)$ is the gradient of the objective function, $\mathbf{P}_k$ represents the preconditioning matrix, and $\beta_k$ is the conjugate parameter ensuring conjugacy of the search directions. 
+For subsequent analysis, we define the step $\mathbf{s}_k = \mathbf{x}_{k+1} - \mathbf{x}_k$ and gradient difference $\mathbf{y}_k = \mathbf{g}_{k+1} - \mathbf{g}_k$.
+\vspace{-5pt} 
+\subsection{Multilevel Additive Schwarz Preconditioner}
+The convergence of conjugate gradient methods depends critically on the condition number of the system matrix. To handle the ill-conditioning arising from stiff materials and complex contacts, we adopt the Multilevel Additive Schwarz (MAS) preconditioner, which has demonstrated superior performance in GPU-accelerated elastodynamics \cite{wu2022gpu, huang2025stiffgipc}. MAS combines the strengths of local domain decomposition and global hierarchical coarsening to effectively suppress errors across all frequency scales.
+
+Let $\mathbf{A}$ denote the system matrix. The Additive Schwarz (AS) method decomposes the computational domain $\Omega$ into $D$ subdomains $\Omega_d$. We define selection matrices $\mathbf{S}_d$ to extract local degrees of freedom and let $\mathbf{M}_{(0)}^d = \mathbf{S}_d \mathbf{A} \mathbf{S}_d^T$ be the local Hessian for subdomain $d$. The level 0 preconditioner is:
+\begin{equation}
+    \mathbf{M}_{(0)}^{-1} = \sum_{d=1}^D \mathbf{S}_d^T (\mathbf{M}_{(0)}^d)^{-1} \mathbf{S}_d.
+\end{equation}
+The MAS preconditioner $\mathbf{P}$ extends this to multiple levels:
+\begin{equation}
+    \mathbf{P} = \mathbf{M}_{(0)}^{-1} + \sum_{l=1}^L \mathbf{C}_{(l)}^T \mathbf{M}_{(l)}^{-1} \mathbf{C}_{(l)},
+\end{equation}
+where $\mathbf{C}_{(l)}$ represents the connectivity-aware coarsening matrix at level $l$, and $\mathbf{M}_{(l)}^{-1}$ is the AS preconditioner for the coarsened system $\mathbf{A}_{(l)} = \mathbf{C}_{(l)} \mathbf{A} \mathbf{C}_{(l)}^T$. Our implementation utilizes a connectivity-aware hierarchy construction to ensure robust coarse-level approximations. Further details on the subdomain decomposition, hierarchy construction, and GPU implementation are provided in the Supplementary Document.
+
+\section{METHOD}
+\subsection{Localized Woodbury Level-0 Update}
+The MAS preconditioner significantly accelerates NCG convergence~\cite{wu2022gpu}, yet frequent full recomputations remain computationally prohibitive. Our update strategy leverages the spectral properties of the system: coarse-level components primarily capture low-frequency error modes, which evolve relatively slowly. Consequently, these components can be temporarily frozen without significantly degrading convergence.
+
+Furthermore, Hessian contributions from elastic potential energy tend to remain stable or change smoothly. In contrast, severe ill-conditioning arises primarily from contact barrier terms, which activate and deactivate abruptly. Fortunately, these interactions are spatially sparse, affecting only a small subset of the domain. Therefore, we focus our update strategy exclusively on the Level-0 (fine-level) subdomains to capture these local changes via efficient low-rank updates, while keeping the rest of the preconditioner fixed.
+
+To implement these updates efficiently while ensuring the preconditioner remains Symmetric Positive Definite (SPD), we employ a Gauss-Newton approximation for the contact barrier Hessian. The full Hessian of the logarithmic barrier includes an indefinite term involving the second derivative of the distance function, which could destabilize the descent. We neglect this term and retain only the positive semi-definite outer product of distance gradients. Defining the scalar stiffness $k = b''(d_c)$ and the gradient direction $\mathbf{n} = \nabla d_c$, we approximate the Hessian as:
+\begin{equation}
+    \nabla^2 b(d_c(\mathbf{x})) \approx k \mathbf{n} \mathbf{n}^T.
+\end{equation}
+This simplification allows us to model the Hessian change as a sum of rank-1 updates. 
+We define the base state using the frozen Hessian snapshots $\mathbf{H}_{\text{base}}$ 
+and inverse of each subdomain of level 0 $\mathbf{B}_d = (\mathbf{M}_{0}^d)^{-1}$ from the last global restart. The current Hessian is then approximated as:
+\begin{equation}\label{eq: Hessian}
+    \mathbf{H}_{\text{new}} = \mathbf{H}_{\text{base}} + \mathbf{U} \mathbf{U}^T,
+\end{equation}
+where $\mathbf{U} = [\mathbf{u}_1, \mathbf{u}_2, \dots, \mathbf{u}_m]$ is the update matrix collecting the rank-1 contributions $\mathbf{u}_i = \sqrt{k_i} \mathbf{n}_i$ from $m$ active contacts. The coupling matrix typically required in Woodbury updates is omitted here as our simplified barrier Hessian naturally adopts a sum-of-outer-products form, effectively setting the coupling to identity. 
+This Sparse-Input Woodbury formulation allows us to capture the rapidly changing contact state by updating only the relevant portions of the Level-0 preconditioner, as detailed in the following subsections.
+
+\subsubsection{Construction of Local Update Matrices}
+We maintain a global set of active contacts $\mathcal{C}_{\text{curr}}$ and compare each contact $c \in \mathcal{C}_{\text{curr}}$ against its state in the global base set $\mathcal{C}_{\text{base}}$ from the last restart. Using a rotation threshold $\epsilon_{\text{rot}}$ (e.g., $25^\circ$), we determine the potential rank-1 update vectors $\mathbf{u}$ and their significance metrics $\Delta S$ by classifying each contact into two categories:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Case 1: New Contact} ($c \notin \mathcal{C}_{\text{base}}$).
+    For topologically new contacts, we inject the full stiffness as a pure increment:
+    \begin{equation}
+        \mathbf{u} = \sqrt{k_{\text{curr}}} \cdot \mathbf{n}_{\text{curr}}, \quad \Delta S = k_{\text{curr}}.
+    \end{equation}
+
+    \item \textbf{Case 2: Existing Contact} ($c \in \mathcal{C}_{\text{base}}$).
+    For contacts persisting from the base state, we categorize them based on the stability of their normal directions.
+    \begin{itemize}[leftmargin=*, label={$\bullet$}]
+        \item \textbf{Rotated Normal ($\mathbf{n}_{\text{curr}} \cdot \mathbf{n}_{\text{base}} < \epsilon_{\text{rot}}$):}
+        If the geometric constraint has rotated significantly, updating the direction is numerically unstable. We treat this as a \textbf{New Contact}, effectively retaining the old stiffness as a "ghost wall" while adding the new constraint to ensure robustness:
+        \begin{equation}
+            \mathbf{u} = \sqrt{k_{\text{curr}}} \cdot \mathbf{n}_{\text{curr}}, \quad \Delta S = k_{\text{curr}}.
+        \end{equation}
+
+        \item \textbf{Stable Normal ($\mathbf{n}_{\text{curr}} \cdot \mathbf{n}_{\text{base}} \ge \epsilon_{\text{rot}}$):}
+        For directionally stable contacts, we further compare the stiffness:
+        \begin{itemize}[leftmargin=*, label={$-$}]
+            \item \textit{Stiffening ($k_{\text{curr}} > k_{\text{base}}$):} We add the stiffness differential:
+            \begin{equation}
+                \mathbf{u} = \sqrt{k_{\text{curr}} - k_{\text{base}}} \cdot \mathbf{n}_{\text{curr}}, \quad \Delta S = k_{\text{curr}} - k_{\text{base}}.
+            \end{equation}
+            \item \textit{Softening ($k_{\text{curr}} \le k_{\text{base}}$):} We ignore stiffness decreases. Retaining the stiffer base approximation yields a safer step without risking indefiniteness. We set $\Delta S = 0$.
+        \end{itemize}
+    \end{itemize}
+\end{enumerate}
+
+To balance approximation accuracy and computational overhead, we employ a \textit{localized Top-K truncation} strategy. For each subdomain $d$, we rank all potential local update vectors by their significance metric $\Delta S$ and select only the top $K$ vectors (e.g., $K=8$) to form the subdomain update matrix $\mathbf{U}_d \in \mathbb{R}^{N_d \times K}$. This ensures the rank of the update remains low within each subdomain, keeping the subsequent per-subdomain capacitance solve efficient.
+
+\subsubsection{Localized Woodbury Solver}
+To maintain the efficiency of the domain-decomposed preconditioner without full rebuilds, we apply the Woodbury update locally within each subdomain $d$. Let $\mathbf{M}_{\text{base}}^d$ be the Level-0 subdomain Hessian frozen at the last global restart. We factorize $\mathbf{M}_{\text{base}}^d$ and cache its inverse $\mathbf{B}_d = (\mathbf{M}_{\text{base}}^d)^{-1}$ as the \textit{base state}. In subsequent iterations, the updated local Hessian is approximated as $\hat{\mathbf{M}}_{(0)}^d = (\mathbf{B}_d)^{-1} + \mathbf{U}_d \mathbf{U}_d^T$, where $\mathbf{U}_d \in \mathbb{R}^{N_d \times K}$ contains the $K$ most significant local update vectors. The updated inverse $\hat{\mathbf{B}}_d$ is then efficiently computed via the Woodbury formula:
+\begin{equation}
+    \hat{\mathbf{B}}_d = \mathbf{B}_d - \mathbf{B}_d \mathbf{U}_d \left( \mathbf{I}_K + \mathbf{U}_d^T \mathbf{B}_d \mathbf{U}_d \right)^{-1} \mathbf{U}_d^T \mathbf{B}_d.
+\end{equation}
+
+For a local gradient $\mathbf{g}_d = \mathbf{S}_d \mathbf{g}$, the preconditioned direction $\mathbf{z}_d = \hat{\mathbf{B}}_d \mathbf{g}_d$ is computed through a streamlined \textit{capacitance system}:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Base Solve}: Compute the cached projection $\mathbf{z}_{\text{base}} = \mathbf{B}_d \mathbf{g}_d$.
+    \item \textbf{Update Projection}: Form the auxiliary matrix $\mathbf{W}_d = \mathbf{B}_d \mathbf{U}_d$ and the correction vector $\mathbf{r} = \mathbf{U}_d^T \mathbf{z}_{\text{base}}$.
+    \item \textbf{Capacitance Solve}: Solve the $K \times K$ system $(\mathbf{I}_K + \mathbf{U}_d^T \mathbf{W}_d) \boldsymbol{\lambda} = \mathbf{r}$.
+    \item \textbf{Correction}: Update the final local direction $\mathbf{z}_d = \mathbf{z}_{\text{base}} - \mathbf{W}_d \boldsymbol{\lambda}$.
+\end{enumerate}
+
+Finally, the global preconditioned gradient $\mathbf{z}_{k+1}$ is assembled by merging the updated Level-0 contributions with the frozen coarse-level corrections:
+\begin{equation}
+    \mathbf{z}_{k+1} = \sum_{d=1}^D \mathbf{S}_d^T \mathbf{z}_d + \sum_{l=1}^L \mathbf{C}_{(l)}^T \mathbf{M}_{(l)}^{-1} \mathbf{C}_{(l)} \mathbf{g}_{k+1},
+\end{equation}
+where $\mathbf{M}_{(l)}^{-1}$ are cached from the last restart. This additive structure allows for full parallelization across subdomains.
+
+\paragraph{Efficiency Optimization}
+The localized Woodbury solver provides a critical advantage: it completely bypasses the need for global Hessian assembly and expensive matrix factorization in each iteration. By reusing the frozen base inverse $\mathbf{B}_d$ and only updating it with a low-rank matrix $\mathbf{U}_d$, we maintain an up-to-date preconditioner at a minimal cost. This effectively enables the preconditioner to "evolve" with the contact state without a full rebuild, ensuring both numerical stability and high performance.
+
+\begin{algorithm}[htbp!]
+\small
+\caption{MAS-PNCG Pipeline}\label{alg:MAS}
+\KwIn{Initial position $\mathbf{x}^t$, velocity $\mathbf{v}^t$, mass matrix $\mathbf{M}$, barrier threshold $\hat{d}$, tolerance $\epsilon$, restart threshold $\delta$}
+\KwOut{Updated position $\mathbf{x}^{t+1}$}
+$\mathbf{x}_0 \gets \mathbf{x}^{t}, \quad \tilde{\mathbf{x}} \gets \mathbf{x}^{t} + h\mathbf{v}^{t} + h^2\mathbf{M}^{-1}\mathbf{f}_{\text{ext}}$\;
+$\text{Restart} \gets \texttt{True}$\;
+\For{$k = 0$ \KwTo $\text{IterMax}$}{
+    $\mathcal{C} \gets \textsc{ComputeConstraintSet}(\mathbf{x}_k, \hat{d})$\;
+    \uIf{$\text{Restart} = \texttt{True}$}{
+        $\mathbf{P}_{\text{base}}, \tilde{\mathbf{H}}_{\text{base}} \gets \textsc{RebuildMASPreconditioner}(\mathbf{x}_{k}, \mathcal{C})$\;
+        $\mathbf{P}_{k+1} \gets \mathbf{P}_{\text{base}}, \quad \tilde{\mathbf{H}} \gets \tilde{\mathbf{H}}_{\text{base}}$\;
+    }
+    \Else{
+        $\mathbf{P}_{k+1} \gets \textsc{SparseInputWoodburyUpdate}(\mathbf{P}_{\text{base}}, \mathcal{C})$\;
+        % Update $\tilde{\mathbf{H}}$ with local contact changes \tcp*{Eq.~\ref{eq: Hessian}}
+    }
+    $\mathbf{g}_{k+1} \gets \nabla E(\mathbf{x}_k, \tilde{\mathbf{x}}, \mathcal{C})$\;
+    $\mathbf{z}_{k+1} \gets \mathbf{P}_{k+1} \mathbf{g}_{k+1}$\;
+    $\mathbf{v} \gets \tilde{\mathbf{H}} \mathbf{z}_{k+1}$ \tcp*{Implicit product via Eq.~\ref{eq: Hessian}}
+    \uIf{$\text{Restart} = \texttt{True}$}{
+        $\mu \gets (\mathbf{z}_{k+1}^\top \mathbf{g}_{k+1}) / (\mathbf{z}_{k+1}^\top \mathbf{v}), \quad \nu \gets 0$\;
+    }
+    \Else{
+        Solve $\begin{bmatrix} \mathbf{z}_{k+1}^\top \mathbf{v} & -\mathbf{p}_k^\top \mathbf{v} \\ -\mathbf{p}_k^\top \mathbf{v} & \mathbf{p}_k^\top \mathbf{w}_k \end{bmatrix} \begin{bmatrix} \mu \\ \nu \end{bmatrix} = \begin{bmatrix} \mathbf{z}_{k+1}^\top \mathbf{g}_{k+1} \\ -\mathbf{p}_k^\top \mathbf{g}_{k+1} \end{bmatrix}$ \tcp*{Eq.~\ref{eq:2x2_system}}
+    }
+    $\mathbf{p}_{k+1} \gets -\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k$\;
+    $\mathbf{w}_{k+1} \gets -\mu \mathbf{v} + \nu \mathbf{w}_k$ \tcp*{Maintains $\mathbf{w} = \tilde{\mathbf{H}}\mathbf{p}$}
+    $\{\alpha_d\}_{d=1}^D \gets \textsc{ConservativeCCD}(\mathbf{x}_k, \mathbf{p}_{k+1})$ \tcp*{Algorithm~\ref{alg:conservative_ccd}}
+    $\mathbf{x}_{k+1} \gets \mathbf{x}_{k} + \sum_{d=1}^D \mathbf{S}_d^T \alpha_d \mathbf{S}_d \mathbf{p}_{k+1}$\;
+    \uIf{$\|\alpha \mathbf{p}_{k+1}\| \leq \epsilon$}{
+        \textbf{break}\;
+    }
+    \Else{
+        $r_k \gets |\mathbf{g}_{k+1}^\top \mathbf{z}_k| / (\mathbf{g}_{k+1}^\top \mathbf{z}_{k+1})$\;
+        $\text{Restart} \gets (r_k > \delta)$ \tcp*{Sec.~\ref{sec:restart}}
+    }
+    $\mathbf{z}_k \gets \mathbf{z}_{k+1}$ \tcp*{Cache for restart judgment}
+}
+\Return{$\mathbf{x}_{k+1}$}\;
+\end{algorithm}
+\subsection{Optimal 2D Subspace Minimization}
+\label{sec:subspace_minimization}
+
+Traditional PNCG methods typically lack direct access to Hessian information, relying instead on heuristic conjugacy parameters (e.g., Polak-Ribière) and decoupled line searches. Leveraging our approximated Hessian (Eq.~\ref{eq: Hessian}), we can directly determine the optimal search direction $\mathbf{p}_{k+1}$ within the 2D subspace spanned by the preconditioned gradient $\mathbf{z}_{k+1} = \mathbf{P}_{k+1} \mathbf{g}_{k+1}$ and the previous direction $\mathbf{p}_k$:
+\begin{equation}
+    \mathbf{p}_{k+1}(\mu, \nu) = -\mu \mathbf{z}_{k+1} + \nu \mathbf{p}_k.
+    \label{eq:subspace_dir}
+\end{equation}
+The optimal coefficients $(\mu^*, \nu^*)$ are obtained by minimizing the local quadratic model $Q(\mathbf{p}_{k+1}) = \mathbf{g}_{k+1}^\top \mathbf{p}_{k+1} + \frac{1}{2} \mathbf{p}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_{k+1}$, which yields the following $2 \times 2$ system:
+\begin{equation}
+    \begin{bmatrix} 
+    \mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} & -\mathbf{z}_{k+1}^\top \tilde{\mathbf{H}} \mathbf{p}_k \\ 
+    -\mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{z}_{k+1} & \mathbf{p}_k^\top \tilde{\mathbf{H}} \mathbf{p}_k 
+    \end{bmatrix} 
+    \begin{bmatrix} \mu \\ \nu \end{bmatrix} 
+    = 
+    \begin{bmatrix} \mathbf{z}_{k+1}^\top \mathbf{g}_{k+1} \\ -\mathbf{p}_k^\top \mathbf{g}_{k+1} \end{bmatrix}.
+    \label{eq:2x2_system}
+\end{equation}
+This formulation eliminates the need for heuristic $\beta$ selection and expensive line searches. Notably, the coefficient $\mu$ acts as a "natural step size" that accounts for second-order curvature, allowing us to adopt a unit initial trial step ($\alpha = 1.0$) which is only clamped to enforce non-penetration via our Conservative CCD (Section~\ref{sec:conservative_ccd}). 
+Detailed derivations are provided in the Supplementary Document.
+
+\subsection{Global Restart Criterion}
+\label{sec:restart}
+Although Sparse-Input Woodbury updates enhance the efficiency of managing level $0$ MAS components, approximation errors can accumulate across iterations, leading to a decline in preconditioner quality and deterioration of the conjugate property. To address this, we employ a global restart strategy that monitors the orthogonality loss between the current gradient $\mathbf{g}_{k+1}$ and the previous preconditioned gradient $\mathbf{z}_k$:
+\begin{equation}
+    r_k = \frac{|\mathbf{g}_{k+1}^\top \mathbf{z}_k|}{\mathbf{g}_{k+1}^\top \mathbf{z}_{k+1}}.
+\end{equation}
+When $r_k$ exceeds a threshold (e.g., $\delta =0.3$), the iteration is restarted and the MAS preconditioner is fully rebuilt. Physically, this criterion assesses whether the gradient direction remains linearly dependent on the previous one after factoring out the system's ill-conditioning via the preconditioner. This approach is more accurate than judging in the original space and incurs negligible cost, as $\mathbf{z}_k$ is cached and both $\mathbf{z}_{k+1}$ and $\mathbf{g}_{k+1}$ are readily available in the current iteration.
+\vspace{-5pt} 
+\subsection{Localized Conservative CCD}
+\label{sec:conservative_ccd}
+While our subspace minimization strategy provides an optimal trial step ($\alpha = 1.0$), it cannot guarantee collision-free motion in contact-rich scenarios where the energy landscape is non-quadratic. We therefore introduce a Conservative CCD (CCCD) strategy that ensures penetration-free trajectories with minimal computational overhead. 
+
+The core philosophy of CCCD is rooted in the observation that in IPC optimization, a penetration detection often signifies that the current search direction is contaminated by missing collision constraints. Instead of pursuing an exact time-of-impact (TOI) to "touch" the obstacle, we prioritize a rapid, conservative clamping of the step size to a safe region. This strategy delegates the responsibility of accuracy to the next iteration: by injecting the newly detected contact into the Sparse-Input Woodbury update (Section~\ref{sec:pncg_method}), the updated preconditioner naturally steers the search direction away from the penetration in the subsequent descent step.
+
+Furthermore, we implement CCCD on a per-subdomain basis to avoid "numerical locking". In traditional global CCD, a single over-restricted step size computed for one complex contact area would scale down the motion of the entire system, significantly impeding convergence. By independently evaluating distance functions $f_{c}(\alpha)$ and applying safe steps $\{\alpha_d\}$ locally for each subdomain $d$, regions with fewer constraints can maintain their optimal descent speed while only the critical subdomains are conservatively damped. This localized damping mechanism ensures that conservative step estimation in one subdomain does not compromise the global convergence rate.
+
+The CCCD algorithm examines the cubic distance function $f_{c}(\alpha)$ over the interval $[0, 1.0]$. Following~\cite{cypo}, we first identify the monotonic region by computing $\alpha_{\text{mon}}$, the first critical point of $f'_{c}(\alpha)$. Within the restricted interval $[0, \min(1.0, \alpha_{\text{mon}})]$, we employ a sign-based root detection strategy: if $\text{sign}(f_{c}(0)) \neq \text{sign}(f_{c}(\alpha))$, a collision exists within the interval. Rather than precisely locating the collision point, we use a bisection strategy that iteratively halves $\alpha$ until either the signs match (indicating no collision) or we reach the minimal threshold $\alpha_l$. This approach avoids the numerical instabilities of polynomial root-finding, requires only function evaluations, and achieves rapid convergence to safe step sizes while avoiding ACCD’s potentially excessive iterations. The procedure is summarized in Algorithm~\ref{alg:conservative_ccd}.
+Algorithm~\ref{alg:MAS} outlines the complete MAS-PNCG pipeline, demonstrating the integration of our key contributions into a unified framework.
+
+\subsection{Improved Lower Bound}
+\label{sec:tighter_lower_bound}
+We introduce a slightly improved lower bound for CCD step sizes by directly bounding relative displacements between primitives, providing a tighter and frame-invariant estimate compared to standard ACCD~\cite{li2021codimensional}. 
+
+
+\begin{algorithm}[htbp!]
+\caption{Subdomain Conservative CCD}
+\label{alg:conservative_ccd}
+\KwIn{Lower bound $\alpha_l$, subdomain contact set $\mathcal{C}_d$, distance functions $\{f_{c}(\alpha)\}$}
+\KwOut{Subdomain step size $\alpha_d$}
+$\alpha_d \gets 1.0$\;
+\For{$c \in \mathcal{C}_d$}{
+    $\alpha_{mon} \gets \text{GetFirstCriticalPoint}(f'_c(\alpha))$\;
+    $\alpha \gets \min(1.0, \alpha_{\text{mon}}, \alpha_l)$\;
+    \While{$\text{sign}(f_c(0)) \neq \text{sign}(f_c(\alpha))$ \text{and} $\alpha > \alpha_l$}{
+        $\alpha \leftarrow \alpha / 2$\;
+    }
+    $\alpha_d \gets \min(\alpha_d, \alpha)$\;
+}
+\Return{$\alpha_d$}
+\end{algorithm}
+\vspace{-10pt} 
+
+\section{CONCLUSION}
+We have presented MAS-PNCG, an efficient and robust multilevel preconditioned nonlinear conjugate gradient framework tailored for Incremental Potential Contact simulations. Our approach significantly accelerates convergence and enhances stability, especially for ill-conditioned systems arising from stiff materials or intricate contact configurations. This is achieved by integrating a Multilevel Additive Schwarz preconditioner with novel update strategies, including Sparse-Input Woodbury updates for fine-level components and Powell’s restart for global rebuilds. Complemented by an optimal 2D subspace minimization strategy for search direction and step-size determination, and a fast, conservative CCD with a tighter relative-motion lower bound for penetration-free steps, MAS-PNCG offers a compelling balance of speed and robustness.
+
+Experimental evaluations confirm that MAS-PNCG achieves accuracy comparable to state-of-the-art Newton-PCG solvers while demonstrating substantially improved computational efficiency. This advantage is particularly pronounced in large-scale simulations, positioning our method as a scalable alternative. The ablation studies systematically validated the positive contributions of each key component: the MAS preconditioner, the efficient Sparse-Input Woodbury update scheme, the optimal subspace descent, the conservative CCD, and the improved lower bound formulation. We plan to release our implementation as open-source code to benefit the research community.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{sample-bibliography}
+\newpage
+
+
+\end{document}
+\endinput
+

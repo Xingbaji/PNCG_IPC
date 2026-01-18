@@ -53,7 +53,17 @@ class twist_demo(pncg_ipc_deformer):
         return iter
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Twist Demo')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32)
     demos = ['twist_mat150','twist_rods']
     ipc_deformer = twist_demo(demo=demos[1])
-    ipc_deformer.visual()
+    
+    if args.headless:
+        ipc_deformer.run_headless(args.frames)
+    else:
+        ipc_deformer.visual()

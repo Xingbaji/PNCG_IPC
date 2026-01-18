@@ -108,6 +108,12 @@ class unittest_demos(pncg_ipc_deformer):
             self.step()
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Unittest Demos')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=10, help='number of frames per demo to run in headless mode')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32,default_ip=ti.i32)#, device_memory_fraction=0.9)#, kernel_profiler=True)
     demos = ['unittest_wedge_wedge', 'unittest_wedge_spike', 'unittest_spike_spike',
              'unittest_crack_spike','unittest_crack_wedge','unittest_edge_spike',
@@ -116,5 +122,8 @@ if __name__ == '__main__':
         ipc_deformer = unittest_demos(demo=demo)
         ipc_deformer.init_dirichlet()
         print('init finish')
-        ipc_deformer.visual()
+        if args.headless:
+            ipc_deformer.run_headless(args.frames)
+        else:
+            ipc_deformer.visual()
         # ipc_deformer.save_results()

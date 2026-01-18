@@ -62,10 +62,20 @@ class DK_dirichlet(pncg_base_deformer):
         return iter
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Drag Armadillo Demo')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32)
     demo = 'armadillo_collision_free'
     deformer = DK_dirichlet(demo = demo)
     deformer.get_dirichlet_points()
     deformer.init_dirichlet()
-    deformer.visual()
+    
+    if args.headless:
+        deformer.run_headless(args.frames)
+    else:
+        deformer.visual()
 

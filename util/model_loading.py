@@ -170,6 +170,32 @@ class model_loading:
             self.load_demo_n_object(demo, demo_dict)
             self.camera_position = [-2.56836436,  3.19896263,  4.71955579]
             self.camera_lookat = [-2.36268801,  3.13648799,  3.74293193]
+        elif demo == 'unittest_wedge_spike_cubic':
+            # Same as unittest_wedge_spike but using cubic barrier instead of log barrier
+            demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
+                         'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'barrier_type': 'cubic',
+                         'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/spike/spike.node'],
+                         'rotations': [[0.0, 0.0, 0.0],[180.0, 0.0, 0.0]],
+                         'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
+                         'translations': [[0.0, 0.0, 0.0], [0.0, 6.5, 0.0]]}
+            self.load_demo_n_object(demo, demo_dict)
+            self.camera_position = [-2.56836436,  3.19896263,  4.71955579]
+            self.camera_lookat = [-2.36268801,  3.13648799,  3.74293193]
+        elif demo == 'unittest_wedge_spike_adaptive':
+            # Cubic barrier with adaptive kappa (elasticity-inclusive dynamic stiffness)
+            demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
+                         'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'barrier_type': 'cubic', 'adaptive_kappa': True,
+                         'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/spike/spike.node'],
+                         'rotations': [[0.0, 0.0, 0.0],[180.0, 0.0, 0.0]],
+                         'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
+                         'translations': [[0.0, 0.0, 0.0], [0.0, 6.5, 0.0]]}
+            self.load_demo_n_object(demo, demo_dict)
+            self.camera_position = [-2.56836436,  3.19896263,  4.71955579]
+            self.camera_lookat = [-2.36268801,  3.13648799,  3.74293193]
         elif demo == 'unittest_spike_spike':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
@@ -280,6 +306,16 @@ class model_loading:
             self.dHat = demo_dict['dHat']
             self.adj = int(demo_dict['adj'])
             self.ground_barrier = int(demo_dict['ground_barrier'])
+            # Barrier type: 'log' (default) or 'cubic'
+            if 'barrier_type' in demo_dict:
+                self.barrier_type = demo_dict['barrier_type']
+            else:
+                self.barrier_type = 'log'
+            # Adaptive kappa: dynamically computed per-constraint kappa (cubic barrier only)
+            if 'adaptive_kappa' in demo_dict:
+                self.adaptive_kappa = demo_dict['adaptive_kappa']
+            else:
+                self.adaptive_kappa = False
 
     def add_object(self, model_path, translation=[0., 0., 0.], rotation=[0., 0., 0.], scale=[1, 1, 1]):
         model = Patcher.load_mesh_rawdata(model_path)

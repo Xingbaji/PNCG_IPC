@@ -320,3 +320,9 @@ class pncg_base_deformer(base_deformer):
         self.update_v_and_bound()
         self.frame += 1
         return iter
+
+    def run_headless(self, n_frames=300):
+        print(f"Running in headless mode for {n_frames} frames...")
+        for i in range(n_frames):
+            self.step()
+        print("Headless run finished.")

@@ -1,3 +1,4 @@
+import time
 from algorithm.pncg_base_collision_free import *
 from math_utils.graphic_util import *
 from util.model_loading import *
@@ -319,22 +320,62 @@ class collision_detection_module(pncg_base_deformer):
                 id_old = ti.atomic_sub(self.cell_start_E[hash_id],1)
                 self.cell_entries_E[id_old-1] = i
 
-    def find_cnts(self,PRINT=False):
+    def find_cnts(self, PRINT=False, TIME_LOG=False):
+        if TIME_LOG:
+            ti.sync()
+            t_start = time.perf_counter()
+
         self.cid_root.deactivate_all()
-        # EE
+
+        # EE - build hash grid for edges
+        if TIME_LOG:
+            ti.sync()
+            t_hash_start = time.perf_counter()
+
         self.cell_start_E.fill(0)
         self.cell_entries_E.fill(-1)
         self.count_cells_edges()
         self.pse_E.run(self.cell_start_E)
         self.fill_in_cells_edges()
-        self.find_constraints_EE()
-        # PT
+
+        # PT - build hash grid for points
         self.cell_start_P.fill(0)
         self.cell_entries_P.fill(-1)
         self.count_cells_points()
         self.pse_P.run(self.cell_start_P)
         self.fill_in_cells_points()
+
+        if TIME_LOG:
+            ti.sync()
+            t_hash_end = time.perf_counter()
+
+        # Find EE constraints
+        if TIME_LOG:
+            ti.sync()
+            t_ee_start = time.perf_counter()
+
+        self.find_constraints_EE()
+
+        if TIME_LOG:
+            ti.sync()
+            t_ee_end = time.perf_counter()
+
+        # Find PT constraints
+        if TIME_LOG:
+            ti.sync()
+            t_pt_start = time.perf_counter()
+
         self.find_constraints_PT()
+
+        if TIME_LOG:
+            ti.sync()
+            t_pt_end = time.perf_counter()
+            t_total = t_pt_end - t_start
+            print(f"[Hash Time] build: {(t_hash_end - t_hash_start)*1000:.2f}ms, "
+                  f"PT: {(t_pt_end - t_pt_start)*1000:.2f}ms, "
+                  f"EE: {(t_ee_end - t_ee_start)*1000:.2f}ms, "
+                  f"total: {t_total*1000:.2f}ms")
+
         if PRINT == True:
             N = self.print_cnts()
             return N

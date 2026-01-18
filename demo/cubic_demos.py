@@ -102,6 +102,12 @@ class cubic_demos(pncg_base_deformer):
         return iter
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Cubic Demos')
+    parser.add_argument('--headless', action='store_true', help='run without GUI')
+    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
+    args = parser.parse_args()
+
     ti.init(arch=ti.gpu, default_fp=ti.f32)#, device_memory_fraction=0.9)#,kernel_profiler=True),advanced_optimization=True,fast_math=True)
     demos = ['cube','cube_10','cube_20','cube_40']
     demo = demos[3]
@@ -110,5 +116,9 @@ if __name__ == '__main__':
     deformer.get_dirichlet_points()
     deformer.init_dirichlet()
     print('init finish')
-    deformer.visual()
+    
+    if args.headless:
+        deformer.run_headless(args.frames)
+    else:
+        deformer.visual()
     # deformer.save_new(1000,SAVE_OBJ=False)
