@@ -11,32 +11,39 @@ docs/
 ├── algorithm/               # 算法实现文档
 ├── design/                  # 设计与规划文档
 ├── reference/               # 参考实现文档
-└── papers/                  # 论文和源文件
+├── papers/                  # 论文和源文件
+└── archive/                 # 归档文档
 ```
+
+---
+
+## MAS Preconditioner 核心文档
+
+`mas_preconditioner_pkg/` 模块的主要文档：
+
+| 文档 | 描述 | 状态 |
+|------|------|------|
+| [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | **主文档** - 完整实现指南 | ✅ 活跃 |
+| [MAS_PRECONDITIONER_PKG_TESTING.md](algorithm/MAS_PRECONDITIONER_PKG_TESTING.md) | 测试框架和用例 | ✅ 活跃 |
+| [MAS_PRECONDITIONER_OPTIMIZATION_TODO.md](design/MAS_PRECONDITIONER_OPTIMIZATION_TODO.md) | 优化待办和计划 | ✅ 活跃 |
 
 ---
 
 ## 算法实现 (algorithm/)
 
-核心算法的实现细节和测试文档。
-
 | 文档 | 描述 |
 |------|------|
-| [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | MAS预条件器实现 |
-| [MAS_IMPLEMENTATION_DETAILS.md](algorithm/MAS_IMPLEMENTATION_DETAILS.md) | MAS算法详细说明 |
+| [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | MAS预条件器完整实现 |
+| [MAS_PRECONDITIONER_PKG_TESTING.md](algorithm/MAS_PRECONDITIONER_PKG_TESTING.md) | MAS包测试框架 |
 | [GCP_IMPLEMENTATION.md](algorithm/GCP_IMPLEMENTATION.md) | 几何接触势能(GCP)实现 |
 | [CUBIC_BARRIER_IMPLEMENTATION.md](algorithm/CUBIC_BARRIER_IMPLEMENTATION.md) | 三次障碍函数实现 |
-| [MAS_PRECONDITIONER_PKG_TESTING.md](algorithm/MAS_PRECONDITIONER_PKG_TESTING.md) | MAS包测试框架 |
 
 ---
 
 ## 设计文档 (design/)
 
-架构设计、集成方案和优化计划。
-
 | 文档 | 描述 |
 |------|------|
-| [MAS_MESHTAICHI_INTEGRATION_DESIGN.md](design/MAS_MESHTAICHI_INTEGRATION_DESIGN.md) | MeshTaichi集成设计 |
 | [MESHTAICHI_ARCHITECTURE.md](design/MESHTAICHI_ARCHITECTURE.md) | MeshTaichi架构说明 |
 | [MAS_PRECONDITIONER_OPTIMIZATION_TODO.md](design/MAS_PRECONDITIONER_OPTIMIZATION_TODO.md) | MAS优化待办事项 |
 
@@ -119,12 +126,24 @@ docs/
 
 ---
 
+## 归档文档 (archive/)
+
+历史文档，内容已整合到主文档或已过时。
+
+| 文档 | 原因 |
+|------|------|
+| MAS_IMPLEMENTATION_DETAILS.md | 内容已整合到 MAS_PRECONDITIONER_IMPLEMENTATION.md |
+| MAS_PNCG_IMPLEMENTATION_PLAN.md | 算法计划，内容已实现 |
+| MAS_MESHTAICHI_INTEGRATION_DESIGN.md | 未来设计，暂时归档 |
+
+---
+
 ## 文档状态说明
 
-- ✅ 已完成且最新
+- ✅ 活跃/最新
 - 🔄 需要更新
 - 📝 草稿状态
-- ❌ 已废弃
+- 📦 已归档
 
 ```bash
 # 查看最近修改的文档
