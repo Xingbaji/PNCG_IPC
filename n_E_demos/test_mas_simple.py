@@ -304,9 +304,9 @@ def run_benchmark(frames=50, demo='eight_E_stiffness_test', iter_max=200, grad_t
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simple MAS Preconditioner Test')
-    parser.add_argument('--inversion', type=str, default='incomplete',
+    parser.add_argument('--inversion', type=str, default='gauss_jordan',
                         choices=['cholesky', 'gauss_jordan', 'oneway_gj', 'incomplete'],
-                        help='Block inversion method for MAS (default: incomplete)')
+                        help='Block inversion method for MAS (default: gauss_jordan)')
     parser.add_argument('--frames', type=int, default=5, help='Number of frames')
     parser.add_argument('--iter_max', type=int, default=30, help='Max iterations per frame')
     parser.add_argument('--grad_tol', type=float, default=1e-5, help='Gradient inf norm tolerance')

@@ -200,8 +200,8 @@ class SimpleAPIMixin:
                 block_i = vi // BANKSIZE
                 lane_i = vi % BANKSIZE
 
-                # Diagonal entry
-                sym_idx = lane_i * (lane_i + 1) // 2 + lane_i
+                # Diagonal entry: sym_idx = BANKSIZE * lane - lane * (lane + 1) / 2 + lane
+                sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_i
                 diag_mat = ti.Matrix.identity(ti.f32, 3) * diag_val
                 ti.atomic_add(self.block_matrices[block_i, sym_idx], diag_mat)
 
@@ -211,10 +211,10 @@ class SimpleAPIMixin:
                     block_j = vj // BANKSIZE
                     if block_j == block_i:
                         lane_j = vj % BANKSIZE
-                        # Symmetric storage: always store (max, min)
-                        max_lane = ti.max(lane_i, lane_j)
+                        # Symmetric storage: use upper triangle (min_lane, max_lane)
                         min_lane = ti.min(lane_i, lane_j)
-                        sym_idx_ij = max_lane * (max_lane + 1) // 2 + min_lane
+                        max_lane = ti.max(lane_i, lane_j)
+                        sym_idx_ij = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
                         # Coupling term (simplified)
                         coupling = ti.Matrix.identity(ti.f32, 3) * (diag_val * 0.1)
                         ti.atomic_add(self.block_matrices[block_i, sym_idx_ij], coupling)
@@ -226,7 +226,8 @@ class SimpleAPIMixin:
         for i in range(self.n_verts):
             block_id = i // BANKSIZE
             lane_id = i % BANKSIZE
-            sym_idx = lane_id * (lane_id + 1) // 2 + lane_id
+            # Correct symmetric index formula
+            sym_idx = BANKSIZE * lane_id - lane_id * (lane_id + 1) // 2 + lane_id
             self.block_matrices[block_id, sym_idx] += ti.Matrix.identity(ti.f32, 3) * mass_scale
 
     # ========================================================================

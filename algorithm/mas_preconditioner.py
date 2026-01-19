@@ -1623,8 +1623,9 @@ class MASPreconditioner:
                                 for di in ti.static(range(3)):
                                     for dj in ti.static(range(3)):
                                         ti.atomic_add(self.block_matrices[coarse_block_r, coarse_sym_idx][di, dj], mat3[di, dj])
-                                        # Add diagonal entries twice for self-loops (row == col)
-                                        if row_idx == col_idx:
+                                        # When rdx == cdx (coarse diagonal), both (row,col) and (col,row)
+                                        # map to same position, so add transpose contribution
+                                        if coarse_lane_r == coarse_lane_c and row_idx != col_idx:
                                             ti.atomic_add(self.block_matrices[coarse_block_r, coarse_sym_idx][di, dj], mat3[dj, di])
                             else:
                                 # Transpose for lower triangle storage

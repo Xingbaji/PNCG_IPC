@@ -691,7 +691,382 @@ class TestMASPreconditionerIntegration(unittest.TestCase):
 
 
 # ==============================================================================
-# Performance Benchmarks
+# Speed Tests for Individual Modules
+# ==============================================================================
+
+class ModuleSpeedTests(unittest.TestCase):
+    """Speed tests for individual MAS modules."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up test infrastructure for speed tests."""
+        from algorithm.pncg_base_collision_free import pncg_base_deformer
+        from algorithm.mas_preconditioner_pkg import MASPreconditioner
+        from algorithm.mas_preconditioner_pkg import warp_utils
+        from algorithm.mas_preconditioner_pkg.spmv import SRBKSpMV
+        from algorithm.mas_preconditioner_pkg import constants
+
+        cls.MASPreconditioner = MASPreconditioner
+        cls.warp_utils = warp_utils
+        cls.SRBKSpMV = SRBKSpMV
+        cls.constants = constants
+
+        # Create solver for testing
+        @ti.data_oriented
+        class SpeedTestSolver(pncg_base_deformer):
+            def __init__(self):
+                super().__init__(demo='cube')
+                self.mesh.verts.place({'z': ti.types.vector(3, float)})
+
+        try:
+            cls.solver = SpeedTestSolver()
+            cls.solver_available = True
+        except Exception as e:
+            print(f"[Warning] Speed test solver unavailable: {e}")
+            cls.solver_available = False
+            cls.solver = None
+
+        # Create warp utils speed tester
+        @ti.data_oriented
+        class WarpSpeedTester:
+            def __init__(self, n_elements: int):
+                self.n_elements = n_elements
+                self.input_u32 = ti.field(dtype=ti.u32, shape=n_elements)
+                self.output_i32 = ti.field(dtype=ti.i32, shape=n_elements)
+                self.output_u32 = ti.field(dtype=ti.u32, shape=n_elements)
+
+            @ti.kernel
+            def bench_popcount(self):
+                for i in self.input_u32:
+                    self.output_i32[i] = warp_utils.popcount_u32(self.input_u32[i])
+
+            @ti.kernel
+            def bench_clz(self):
+                for i in self.input_u32:
+                    self.output_i32[i] = warp_utils.count_leading_zeros_u32(self.input_u32[i])
+
+            @ti.kernel
+            def bench_ffs(self):
+                for i in self.input_u32:
+                    self.output_i32[i] = warp_utils.find_first_set_u32(self.input_u32[i])
+
+            @ti.kernel
+            def bench_bit_reverse(self):
+                for i in self.input_u32:
+                    self.output_u32[i] = warp_utils.bit_reverse_u32(self.input_u32[i])
+
+            @ti.kernel
+            def bench_lanemask(self):
+                for i in self.input_u32:
+                    lane_id = ti.i32(self.input_u32[i] % 32)
+                    self.output_u32[i] = warp_utils.lanemask_lt(lane_id)
+
+        cls.WarpSpeedTester = WarpSpeedTester
+
+    def setUp(self):
+        if not self.solver_available:
+            self.skipTest("Solver not available for speed tests")
+
+    def _run_timed_test(self, func, n_runs: int = 10, warmup: int = 2) -> dict:
+        """Run a function multiple times and collect timing statistics."""
+        times = []
+        for i in range(n_runs + warmup):
+            ti.sync()
+            start = time.perf_counter()
+            func()
+            ti.sync()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+            if i >= warmup:
+                times.append(elapsed_ms)
+
+        return {
+            'mean_ms': np.mean(times),
+            'std_ms': np.std(times),
+            'min_ms': np.min(times),
+            'max_ms': np.max(times),
+            'times': times
+        }
+
+    def test_speed_warp_utils_popcount(self):
+        """Speed test: popcount operation throughput."""
+        n_elements = 100000
+        tester = self.WarpSpeedTester(n_elements)
+
+        # Initialize random input
+        np.random.seed(42)
+        tester.input_u32.from_numpy(np.random.randint(0, 2**32, n_elements, dtype=np.uint32))
+
+        stats = self._run_timed_test(tester.bench_popcount, n_runs=20)
+
+        throughput = n_elements / (stats['mean_ms'] * 1e-3) / 1e6  # Million ops/sec
+        print(f"\n  [popcount] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"             Throughput: {throughput:.2f} M ops/sec")
+
+        # Verify correctness
+        tester.bench_popcount()
+        output = tester.output_i32.to_numpy()
+        input_np = tester.input_u32.to_numpy()
+        expected = np.array([bin(x).count('1') for x in input_np], dtype=np.int32)
+        np.testing.assert_array_equal(output, expected)
+
+    def test_speed_warp_utils_clz(self):
+        """Speed test: count leading zeros operation."""
+        n_elements = 100000
+        tester = self.WarpSpeedTester(n_elements)
+
+        np.random.seed(43)
+        tester.input_u32.from_numpy(np.random.randint(0, 2**32, n_elements, dtype=np.uint32))
+
+        stats = self._run_timed_test(tester.bench_clz, n_runs=20)
+
+        throughput = n_elements / (stats['mean_ms'] * 1e-3) / 1e6
+        print(f"\n  [clz] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"        Throughput: {throughput:.2f} M ops/sec")
+
+    def test_speed_warp_utils_ffs(self):
+        """Speed test: find first set operation."""
+        n_elements = 100000
+        tester = self.WarpSpeedTester(n_elements)
+
+        np.random.seed(44)
+        tester.input_u32.from_numpy(np.random.randint(0, 2**32, n_elements, dtype=np.uint32))
+
+        stats = self._run_timed_test(tester.bench_ffs, n_runs=20)
+
+        throughput = n_elements / (stats['mean_ms'] * 1e-3) / 1e6
+        print(f"\n  [ffs] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"        Throughput: {throughput:.2f} M ops/sec")
+
+    def test_speed_warp_utils_bit_reverse(self):
+        """Speed test: bit reverse operation."""
+        n_elements = 100000
+        tester = self.WarpSpeedTester(n_elements)
+
+        np.random.seed(45)
+        tester.input_u32.from_numpy(np.random.randint(0, 2**32, n_elements, dtype=np.uint32))
+
+        stats = self._run_timed_test(tester.bench_bit_reverse, n_runs=20)
+
+        throughput = n_elements / (stats['mean_ms'] * 1e-3) / 1e6
+        print(f"\n  [bit_reverse] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"                Throughput: {throughput:.2f} M ops/sec")
+
+    def test_speed_spmv_sort(self):
+        """Speed test: SpMV triplet sorting."""
+        n_verts = 1000
+        n_triplets = 5000
+        spmv = self.SRBKSpMV(n_triplets, n_verts * 3)
+
+        # Add random triplets
+        np.random.seed(46)
+        identity = np.eye(3, dtype=np.float64)
+        for _ in range(n_triplets):
+            i = np.random.randint(0, n_verts)
+            j = np.random.randint(0, n_verts)
+            spmv.add_triplet(i, j, ti.Matrix(identity))
+
+        def sort_func():
+            spmv.sorted = False
+            spmv.sort_by_row()
+
+        stats = self._run_timed_test(sort_func, n_runs=10)
+
+        print(f"\n  [SpMV sort] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"              {n_triplets} triplets, {n_verts} vertices")
+
+    def test_speed_spmv_multiply(self):
+        """Speed test: SpMV multiplication."""
+        n_verts = 500
+        spmv = self.SRBKSpMV(n_verts * 10, n_verts * 3)
+
+        # Create a sparse matrix (tridiagonal-like structure)
+        identity = np.eye(3, dtype=np.float64)
+        for i in range(n_verts):
+            spmv.add_triplet(i, i, ti.Matrix(identity))
+            if i > 0:
+                spmv.add_triplet(i-1, i, ti.Matrix(identity * 0.1))
+            if i < n_verts - 1:
+                spmv.add_triplet(i, i+1, ti.Matrix(identity * 0.1))
+
+        spmv.sort_by_row()
+
+        x = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+        y = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+
+        np.random.seed(47)
+        x.from_numpy(np.random.randn(n_verts, 3).astype(np.float64))
+
+        def spmv_func():
+            spmv.spmv(x, y, alpha=1.0, beta=0.0)
+
+        stats = self._run_timed_test(spmv_func, n_runs=20)
+
+        print(f"\n  [SpMV multiply] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"                  {n_verts} vertices, {spmv.n_triplets[None]} triplets")
+
+    def test_speed_mas_initialization(self):
+        """Speed test: MAS preconditioner initialization."""
+        def init_func():
+            mas = self.MASPreconditioner(
+                self.solver.n_verts,
+                self.solver.n_cells,
+                self.solver.mesh,
+                use_metis=False
+            )
+            return mas
+
+        stats = self._run_timed_test(init_func, n_runs=5, warmup=1)
+
+        print(f"\n  [MAS init] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"             {self.solver.n_verts} vertices, {self.solver.n_cells} cells")
+
+    def test_speed_mas_hierarchy_build(self):
+        """Speed test: MAS hierarchy building."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+
+        def hierarchy_func():
+            mas.hierarchy_built = False
+            mas.build_hierarchy()
+
+        stats = self._run_timed_test(hierarchy_func, n_runs=5, warmup=1)
+
+        print(f"\n  [MAS hierarchy] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"                  {mas.actual_levels} levels built")
+
+    def test_speed_mas_assembly(self):
+        """Speed test: MAS matrix assembly."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+        mas.build_hierarchy()
+
+        def assembly_func():
+            mas.assemble_block_matrices(self.solver, use_full_hessian=True)
+
+        stats = self._run_timed_test(assembly_func, n_runs=10, warmup=2)
+
+        print(f"\n  [MAS assembly] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+
+    def test_speed_mas_inversion_gauss_jordan(self):
+        """Speed test: MAS block inversion (Gauss-Jordan)."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+        mas.build_hierarchy()
+        mas.assemble_block_matrices(self.solver, use_full_hessian=True)
+
+        def inversion_func():
+            mas.matrices_inverted = False
+            mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=False)
+
+        stats = self._run_timed_test(inversion_func, n_runs=5, warmup=1)
+
+        print(f"\n  [MAS inversion GJ] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+
+    def test_speed_mas_inversion_oneway_gj(self):
+        """Speed test: MAS block inversion (One-way Gauss-Jordan)."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+        mas.build_hierarchy()
+        mas.assemble_block_matrices(self.solver, use_full_hessian=True)
+
+        def inversion_func():
+            mas.matrices_inverted = False
+            mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+
+        stats = self._run_timed_test(inversion_func, n_runs=5, warmup=1)
+
+        print(f"\n  [MAS inversion One-way GJ] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+
+    def test_speed_mas_inversion_diagonal(self):
+        """Speed test: MAS block inversion (Diagonal only)."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+        mas.build_hierarchy()
+        mas.assemble_block_matrices(self.solver, use_full_hessian=True)
+
+        def inversion_func():
+            mas.matrices_inverted = False
+            mas.invert_block_matrices(use_full_inversion=False)
+
+        stats = self._run_timed_test(inversion_func, n_runs=10, warmup=2)
+
+        print(f"\n  [MAS inversion Diagonal] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+
+    def test_speed_mas_apply(self):
+        """Speed test: MAS preconditioner apply."""
+        mas = self.MASPreconditioner(
+            self.solver.n_verts,
+            self.solver.n_cells,
+            self.solver.mesh,
+            use_metis=False
+        )
+        mas.build_hierarchy()
+        mas.assemble_block_matrices(self.solver, use_full_hessian=True)
+        mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+
+        # Set gradient
+        @ti.kernel
+        def set_grad(mesh: ti.template()):
+            for vert in mesh.verts:
+                vert.grad = ti.Vector([1.0, 0.5, -0.3])
+
+        set_grad(self.solver.mesh)
+
+        def apply_func():
+            mas.apply()
+
+        stats = self._run_timed_test(apply_func, n_runs=20, warmup=3)
+
+        print(f"\n  [MAS apply] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+
+    def test_speed_mas_full_pipeline(self):
+        """Speed test: Complete MAS rebuild + apply pipeline."""
+        def pipeline_func():
+            mas = self.MASPreconditioner(
+                self.solver.n_verts,
+                self.solver.n_cells,
+                self.solver.mesh,
+                use_metis=False
+            )
+            mas.rebuild(self.solver, use_full_hessian=True, use_full_inversion=True)
+
+            @ti.kernel
+            def set_grad(mesh: ti.template()):
+                for vert in mesh.verts:
+                    vert.grad = ti.Vector([1.0, 0.5, -0.3])
+            set_grad(self.solver.mesh)
+
+            mas.apply()
+
+        stats = self._run_timed_test(pipeline_func, n_runs=3, warmup=1)
+
+        print(f"\n  [MAS full pipeline] {stats['mean_ms']:.3f} ms ± {stats['std_ms']:.3f} ms")
+        print(f"                      (init + hierarchy + assembly + inversion + apply)")
+
+
+# ==============================================================================
+# Performance Benchmarks (Detailed)
 # ==============================================================================
 
 class MASBenchmarks:
@@ -908,7 +1283,7 @@ class MASBenchmarks:
 # Main Entry Point
 # ==============================================================================
 
-def run_tests(verbosity=2):
+def run_tests(verbosity=2, include_speed_tests=False):
     """Run all unit tests."""
     init_taichi()
 
@@ -916,7 +1291,7 @@ def run_tests(verbosity=2):
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
 
-    # Add test classes
+    # Add test classes (correctness tests)
     suite.addTests(loader.loadTestsFromTestCase(TestConstants))
     suite.addTests(loader.loadTestsFromTestCase(TestWarpUtils))
     suite.addTests(loader.loadTestsFromTestCase(TestSRBKSpMV))
@@ -924,7 +1299,25 @@ def run_tests(verbosity=2):
     suite.addTests(loader.loadTestsFromTestCase(TestHierarchy))
     suite.addTests(loader.loadTestsFromTestCase(TestMASPreconditionerIntegration))
 
+    # Optionally add speed tests
+    if include_speed_tests:
+        suite.addTests(loader.loadTestsFromTestCase(ModuleSpeedTests))
+
     # Run tests
+    runner = unittest.TextTestRunner(verbosity=verbosity)
+    result = runner.run(suite)
+
+    return result
+
+
+def run_speed_tests(verbosity=2):
+    """Run speed tests only."""
+    init_taichi()
+
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+    suite.addTests(loader.loadTestsFromTestCase(ModuleSpeedTests))
+
     runner = unittest.TextTestRunner(verbosity=verbosity)
     result = runner.run(suite)
 
@@ -939,10 +1332,39 @@ def run_benchmarks(demo='eight_E_stiffness_test'):
     benchmarks.run_all()
 
 
+def print_speed_test_summary():
+    """Print a summary table of speed test results."""
+    print("\n" + "="*70)
+    print("SPEED TEST SUMMARY")
+    print("="*70)
+    print("""
+Available speed tests:
+  - test_speed_warp_utils_popcount    : Bit counting throughput
+  - test_speed_warp_utils_clz         : Count leading zeros throughput
+  - test_speed_warp_utils_ffs         : Find first set throughput
+  - test_speed_warp_utils_bit_reverse : Bit reversal throughput
+  - test_speed_spmv_sort              : SpMV triplet sorting
+  - test_speed_spmv_multiply          : SpMV multiplication
+  - test_speed_mas_initialization     : MAS preconditioner init
+  - test_speed_mas_hierarchy_build    : Hierarchy construction
+  - test_speed_mas_assembly           : Block matrix assembly
+  - test_speed_mas_inversion_gauss_jordan : Full GJ inversion
+  - test_speed_mas_inversion_oneway_gj    : One-way GJ inversion
+  - test_speed_mas_inversion_diagonal     : Diagonal-only inversion
+  - test_speed_mas_apply              : Preconditioner apply
+  - test_speed_mas_full_pipeline      : Complete rebuild + apply
+
+Run with: python test_mas_pkg_unittest.py --speed
+Or:       python test_mas_pkg_unittest.py ModuleSpeedTests
+""")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='MAS Preconditioner Package Unit Tests')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose test output')
     parser.add_argument('--benchmark', action='store_true', help='Run performance benchmarks only')
+    parser.add_argument('--speed', action='store_true', help='Run speed tests only')
+    parser.add_argument('--all', action='store_true', help='Run all tests including speed tests')
     parser.add_argument('--demo', type=str, default='eight_E_stiffness_test',
                         help='Demo name for benchmarks')
     parser.add_argument('test_name', nargs='?', default=None,
@@ -951,6 +1373,10 @@ if __name__ == '__main__':
 
     if args.benchmark:
         run_benchmarks(demo=args.demo)
+    elif args.speed:
+        print_speed_test_summary()
+        result = run_speed_tests(verbosity=2)
+        sys.exit(0 if result.wasSuccessful() else 1)
     else:
         if args.test_name:
             # Run specific test
@@ -967,8 +1393,9 @@ if __name__ == '__main__':
 
             runner = unittest.TextTestRunner(verbosity=2 if args.verbose else 1)
             result = runner.run(suite)
+            sys.exit(0 if result.wasSuccessful() else 1)
         else:
-            result = run_tests(verbosity=2 if args.verbose else 1)
+            result = run_tests(verbosity=2 if args.verbose else 1, include_speed_tests=args.all)
 
             # Exit with appropriate code
             sys.exit(0 if result.wasSuccessful() else 1)

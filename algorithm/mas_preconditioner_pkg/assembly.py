@@ -131,9 +131,11 @@ class AssemblyMixin:
             H_e = dFdx.transpose() @ temp
             H_e = para * H_e
 
-            # Process all 16 vertex pairs with optimized branching
+            # Process vertex pairs for symmetric Hessian storage
+            # Only process upper triangle (i <= j) of the element Hessian
+            # to avoid double-counting symmetric entries
             for i in ti.static(range(4)):
-                for j in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):  # j >= i: upper triangle only
                     warp_i = warp_ids[i]
                     warp_j = warp_ids[j]
                     lane_i = lane_ids[i]
@@ -141,11 +143,13 @@ class AssemblyMixin:
 
                     if warp_i == warp_j:
                         # Same warp: direct assembly to Level 0 block
+                        # Extract 3x3 sub-block from H_e[i,j]
                         sub_block = ti.Matrix.zero(ti.f32, 3, 3)
                         for di in ti.static(range(3)):
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
 
+                        # Store in symmetric storage at position (min_lane, max_lane)
                         if lane_i <= lane_j:
                             sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
                             for di in ti.static(range(3)):
@@ -153,10 +157,11 @@ class AssemblyMixin:
                                     ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj],
                                                   sub_block[di, dj])
                         else:
+                            # lane_i > lane_j: need to transpose when storing
                             sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                             for di in ti.static(range(3)):
                                 for dj in ti.static(range(3)):
-                                    ti.atomic_add(self.block_matrices[warp_j, sym_idx][di, dj],
+                                    ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj],
                                                   sub_block[dj, di])
                     else:
                         # Cross-warp: propagate to coarse level via goingNext
@@ -182,6 +187,7 @@ class AssemblyMixin:
                                 coarse_lane_i = vert_i % BANKSIZE
                                 coarse_lane_j = vert_j % BANKSIZE
 
+                                # Handle symmetric storage at coarse level
                                 if coarse_lane_i <= coarse_lane_j:
                                     sym_idx = BANKSIZE * coarse_lane_i - coarse_lane_i * (coarse_lane_i + 1) // 2 + coarse_lane_j
                                     for di in ti.static(range(3)):
@@ -189,10 +195,11 @@ class AssemblyMixin:
                                             ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj],
                                                           sub_block[di, dj])
                                 else:
+                                    # Transpose for lower triangle
                                     sym_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
-                                            ti.atomic_add(self.block_matrices[coarse_warp_j, sym_idx][di, dj],
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj],
                                                           sub_block[dj, di])
                                 break
 
@@ -203,11 +210,6 @@ class AssemblyMixin:
         Add full elastic Hessian contribution with proper off-diagonal coupling.
         (Original implementation - fallback for non-CUDA backends)
         """
-        from math_utils.matrix_util import compute_dFdx
-        from math_utils.elastic_util import (
-            compute_d2PsidF2_ARAP_filter, compute_d2PsidF2_SNH, compute_d2PsidF2_FCR_filter
-        )
-
         for c in self.mesh.cells:
             W = c.W
             para = W * dt * dt
@@ -235,6 +237,7 @@ class AssemblyMixin:
             H_e = dFdx.transpose() @ temp
             H_e = para * H_e
 
+            # Process all 16 vertex pairs
             for i in ti.static(range(4)):
                 for j in ti.static(range(4)):
                     vi = v_ids[i]
@@ -246,18 +249,34 @@ class AssemblyMixin:
                         lane_i = vi % BANKSIZE
                         lane_j = vj % BANKSIZE
 
+                        # Extract 3x3 sub-block from H_e
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
                         for di in ti.static(range(3)):
                             for dj in ti.static(range(3)):
-                                val = H_e[i * 3 + di, j * 3 + dj]
-                                if lane_i <= lane_j:
-                                    sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
-                                    ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj], val)
-                                else:
-                                    sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
-                                    ti.atomic_add(self.block_matrices[warp_j, sym_idx][dj, di], val)
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
+                        # For symmetric storage, handle upper/lower triangle
+                        if lane_i <= lane_j:
+                            sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj], sub_block[di, dj])
+                        else:
+                            # Transpose for lower triangle
+                            sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj], sub_block[dj, di])
                     else:
+                        # Cross-warp: propagate to coarse level via goingNext
                         vert_i = vi
                         vert_j = vj
+
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
+                        for di in ti.static(range(3)):
+                            for dj in ti.static(range(3)):
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
                         for _ in range(self.level_num - 1):
                             vert_i = self.going_next[vert_i]
                             vert_j = self.going_next[vert_j]
@@ -269,18 +288,21 @@ class AssemblyMixin:
                             coarse_warp_j = vert_j // BANKSIZE
 
                             if coarse_warp_i == coarse_warp_j:
-                                lane_i = vert_i % BANKSIZE
-                                lane_j = vert_j % BANKSIZE
+                                coarse_lane_i = vert_i % BANKSIZE
+                                coarse_lane_j = vert_j % BANKSIZE
 
-                                for di in ti.static(range(3)):
-                                    for dj in ti.static(range(3)):
-                                        val = H_e[i * 3 + di, j * 3 + dj]
-                                        if lane_i <= lane_j:
-                                            sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
-                                            ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val)
-                                        else:
-                                            sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
-                                            ti.atomic_add(self.block_matrices[coarse_warp_j, sym_idx][dj, di], val)
+                                # Handle symmetric storage at coarse level
+                                if coarse_lane_i <= coarse_lane_j:
+                                    sym_idx = BANKSIZE * coarse_lane_i - coarse_lane_i * (coarse_lane_i + 1) // 2 + coarse_lane_j
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], sub_block[di, dj])
+                                else:
+                                    # Transpose for lower triangle
+                                    sym_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], sub_block[dj, di])
                                 break
 
     @ti.kernel
@@ -578,7 +600,9 @@ class AssemblyMixin:
                                 for di in ti.static(range(3)):
                                     for dj in ti.static(range(3)):
                                         ti.atomic_add(self.block_matrices[coarse_block_r, coarse_sym_idx][di, dj], mat3[di, dj])
-                                        if row_idx == col_idx:
+                                        # When rdx == cdx (coarse diagonal), both (row,col) and (col,row)
+                                        # map to same position, so add transpose contribution
+                                        if coarse_lane_r == coarse_lane_c and row_idx != col_idx:
                                             ti.atomic_add(self.block_matrices[coarse_block_r, coarse_sym_idx][di, dj], mat3[dj, di])
                             else:
                                 coarse_sym_idx = BANKSIZE * coarse_lane_c - coarse_lane_c * (coarse_lane_c + 1) // 2 + coarse_lane_r
@@ -663,15 +687,15 @@ class AssemblyMixin:
             except Exception:
                 pass
 
-        # Add regularization for numerical stability (Level 0)
-        self._add_regularization(1e-6)
+        # Note: regularization disabled for debugging - enable if needed
+        # self._add_regularization(1e-3)
 
         # Aggregate fine-level block entries to coarse levels
         if self.hierarchy_built and self.actual_levels > 1:
             self._aggregate_fine_to_coarse(self.actual_levels)
             print(f"[MAS] Fine-to-coarse aggregation complete ({self.actual_levels} levels)")
 
-            self._add_regularization_coarse(1e-6, self.actual_levels)
+            # self._add_regularization_coarse(1e-3, self.actual_levels)
 
         self.matrices_assembled = True
         print("[MAS] Block matrices assembled")
