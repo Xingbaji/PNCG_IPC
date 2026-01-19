@@ -45,32 +45,38 @@ class base_deformer:
             self.compute_dPsidx = compute_dPsidx_ARAP # dPsidx = \frac{\partial \PSi}{\partial x}
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP # d2Psidx2 is \frac{\partial^2 \PSi}{\partial x^2}
             self.compute_p_d2Psidx2_p = compute_pHp_ARAP
+            self.compute_d2PsidF2 = compute_d2PsidF2_ARAP  # Full 9x9 Hessian in F-space
         elif elastic == 'SNH': # stable neo-hookean
             self.compute_Psi = compute_Psi_SNH
             self.compute_dPsidx = compute_dPsidx_SNH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_SNH
             self.compute_p_d2Psidx2_p = compute_pHp_SNH
+            self.compute_d2PsidF2 = compute_d2PsidF2_SNH
         elif elastic=='ARAP_filter':
             # ARAP_filter: filter the eigen value to make the hessian matrix spd
             self.compute_Psi = compute_Psi_ARAP
             self.compute_dPsidx = compute_dPsidx_ARAP
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_filter
             self.compute_p_d2Psidx2_p = compute_pHp_ARAP_filter
+            self.compute_d2PsidF2 = compute_d2PsidF2_ARAP_filter
         elif elastic=='FCR': # fixed corotated
             self.compute_Psi = compute_Psi_FCR
             self.compute_dPsidx = compute_dPsidx_FCR
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_FCR
             self.compute_p_d2Psidx2_p = compute_pHp_FCR
+            self.compute_d2PsidF2 = compute_d2PsidF2_FCR
         elif elastic=='FCR_filter': # fixed corotated with filterd ARAP eigen value
             self.compute_Psi = compute_Psi_FCR
             self.compute_dPsidx = compute_dPsidx_FCR
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_FCR_filter
             self.compute_p_d2Psidx2_p = compute_pHp_FCR_filter
+            self.compute_d2PsidF2 = compute_d2PsidF2_FCR_filter
         elif elastic == 'NH': # neo-hookean
             self.compute_Psi = compute_Psi_NH
             self.compute_dPsidx = compute_dPsidx_NH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH
             self.compute_p_d2Psidx2_p = compute_pHp_NH
+            self.compute_d2PsidF2 = compute_d2PsidF2_NH
         else:
             print('Wrong elastic type')
 

@@ -18,6 +18,7 @@ import numpy as np
 from algorithm.collision_detection_bvh import *
 from util.model_loading import *
 from algorithm.mas_preconditioner import MASPreconditioner, BANKSIZE
+from math_utils.matrix_util import compute_dFdx_p, compute_dFdxT_p
 
 # Constants
 RESTART_THRESHOLD = 0.3  # Powell's restart threshold (delta)
@@ -47,8 +48,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.iter_max = model.iter_max
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
-        self.adj = model.adj
-        self.ground_barrier = model.ground_barrier
+        self.adj = getattr(model, 'adj', 0)  # Default to 0 for collision-free demos
+        self.ground_barrier = getattr(model, 'ground_barrier', 0)  # Default to 0 for collision-free demos
         self.frame = 0
         self.SMALL_NUM = 1e-7
 
@@ -365,6 +366,33 @@ class MASPNCGSolver(collision_detection_bvh_module):
         result = ti.Vector.zero(float, 12)
         for i in ti.static(range(12)):
             result[i] = ti.max(diagH[i], 0.0) * d[i]
+
+        return result
+
+    @ti.func
+    def compute_H_d_full(self, F: ti.math.mat3, B: ti.math.mat3, d: ti.types.vector(12, float),
+                         mu: float, la: float) -> ti.types.vector(12, float):
+        """
+        Compute H * d where H is the full elastic Hessian (not diagonal approximation).
+
+        The Hessian in x-space is: H_x = dFdx^T @ d2PsidF2 @ dFdx
+        So H_x @ d = dFdx^T @ (d2PsidF2 @ (dFdx @ d))
+
+        This is more accurate than the diagonal version but more expensive.
+        """
+        # Step 1: Compute dFdx @ d (9x12 @ 12x1 = 9x1)
+        # dFdx maps vertex displacements to deformation gradient changes
+        dFdx_d = compute_dFdx_p(B, d)  # 9x1 vector
+
+        # Step 2: Get the full 9x9 Hessian in F-space
+        d2PsidF2 = self.compute_d2PsidF2(F, mu, la)  # 9x9 matrix
+
+        # Step 3: Compute d2PsidF2 @ (dFdx @ d) (9x9 @ 9x1 = 9x1)
+        H_F_dFdx_d = d2PsidF2 @ dFdx_d  # 9x1 vector
+
+        # Step 4: Compute dFdx^T @ result (12x9 @ 9x1 = 12x1)
+        # Use compute_dFdxT_p which computes dFdx^T @ p
+        result = compute_dFdxT_p(B, H_F_dFdx_d)  # 12x1 vector
 
         return result
 

@@ -159,20 +159,27 @@ class pncg_index(pncg_ipc_deformer):
 
 
 
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser(description='n E Demo')
-    parser.add_argument('--headless', action='store_true', help='run without GUI')
-    parser.add_argument('--frames', type=int, default=100, help='number of frames to run in headless mode')
-    args = parser.parse_args()
+class NEDemoRunner:
+    """Demo runner for n_E demo using DemoRunner framework."""
 
-    ti.init(arch=ti.gpu, default_fp=ti.f32)#, device_memory_fraction=0.9)#, kernel_profiler=True)
+    def __init__(self, demo='eight_E_drop_demo_contact'):
+        from demo_runner import DemoRunner
+        self.solver = pncg_index(demo=demo)
+        self.solver.set_index()
+        self.runner = DemoRunner(self.solver, demo_name=f"n_E ({demo})")
+
+    def get_per_vertex_color(self):
+        """Return per-vertex color based on object index."""
+        return self.solver.per_vertex_color
+
+    def run(self):
+        # Override get_per_vertex_color on the runner
+        self.runner.get_per_vertex_color = self.get_per_vertex_color
+        self.runner.run()
+
+
+if __name__ == '__main__':
+    ti.init(arch=ti.gpu, default_fp=ti.f32)
     demo = 'eight_E_drop_demo_contact'
-    ipc_deformer = pncg_index(demo=demo)
-    ipc_deformer.set_index()
-    
-    if args.headless:
-        ipc_deformer.run_headless(args.frames)
-    else:
-        ipc_deformer.visual()
-    # ipc_deformer.save_new(500, SAVE_OBJ=True)
+    runner = NEDemoRunner(demo=demo)
+    runner.run()

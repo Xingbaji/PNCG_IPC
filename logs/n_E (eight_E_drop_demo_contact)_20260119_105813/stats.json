@@ -1,0 +1,132 @@
+{
+  "config": {
+    "demo_name": "n_E (eight_E_drop_demo_contact)",
+    "frames": 10,
+    "debug": false,
+    "headless": true
+  },
+  "frames": [
+    {
+      "frame": 0,
+      "total_ms": 4164.105013012886,
+      "step_ms": 4164.0765415504575,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 0.24014764202031075,
+      "iterations": 15
+    },
+    {
+      "frame": 1,
+      "total_ms": 453.5842379555106,
+      "step_ms": 453.54553405195475,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.204662147228502,
+      "iterations": 15
+    },
+    {
+      "frame": 2,
+      "total_ms": 452.1836554631591,
+      "step_ms": 452.1496519446373,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.211490813341601,
+      "iterations": 15
+    },
+    {
+      "frame": 3,
+      "total_ms": 462.35622093081474,
+      "step_ms": 462.3327413573861,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.162834530455331,
+      "iterations": 15
+    },
+    {
+      "frame": 4,
+      "total_ms": 461.3017179071903,
+      "step_ms": 461.2676575779915,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.1677786168600197,
+      "iterations": 15
+    },
+    {
+      "frame": 5,
+      "total_ms": 452.1668255329132,
+      "step_ms": 452.12901942431927,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.211573126404007,
+      "iterations": 15
+    },
+    {
+      "frame": 6,
+      "total_ms": 451.7179597169161,
+      "step_ms": 451.69511437416077,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.2137707356747183,
+      "iterations": 15
+    },
+    {
+      "frame": 7,
+      "total_ms": 451.9408429041505,
+      "step_ms": 451.9012225791812,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.2126789727037,
+      "iterations": 15
+    },
+    {
+      "frame": 8,
+      "total_ms": 448.2335029169917,
+      "step_ms": 448.2103632763028,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.230980043866087,
+      "iterations": 15
+    },
+    {
+      "frame": 9,
+      "total_ms": 442.3333015292883,
+      "step_ms": 442.31294468045235,
+      "render_ms": 0.0,
+      "save_ms": 0.0,
+      "fps": 2.260738670461118,
+      "iterations": 15
+    }
+  ],
+  "summary": {
+    "total_ms": {
+      "avg": 823.9923277869821,
+      "min": 442.3333015292883,
+      "max": 4164.105013012886
+    },
+    "step_ms": {
+      "avg": 823.9620790816844,
+      "min": 442.31294468045235,
+      "max": 4164.0765415504575
+    },
+    "render_ms": {
+      "avg": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "save_ms": {
+      "avg": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "fps": {
+      "avg": 1.2136035327971153,
+      "min": 0.24014764202031075,
+      "max": 2.260738670461118
+    },
+    "iterations": {
+      "avg": 15.0,
+      "min": 15,
+      "max": 15
+    }
+  }
+}

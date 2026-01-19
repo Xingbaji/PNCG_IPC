@@ -19,7 +19,7 @@ import numpy as np
 import taichi as ti
 
 from algorithm.pncg_base_ipc import pncg_ipc_deformer
-from algorithm.abd_system import ABDSystem, ABDJacobian
+from algorithm.abd_system import ABDSystem, ABDJacobian, BodyBoundaryType
 from util.model_loading import model_loading
 
 
@@ -81,6 +81,10 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
             body_configs: List of body configurations, each with:
                 - vertex_ids: List of vertex IDs for this body
                 - kappa_shape: Shape stiffness (optional)
+                - boundary_type: 0=FREE, 1=FIXED, 2=MOTOR (optional)
+                - motor_speed: Angular velocity for MOTOR type (optional)
+                - motor_strength: Motor torque scaling (optional)
+                - motor_axis: Rotation axis for MOTOR type (optional)
         """
         if not body_configs:
             return
@@ -91,6 +95,10 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
         for config in body_configs:
             vertex_ids = np.array(config['vertex_ids'], dtype=np.int32)
             kappa_shape = config.get('kappa_shape', 1e6)
+            boundary_type = config.get('boundary_type', BodyBoundaryType.FREE)
+            motor_speed = config.get('motor_speed', 0.0)
+            motor_strength = config.get('motor_strength', 10.0)
+            motor_axis = config.get('motor_axis', np.array([0.0, 1.0, 0.0]))
 
             # Get positions and masses for this body
             rest_positions = positions_np[vertex_ids]
@@ -99,13 +107,17 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
             # Estimate volume from convex hull (simplified)
             volume = self._estimate_volume(rest_positions)
 
-            # Add body to ABD system
+            # Add body to ABD system with boundary conditions
             body_id = self.abd_system.add_body(
                 point_ids=vertex_ids,
                 rest_positions=rest_positions,
                 masses=masses,
                 volume=volume,
-                kappa_shape=kappa_shape
+                kappa_shape=kappa_shape,
+                boundary_type=int(boundary_type),
+                motor_speed=motor_speed,
+                motor_strength=motor_strength,
+                motor_axis=motor_axis
             )
 
             # Mark vertices as ABD
@@ -224,7 +236,9 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
 
         1. Compute standard FEM gradient (inertia + elastic + contact)
         2. Project contact gradients to ABD state space
-        3. Add ABD shape energy gradient
+        3. Add ABD inertia gradient
+        4. Add ABD shape energy gradient
+        5. Add motor constraint gradient (for MOTOR bodies)
         """
         # Standard gradient computation (affects all vertices)
         self.compute_grad_and_diagH()
@@ -236,31 +250,13 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
         self.abd_system.project_gradient_to_q(self.mesh.verts.grad)
 
         # Add ABD inertia gradient
-        self._add_abd_inertia_gradient()
+        self.abd_system.add_inertia_gradient()
 
         # Add ABD shape energy gradient
         self.abd_system.add_shape_gradient()
 
-    @ti.kernel
-    def _add_abd_inertia_gradient(self):
-        """
-        Add inertia term to ABD gradient.
-
-        g_inertia = M * (q - q_tilde) / dt^2
-        """
-        dt = self.abd_system.dt
-
-        for body_id in range(self.abd_system.n_bodies):
-            q = self.abd_system.q[body_id]
-            q_tilde = self.abd_system.q_tilde[body_id]
-            M = self.abd_system.abd_mass[body_id]
-
-            # g = M @ (q - q_tilde)
-            dq = q - q_tilde
-            g_inertia = M @ dq
-
-            for d in ti.static(range(12)):
-                self.abd_system.grad_q[body_id][d] += g_inertia[d]
+        # Add motor constraint gradient for MOTOR bodies
+        self.abd_system.add_motor_constraint_gradient()
 
     def _compute_init_p_hybrid(self):
         """Compute initial search direction for hybrid system."""
@@ -341,6 +337,9 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
         """
         Compute line search for hybrid system.
 
+        Includes shape energy Hessian and motor constraint Hessian
+        contributions for ABD bodies.
+
         Returns:
             (alpha, gTp, pHp)
         """
@@ -350,7 +349,20 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
         if self.ground_barrier == 1:
             pHp += self.add_pHp_ground_barrier()
 
+        # Add ABD shape energy Hessian contribution
+        pHp += self.abd_system.compute_shape_hessian_contribution(self.dt)
+
+        # Add motor constraint Hessian contribution
+        pHp += self.abd_system.compute_motor_hessian_contribution()
+
         alpha = -gTp / max(pHp, 1e-10)
+
+        # Apply CCD for ABD bodies
+        if self.abd_system is not None and self.abd_system.n_bodies > 0:
+            alpha_ccd = self.abd_system.compute_ccd_step_size(
+                ground_y=0.0, dHat=self.dHat)
+            alpha = min(alpha, alpha_ccd)
+
         return alpha, gTp, pHp
 
     @ti.kernel

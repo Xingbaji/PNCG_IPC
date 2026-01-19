@@ -421,9 +421,6 @@ class collision_detection_bvh_module(pncg_base_deformer):
         if iter == 0:
             # Full build on first call
             self.build_bvh()
-        elif iter % rate == 0:
-            # Periodic full rebuild for better tree quality
-            self.refit_bvh()
         else:
             # Refit on other iterations (fast AABB update)
             self.refit_bvh()

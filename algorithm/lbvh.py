@@ -280,7 +280,7 @@ class LBVH_Triangles(LBVH):
             local_min = ti.Vector([1e32, 1e32, 1e32])
             local_max = ti.Vector([-1e32, -1e32, -1e32])
 
-            for i in ti.static(range(256)):
+            for i in range(256):
                 idx = block_id * 256 + i
                 if idx < n_triangles:
                     leaf_idx = idx + n_triangles - 1
@@ -542,7 +542,7 @@ class LBVH_Edges(LBVH):
             local_min = ti.Vector([1e32, 1e32, 1e32])
             local_max = ti.Vector([-1e32, -1e32, -1e32])
 
-            for i in ti.static(range(256)):
+            for i in range(256):
                 idx = block_id * 256 + i
                 if idx < n_edges:
                     leaf_idx = idx + n_edges - 1

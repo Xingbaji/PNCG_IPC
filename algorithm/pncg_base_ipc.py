@@ -219,11 +219,8 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
         if w_norm_sq > 1e-10:
             kappa_elastic = kappa_elastic / w_norm_sq
 
-        # Total adaptive kappa
+        # Total adaptive kappa: κ = n·(H·n) + m/g²
         kappa_adaptive = kappa_inertia + ti.max(kappa_elastic, 0.0)
-
-        # Ensure kappa is at least the base kappa (as a floor)
-        kappa_adaptive = ti.max(kappa_adaptive, self.kappa)
 
         return kappa_adaptive
 

@@ -700,12 +700,40 @@ def estimate_total_nodes():
 - [x] Full block solve using inverted symmetric matrices ✅ IMPLEMENTED
 
 ### ❌ Remaining Improvements (Future Work)
-- [ ] **IPC barrier Hessian contribution** (contact stiffness)
 - [ ] **Contact-aware hierarchy update** (dynamic collision connectivity)
-- [ ] **Coarse-level matrix assembly** (block matrices for levels 2+)
-- [ ] **METIS-based node reordering** (optional, for CEMAS)
 - [ ] **Warp reduction optimization** for matrix assembly
-- [ ] **Sparse-Input Woodbury Update** (incremental preconditioner update)
+
+### ✅ Recently Implemented (2025-01)
+- [x] **IPC barrier Hessian contribution** (contact stiffness in block assembly) ✅ IMPLEMENTED
+  - `_add_ipc_contact_contribution()` - Adds barrier Hessian from contact pairs
+  - Computes H_ij = b''(d) * cord[i] * cord[j] * outer(n, n) for each contact
+  - Cross-subdomain entries propagate to coarse levels via hierarchy
+  - Called automatically in `assemble_block_matrices()` when contacts exist
+
+### ✅ Recently Added
+- [x] **Sparse-Input Woodbury Update** (Section 3.1 of paper) ✅ IMPLEMENTED
+  - `init_woodbury_structures()` - Initialize low-rank update storage
+  - `save_base_contact_state()` - Save base preconditioner contact state
+  - `compute_woodbury_updates()` - Extract top-k contact stiffness changes
+  - `apply_with_woodbury()` - Apply preconditioner with Woodbury correction
+  - Uses Sherman-Morrison-Woodbury formula: `B̂⁻¹ = B⁻¹ - B⁻¹U(I + UᵀB⁻¹U)⁻¹UᵀB⁻¹`
+
+- [x] **METIS-based node reordering** (CEMAS - Connectivity-Enhanced MAS) ✅ IMPLEMENTED
+  - `metis_reorder.py` - Standalone module for METIS-based mesh reordering
+    - `build_adjacency_from_cells()` - Build CSR graph from mesh topology
+    - `metis_partition()` - K-way partitioning using pymetis
+    - `compute_sort_index()` - Sort vertices by partition for contiguous blocks
+    - `build_partition_mappings()` - Create bidirectional GPU mappings
+    - `metis_reorder_mesh()` - Main entry point for complete reordering
+  - MAS preconditioner integration:
+    - `init_metis_reordering()` - Initialize METIS partitioning
+    - `_build_connect_mask_l0_metis()` - Build connectivity using METIS partitions
+    - `_schwarz_local_solve_full_metis()` - Local solve with METIS mapping
+    - `build_hierarchy_metis()` - Build hierarchy using METIS structure
+    - `rebuild_with_metis()` - Full rebuild with METIS partitioning
+    - `apply_metis()` - Apply preconditioner using METIS structure
+  - Follows Stiff-GIPC reference: `/root/Stiff-GIPC_init/MeshProcess/metis_partition/`
+  - Requires: `pip install pymetis`
 
 ---
 

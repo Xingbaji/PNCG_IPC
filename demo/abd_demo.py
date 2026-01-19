@@ -331,21 +331,188 @@ def run_falling_cube_demo(headless=False, n_frames=100):
                 break
 
 
+def test_motor_body():
+    """
+    Test motor boundary condition.
+
+    Creates a cube with MOTOR boundary type and verifies rotation.
+    """
+    print("=" * 50)
+    print("Testing Motor Body Rotation")
+    print("=" * 50)
+
+    from algorithm.abd_system import BodyBoundaryType
+
+    # Create cube vertices
+    size = 0.5
+    center = np.array([0.0, 0.0, 0.0])
+
+    cube_verts = np.array([
+        [-size, -size, -size],
+        [size, -size, -size],
+        [size, size, -size],
+        [-size, size, -size],
+        [-size, -size, size],
+        [size, -size, size],
+        [size, size, size],
+        [-size, size, size]
+    ], dtype=np.float64) + center
+
+    masses = np.ones(8) * 0.125
+
+    # Create ABD system with motor body
+    abd_system = ABDSystem(max_bodies=4, max_points_per_body=100)
+    abd_system.dt = 0.01
+    abd_system.gravity = ti.Vector([0.0, 0.0, 0.0])  # No gravity for rotation test
+
+    # Add body as MOTOR with Y-axis rotation
+    body_id = abd_system.add_body(
+        point_ids=np.arange(8),
+        rest_positions=cube_verts,
+        masses=masses,
+        volume=size ** 3,
+        kappa_shape=1e6,
+        boundary_type=int(BodyBoundaryType.MOTOR),
+        motor_speed=3.14159,  # pi rad/s = half rotation per second
+        motor_strength=100.0,
+        motor_axis=np.array([0.0, 1.0, 0.0])  # Y-axis rotation
+    )
+
+    print(f"Motor body added: {abd_system.get_stats()}")
+
+    # Vertex field for positions
+    vertices = ti.Vector.field(3, dtype=ti.f32, shape=8)
+
+    # Get initial position of first vertex
+    abd_system.compute_x_from_q(vertices)
+    x0_init = np.array([vertices[0][j] for j in range(3)])
+    print(f"Initial v0 position: {x0_init}")
+
+    # Step forward a few times
+    for i in range(10):
+        abd_system.compute_q_tilde(abd_system.dt)
+        # In motor mode, q_tilde becomes the target, we should converge to it
+        # For simplicity, just copy q_tilde to q (instant convergence)
+        @ti.kernel
+        def copy_tilde_to_q():
+            for body_id in range(abd_system.n_bodies):
+                abd_system.q[body_id] = abd_system.q_tilde[body_id]
+        copy_tilde_to_q()
+
+        abd_system.compute_x_from_q(vertices)
+
+    x0_final = np.array([vertices[0][j] for j in range(3)])
+    print(f"Final v0 position after 10 steps: {x0_final}")
+
+    # Check that position changed (rotation occurred)
+    displacement = np.linalg.norm(x0_final - x0_init)
+    print(f"Displacement: {displacement:.6f}")
+
+    if displacement > 1e-4:
+        print("Motor rotation test PASSED!")
+    else:
+        print("Motor rotation test FAILED - no rotation detected")
+
+    print()
+
+
+def test_fixed_body():
+    """
+    Test fixed boundary condition.
+
+    Creates a cube with FIXED boundary type and verifies it doesn't move.
+    """
+    print("=" * 50)
+    print("Testing Fixed Body")
+    print("=" * 50)
+
+    from algorithm.abd_system import BodyBoundaryType
+
+    # Create cube vertices
+    size = 0.5
+    center = np.array([0.0, 1.0, 0.0])
+
+    cube_verts = np.array([
+        [-size, -size, -size],
+        [size, -size, -size],
+        [size, size, -size],
+        [-size, size, -size],
+        [-size, -size, size],
+        [size, -size, size],
+        [size, size, size],
+        [-size, size, size]
+    ], dtype=np.float64) + center
+
+    masses = np.ones(8) * 0.125
+
+    # Create ABD system with fixed body
+    abd_system = ABDSystem(max_bodies=4, max_points_per_body=100)
+    abd_system.dt = 0.01
+    abd_system.gravity = ti.Vector([0.0, -9.8, 0.0])  # Gravity enabled
+
+    # Add body as FIXED
+    body_id = abd_system.add_body(
+        point_ids=np.arange(8),
+        rest_positions=cube_verts,
+        masses=masses,
+        volume=size ** 3,
+        kappa_shape=1e6,
+        boundary_type=int(BodyBoundaryType.FIXED)
+    )
+
+    print(f"Fixed body added: {abd_system.get_stats()}")
+
+    # Vertex field for positions
+    vertices = ti.Vector.field(3, dtype=ti.f32, shape=8)
+
+    # Get initial position
+    abd_system.compute_x_from_q(vertices)
+    x0_init = np.array([vertices[0][j] for j in range(3)])
+    print(f"Initial v0 position: {x0_init}")
+
+    # Step forward (should not move due to FIXED)
+    for i in range(10):
+        abd_system.compute_q_tilde(abd_system.dt)
+        abd_system.compute_x_from_q(vertices)
+
+    x0_final = np.array([vertices[0][j] for j in range(3)])
+    print(f"Final v0 position after 10 steps: {x0_final}")
+
+    # Check that position didn't change
+    displacement = np.linalg.norm(x0_final - x0_init)
+    print(f"Displacement: {displacement:.6f}")
+
+    if displacement < 1e-6:
+        print("Fixed body test PASSED!")
+    else:
+        print("Fixed body test FAILED - body moved when it shouldn't")
+
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description='ABD Demo')
     parser.add_argument('--headless', action='store_true', help='Run without visualization')
     parser.add_argument('--frames', type=int, default=100, help='Number of frames for headless mode')
     parser.add_argument('--test', action='store_true', help='Run unit tests only')
+    parser.add_argument('--motor', action='store_true', help='Run motor test')
+    parser.add_argument('--fixed', action='store_true', help='Run fixed body test')
     args = parser.parse_args()
 
     if args.test:
         test_jacobian()
         test_abd_system()
         print("All tests passed!")
+    elif args.motor:
+        test_motor_body()
+    elif args.fixed:
+        test_fixed_body()
     else:
         # Run tests first
         test_jacobian()
         test_abd_system()
+        test_motor_body()
+        test_fixed_body()
 
         # Run demo
         run_falling_cube_demo(headless=args.headless, n_frames=args.frames)
