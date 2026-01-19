@@ -261,13 +261,14 @@ class PrecondDirectionTester:
                 data.append(m_np[v])
 
         # Element Hessian contributions
-        cell_indices = self.mesh.cells.indices.to_numpy()
+        # Get cell-vertex connectivity (4 vertices per tetrahedral cell)
+        cell_verts = self.mesh.cells.verts.to_numpy()  # Shape: (n_cells, 4)
         B_np = self.mesh.cells.B.to_numpy()
         W_np = self.mesh.cells.W.to_numpy()
 
         for c in range(self.n_cells):
             # Get vertex indices for this cell
-            v_ids = cell_indices[c]
+            v_ids = cell_verts[c]
 
             # Get vertex positions
             x_cell = x_np[v_ids]  # 4x3
