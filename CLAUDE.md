@@ -10,6 +10,11 @@ PNCG_IPC implements the **MAS-PNCG** framework from the paper "An Efficient Mult
 - `ref_doc/MAS_PNCG_clean.tex` - Main paper with algorithm overview
 - `ref_doc/supplementary.tex` - Detailed derivations for MAS, 2x2 subspace minimization, and ACCD bounds
 - `ref_doc/MAS_PRECONDITIONER_IMPLEMENTATION.md` - Implementation documentation
+- `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md` - MAS模块化包测试框架文档
+- `ref_doc/MAS_PRECONDITIONER_OPTIMIZATION_TODO.md` - Active optimization roadmap
+- `ref_doc/STIFFGIPC_IMPLEMENTATION_DETAILS.md` - StiffGIPC reference implementation details
+- `ref_doc/GCP_IMPLEMENTATION.md` - Geometric Contact Potential implementation guide
+- `ref_doc/CUBIC_BARRIER_IMPLEMENTATION.md` - Cubic barrier function documentation
 
 ### Reference Implementation
 - `/root/Stiff-GIPC_init/` - CUDA-based MAS preconditioner reference (C++/CUDA)
@@ -20,16 +25,18 @@ PNCG_IPC implements the **MAS-PNCG** framework from the paper "An Efficient Mult
 
 | Feature | File | Status |
 |---------|------|--------|
-| MAS Preconditioner | `mas_preconditioner.py` | ✅ Complete (2,123 lines) |
-| MAS-PNCG Solver | `mas_pncg_solver.py` | ✅ Complete (854 lines) |
+| MAS Preconditioner (Monolithic) | `mas_preconditioner.py` | ✅ Complete (5,006 lines) |
+| MAS Preconditioner (Modular) | `mas_preconditioner_pkg/` | ✅ Complete (5,149 lines, 13 modules) |
+| MAS-PNCG Solver | `mas_pncg_solver.py` | ✅ Complete (882 lines) |
 | 2D Subspace Minimization | `mas_pncg_solver.py` | ✅ Complete |
 | Powell's Restart Criterion | `mas_pncg_solver.py` | ✅ Complete |
 | Sparse-Input Woodbury Updates | `mas_preconditioner.py` | ✅ Complete |
-| BVH Collision Detection | `collision_detection_bvh.py` | ✅ Complete |
-| LBVH Construction | `lbvh.py` | ✅ Complete |
-| ABD System (Rigid Bodies) | `abd_system.py` | ✅ Complete (1,629 lines) |
-| ABD-FEM Hybrid Solver | `pncg_abd_ipc.py` | ✅ Complete |
-| METIS Graph Partitioning | `metis_reorder.py` | ✅ Complete |
+| BVH Collision Detection | `collision_detection_bvh.py` | ✅ Complete (806 lines) |
+| LBVH Construction | `lbvh.py` | ✅ Complete (754 lines) |
+| METIS Graph Partitioning | `metis_reorder.py` | ✅ Complete (662 lines) |
+| GCP Contact Potential | `gcp_contact_potential.py` | ✅ Complete (1,054 lines) |
+| Hierarchical Partition | `hierarchical_partition.py` | ✅ Complete (545 lines) |
+| HUP MAS Preconditioner | `hup_mas_preconditioner.py` | ✅ Complete (766 lines) |
 | Configuration System | `config/` | ✅ Complete |
 
 ## Commands
@@ -43,9 +50,9 @@ pip install -r requirements.txt
 ```bash
 cd PNCG_IPC/demo
 python mas_pncg_demo.py           # MAS-PNCG solver demo
-python abd_demo.py                # ABD system demo
 python cubic_demos.py             # Interactive cube demo
 python cubic_demos.py --headless --frames 300  # Headless mode
+python gcp_demo.py                # GCP contact potential demo
 ```
 
 ### Testing Demos
@@ -58,17 +65,27 @@ timeout 20s python mas_pncg_demo.py --headless --frames 10
 ### Available Demos
 **Main demos (`demo/`):**
 - `mas_pncg_demo.py` - Full MAS-PNCG solver demonstration
-- `abd_demo.py` - ABD system testing
 - `demo_runner.py` - Unified demo framework with RunConfig
 - `cubic_demos.py` - Cube squeeze/stretch/rotate
+- `gcp_demo.py` - GCP contact potential demo
+- `abd_demo.py` - ABD solver demonstration
 - `drag_armadillo_demo.py` - Armadillo dragging simulation
 - `squeeze_armadillo_demo.py` - Armadillo compression
 - `twist_demo.py` - Twisting deformation
 - `n_E_demo.py` - Multi-object collision demo
+- `mas_stiffness_test_demo.py` - Stiffness testing with MAS
 
-**Refactored demos (`demo_new/`):**
-- `base_demo.py` - Refactored base demo class
-- `cubic_demos.py`, `n_E_demo.py`, `twist_demo.py` - Refactored versions
+**N-body demos (`n_E_demos/`):**
+- `bvh_n_E_demo.py` - BVH-based N-body collision demo
+- `gcp_n_E_demo_v2.py` - GCP N-body demo
+- `mas_pncg_n_E_demo.py` - MAS-PNCG N-body demo
+- `cubic_barrier_n_E_demo.py` - Cubic barrier N-body demo
+- `initial_n_E_demo.py` - Basic N-body collision demo
+- `spatial_hash_n_E_demo.py` - Spatial hash N-body demo
+- `run_mas_benchmark.py` - MAS benchmark runner
+- `run_n_E_mas_benchmark.py` - N-body MAS benchmark
+- `run_mas_benchmark_v2.py` - MAS benchmark v2
+- `run_mas_benchmark_v3.py` - MAS benchmark v3
 
 ### Testing
 ```bash
@@ -77,33 +94,79 @@ python test_mas_preconditioner.py    # MAS preconditioner tests
 python test_metis_reorder.py         # METIS partitioning tests
 python test_bvh_performance.py       # BVH benchmark
 python compare_collision_detection.py # Collision algorithm comparison
+python test_hup_mas.py               # HUP MAS preconditioner tests
+python test_penetration_detection.py # Penetration detection tests
+
+cd ../n_E_demos
+python test_mas_pkg_unittest.py      # MAS package unit tests (37 tests)
+python test_mas_pkg_unittest.py -v   # Verbose output
+python test_mas_pkg_unittest.py --benchmark  # Performance benchmarks
+python test_srbk_spmv.py             # SRBK SpMV tests
+python test_mas_simple.py            # Simple MAS tests
 ```
+
+### MAS Package Unit Tests Details
+MAS模块化包包含完整的单元测试框架 (`n_E_demos/test_mas_pkg_unittest.py`):
+
+| 测试类 | 测试数 | 描述 |
+|--------|--------|------|
+| TestConstants | 8 | 常量模块测试 |
+| TestWarpUtils | 14 | 位操作工具测试 |
+| TestSRBKSpMV | 5 | SpMV实现测试 |
+| TestInversion | 2 | 对称索引测试 |
+| TestHierarchy | 3 | 层次结构测试 |
+| TestMASPreconditionerIntegration | 5 | 集成测试 |
+
+详见: `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md`
 
 ## Architecture
 
 ### Directory Structure
 ```
 PNCG_IPC/
-├── algorithm/          # Core solver implementations (~10,500 lines)
-│   ├── mas_preconditioner.py    # MAS preconditioner (2,123 lines)
-│   ├── mas_pncg_solver.py       # MAS-PNCG solver (854 lines)
-│   ├── abd_system.py            # ABD rigid body system (1,629 lines)
-│   ├── pncg_abd_ipc.py          # Hybrid ABD-FEM solver (537 lines)
-│   ├── collision_detection_bvh.py # BVH collision detection (699 lines)
-│   ├── lbvh.py                  # Linear BVH implementation (754 lines)
-│   ├── metis_reorder.py         # METIS graph partitioning (457 lines)
-│   ├── pncg_base_ipc.py         # Base PNCG solver with IPC (704 lines)
-│   └── base_deformer.py         # FEM foundation (271 lines)
-├── config/             # Configuration system
-│   ├── base.py         # Config classes (Simulation, Material, Solver, Scene)
-│   ├── registry.py     # Decorator-based demo registration
-│   └── demos/examples.py # Pre-configured demo setups
-├── demo/               # Main demo scripts
-├── demo_new/           # Refactored demo framework
-├── math_utils/         # Elastic energy and matrix utilities
-├── util/               # Model loading and utilities
-├── ref_doc/            # Reference documentation
-└── model/              # 3D mesh models
+├── algorithm/              # Core solver implementations (~20,000 lines)
+│   ├── mas_preconditioner.py       # MAS preconditioner monolithic (5,006 lines)
+│   ├── mas_preconditioner_pkg/     # MAS preconditioner modular (5,149 lines)
+│   │   ├── core.py                 # Main MASPreconditioner class (359 lines)
+│   │   ├── assembly.py             # Matrix assembly (676 lines)
+│   │   ├── metis_integration.py    # METIS partitioning (595 lines)
+│   │   ├── topology.py             # Mesh topology (587 lines)
+│   │   ├── woodbury.py             # Woodbury updates (520 lines)
+│   │   ├── inversion.py            # Block inversion (505 lines)
+│   │   ├── hierarchy.py            # Multi-level hierarchy (433 lines)
+│   │   ├── schwarz.py              # Schwarz local solvers (374 lines)
+│   │   ├── warp_utils.py           # Bit manipulation (362 lines)
+│   │   ├── simple_api.py           # Simplified API (348 lines)
+│   │   ├── spmv.py                 # SRBK SpMV (242 lines)
+│   │   └── constants.py            # Core constants (79 lines)
+│   ├── mas_pncg_solver.py          # MAS-PNCG solver (882 lines)
+│   ├── gcp_contact_potential.py    # Geometric contact potential (1,054 lines)
+│   ├── collision_detection_bvh.py  # BVH collision detection (806 lines)
+│   ├── lbvh.py                     # Linear BVH implementation (754 lines)
+│   ├── pncg_base_ipc.py            # Base PNCG solver with IPC (708 lines)
+│   ├── hup_mas_preconditioner.py   # HUP MAS preconditioner (766 lines)
+│   ├── metis_reorder.py            # METIS graph partitioning (662 lines)
+│   ├── hierarchical_partition.py   # Hierarchical partitioning (545 lines)
+│   ├── collision_detection.py      # Base collision detection (752 lines)
+│   ├── pncg_abd_ipc.py             # ABD variant (537 lines)
+│   └── base_deformer.py            # FEM foundation (277 lines)
+├── config/                 # Configuration system
+│   ├── base.py             # Config classes (171 lines)
+│   ├── registry.py         # Decorator-based demo registration (121 lines)
+│   └── demos/examples.py   # Pre-configured demo setups (227 lines)
+├── demo/                   # Main demo scripts (~5,000 lines)
+├── n_E_demos/              # N-body demos and benchmarks (~8,500 lines)
+├── math_utils/             # Elastic energy and matrix utilities
+│   ├── graphic_util.py     # Visualization utilities (1,065 lines)
+│   ├── elastic_util.py     # Constitutive models (540 lines)
+│   ├── cubic_roots.py      # Cubic polynomial roots (457 lines)
+│   └── matrix_util.py      # Matrix operations (236 lines)
+├── util/                   # Model loading and utilities
+│   ├── model_loading.py    # Demo configurations (884 lines)
+│   ├── sympy_dfdx.py       # Symbolic differentiation (413 lines)
+│   └── msh_to_tetgen.py    # Mesh conversion (332 lines)
+├── ref_doc/                # Reference documentation and papers
+└── model/                  # 3D mesh models
 ```
 
 ### Class Hierarchy
@@ -114,12 +177,13 @@ collision_detection_bvh (BVH-based PT/EE collision detection)
     ↓
 pncg_base_ipc (PNCG solver with IPC barrier functions)
     ↓
-pncg_abd_ipc (Hybrid ABD-FEM support)
-    ↓
 Demo classes (application-specific boundary conditions)
 
 MASPreconditioner (standalone, used by mas_pncg_solver)
-ABDSystem (standalone, used by pncg_abd_ipc)
+  - Monolithic version: algorithm/mas_preconditioner.py
+  - Modular version: algorithm/mas_preconditioner_pkg/
+HUPMASPreconditioner (standalone, hierarchical update variant)
+GCPContactPotential (standalone, geometric contact potential)
 ```
 
 ### Key Modules
@@ -131,20 +195,25 @@ ABDSystem (standalone, used by pncg_abd_ipc)
   - Connectivity-aware coarsening with topology-based adjacency
   - Sparse-Input Woodbury rank-1 updates (TOP_K_UPDATES=8)
   - METIS integration for optimal vertex ordering
+- `mas_preconditioner_pkg/` - Modular MAS implementation:
+  - `core.py` - Main MASPreconditioner class and orchestration
+  - `assembly.py` - Elastic + contact Hessian matrix assembly
+  - `metis_integration.py` - METIS-based graph partitioning
+  - `topology.py` - Mesh topology and neighbor list building
+  - `woodbury.py` - Sparse-Input Woodbury rank-1 updates
+  - `inversion.py` - Block matrix inversion algorithms
+  - `hierarchy.py` - Multi-level restriction/prolongation
+  - `schwarz.py` - Schwarz local solvers
+  - `spmv.py` - SRBK SpMV implementation
 - `mas_pncg_solver.py` - Complete MAS-PNCG algorithm with:
   - 2D subspace minimization (Eq. 6 from paper)
   - Powell's restart criterion (RESTART_THRESHOLD=0.3)
   - Per-subdomain conservative CCD
   - Line search integration
-- `abd_system.py` - Affine Body Dynamics system with:
-  - 12D state representation: q = [p; a1; a2; a3]^T
-  - Jacobian operations (J, J^T transformations)
-  - Motor constraints with angular velocity
-  - Boundary conditions (FREE, FIXED, MOTOR)
-- `pncg_abd_ipc.py` - Hybrid solver supporting:
-  - Mixed ABD-FEM simulation
-  - Three contact types: FEM-FEM, ABD-FEM, ABD-ABD
-  - Gradient/Hessian transformation for ABD bodies
+- `gcp_contact_potential.py` - Geometric Contact Potential with:
+  - Smooth C2 contact energy formulation
+  - Point-triangle and edge-edge primitives
+  - Analytic gradient and Hessian computation
 - `collision_detection_bvh.py` - BVH-based collision with:
   - LBVH construction with Morton codes
   - Point-Triangle (PT) and Edge-Edge (EE) detection
@@ -153,6 +222,9 @@ ABDSystem (standalone, used by pncg_abd_ipc)
   - Morton code computation (3D expansion)
   - Parallel tree building
   - AABB operations and overlap tests
+- `hierarchical_partition.py` - Hierarchical mesh partitioning:
+  - Multi-level domain decomposition
+  - Coarsening strategies for MAS
 - `metis_reorder.py` - Graph partitioning utilities:
   - k-way mesh partitioning
   - Vertex reordering for block structure optimization
@@ -161,9 +233,13 @@ ABDSystem (standalone, used by pncg_abd_ipc)
 **math_utils/**
 - `elastic_util.py` - Constitutive models (ARAP, SNH, FCR, NH) with energy, gradient, and Hessian
 - `matrix_util.py` - SVD, deformation gradient derivatives, matrix operations
+- `cubic_roots.py` - Cubic polynomial root finding
+- `graphic_util.py` - Visualization and graphics utilities
 
 **util/**
 - `model_loading.py` - Demo configurations (material params, solver params, mesh paths)
+- `sympy_dfdx.py` - SymPy-based symbolic differentiation utilities
+- `msh_to_tetgen.py` - Mesh format conversion utilities
 
 **config/**
 - `base.py` - Config classes: SimulationConfig, MaterialConfig, SolverConfig, SceneConfig

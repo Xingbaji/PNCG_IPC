@@ -72,7 +72,9 @@ class TimingReport:
 
 def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
                       use_warp_reduction=True, use_cholesky=True,
-                      use_blocked=False, use_incomplete=False):
+                      use_blocked=False, use_incomplete=False,
+                      use_oneway_gj=False, use_conflict_free=False,
+                      use_banded=False):
     """
     Benchmark MAS preconditioner on n_E demo with detailed timing.
 
@@ -83,6 +85,9 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
         use_cholesky: Use Cholesky vs Gauss-Jordan inversion
         use_blocked: Use blocked Cholesky (P2 optimization)
         use_incomplete: Use Incomplete Cholesky IC(0) approximation (P3 optimization)
+        use_oneway_gj: Use One-way Gauss-Jordan (P4 optimization)
+        use_conflict_free: Use Conflict-free SpMV (P5 optimization)
+        use_banded: Use Banded Sparse MV (P6 optimization, best with IC(0))
     """
     from util.model_loading import model_loading
     from algorithm.mas_preconditioner import MASPreconditioner
@@ -90,6 +95,8 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
     # Determine inversion method name
     if use_incomplete:
         invert_method = "IC(0)"
+    elif use_oneway_gj:
+        invert_method = "One-way GJ"
     elif use_blocked and use_cholesky:
         invert_method = "Blocked Cholesky"
     elif use_cholesky:
@@ -97,9 +104,18 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
     else:
         invert_method = "Gauss-Jordan"
 
+    # Determine local solve method name
+    if use_banded:
+        solve_method = "Banded"
+    elif use_conflict_free:
+        solve_method = "Conflict-free"
+    else:
+        solve_method = "Standard"
+
     print(f"\n{'='*70}")
     print(f"MAS Benchmark: {demo_name}")
-    print(f"  inversion={invert_method}, warp_reduction={use_warp_reduction}")
+    print(f"  inversion={invert_method}, local_solve={solve_method}")
+    print(f"  warp_reduction={use_warp_reduction}")
     print(f"  iterations={n_iterations}")
     print(f"{'='*70}")
 
@@ -205,14 +221,16 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
     ti.sync()
     t0 = time.perf_counter()
     mas.invert_block_matrices(use_full_inversion=True, use_cholesky=use_cholesky,
-                                  use_blocked=use_blocked, use_incomplete=use_incomplete)
+                                  use_blocked=use_blocked, use_incomplete=use_incomplete,
+                                  use_oneway_gj=use_oneway_gj)
     ti.sync()
     warmup_invert = (time.perf_counter() - t0) * 1000
     print(f"    Invert: {warmup_invert:.2f} ms")
 
     ti.sync()
     t0 = time.perf_counter()
-    mas.apply(use_full_solve=True, use_warp_reduction=use_warp_reduction)
+    mas.apply(use_full_solve=True, use_warp_reduction=use_warp_reduction,
+              use_conflict_free=use_conflict_free, use_banded=use_banded)
     ti.sync()
     warmup_apply = (time.perf_counter() - t0) * 1000
     print(f"    Apply: {warmup_apply:.2f} ms")
@@ -240,7 +258,8 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
         ti.sync()
         t0 = time.perf_counter()
         mas.invert_block_matrices(use_full_inversion=True, use_cholesky=use_cholesky,
-                                  use_blocked=use_blocked, use_incomplete=use_incomplete)
+                                  use_blocked=use_blocked, use_incomplete=use_incomplete,
+                                  use_oneway_gj=use_oneway_gj)
         ti.sync()
         timing.add('invert', (time.perf_counter() - t0) * 1000)
 
@@ -266,7 +285,12 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
         # Phase 2: Local solve
         ti.sync()
         t0 = time.perf_counter()
-        mas._schwarz_local_solve_full()
+        if use_banded:
+            mas._schwarz_local_solve_banded()
+        elif use_conflict_free:
+            mas._schwarz_local_solve_conflict_free()
+        else:
+            mas._schwarz_local_solve_full()
         ti.sync()
         timing.add('local_solve', (time.perf_counter() - t0) * 1000)
 
@@ -293,6 +317,7 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
     print(f"Mesh: {n_verts} vertices, {n_cells} cells")
     print(f"Hierarchy: {mas.actual_levels} levels")
     print(f"Inversion method: {invert_method}")
+    print(f"Local solve method: {solve_method}")
     print(f"Warp reduction: {use_warp_reduction}")
     print(f"Total per iteration: {total_per_iter:.3f} ms")
     print(f"SPD check: {'PASS' if final_spd else 'FAIL'}")
@@ -309,6 +334,7 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
         'n_cells': n_cells,
         'levels': mas.actual_levels,
         'invert_method': invert_method,
+        'solve_method': solve_method,
         'warp_reduction': use_warp_reduction,
         'timing': dict(timing.times),
         'total_per_iter_ms': total_per_iter,
@@ -365,6 +391,10 @@ if __name__ == '__main__':
                         help='Compare with/without warp reduction')
     parser.add_argument('--compare-invert', action='store_true',
                         help='Compare all inversion methods')
+    parser.add_argument('--compare-solve', action='store_true',
+                        help='Compare local solve methods (standard vs conflict-free)')
+    parser.add_argument('--compare-all', action='store_true',
+                        help='Compare all optimization combinations (IC(0), P1, P5)')
     parser.add_argument('--no-warp', action='store_true',
                         help='Disable warp reduction optimization')
     parser.add_argument('--gauss-jordan', action='store_true',
@@ -373,6 +403,12 @@ if __name__ == '__main__':
                         help='Use blocked Cholesky (P2 optimization)')
     parser.add_argument('--incomplete', action='store_true',
                         help='Use Incomplete Cholesky IC(0) (P3 optimization)')
+    parser.add_argument('--oneway-gj', action='store_true',
+                        help='Use One-way Gauss-Jordan (P4 optimization)')
+    parser.add_argument('--conflict-free', action='store_true',
+                        help='Use Conflict-free SpMV (P5 optimization)')
+    parser.add_argument('--banded', action='store_true',
+                        help='Use Banded Sparse MV (P6 optimization, best with IC(0))')
     args = parser.parse_args()
 
     if args.compare:
@@ -393,24 +429,32 @@ if __name__ == '__main__':
             use_blocked=False, use_incomplete=False
         )
 
-        # Blocked Cholesky
-        print("\n--- Blocked Cholesky ---")
-        results['blocked'] = benchmark_n_E_mas(
+        # One-way Gauss-Jordan (P4)
+        print("\n--- One-way Gauss-Jordan (P4) ---")
+        results['oneway_gj'] = benchmark_n_E_mas(
             args.demo, args.iterations,
             use_warp_reduction=True, use_cholesky=True,
-            use_blocked=True, use_incomplete=False
+            use_blocked=False, use_incomplete=False, use_oneway_gj=True
         )
 
-        # Incomplete Cholesky IC(0)
-        print("\n--- Incomplete Cholesky IC(0) ---")
+        # Incomplete Cholesky IC(0) (P3)
+        print("\n--- Incomplete Cholesky IC(0) (P3) ---")
         results['incomplete'] = benchmark_n_E_mas(
             args.demo, args.iterations,
             use_warp_reduction=True, use_cholesky=True,
             use_blocked=False, use_incomplete=True
         )
 
-        # Gauss-Jordan
-        print("\n--- Gauss-Jordan ---")
+        # Blocked Cholesky (P2)
+        print("\n--- Blocked Cholesky (P2) ---")
+        results['blocked'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=True, use_incomplete=False
+        )
+
+        # Gauss-Jordan (baseline)
+        print("\n--- Gauss-Jordan (baseline) ---")
         results['gauss_jordan'] = benchmark_n_E_mas(
             args.demo, args.iterations,
             use_warp_reduction=True, use_cholesky=False,
@@ -432,6 +476,143 @@ if __name__ == '__main__':
             spd = 'PASS' if res['spd_pass'] else 'FAIL'
             print(f"{res['invert_method']:<20} {invert_time:<15.3f} {total_time:<15.3f} {speedup:<10.2f}x {spd:<6}")
 
+    elif args.compare_solve:
+        # Compare local solve methods
+        print("\n" + "="*70)
+        print("COMPARISON: Local Solve Methods (Standard vs Conflict-free)")
+        print("="*70)
+
+        results = {}
+
+        # Standard local solve
+        print("\n--- Standard Local Solve ---")
+        results['standard'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_conflict_free=False
+        )
+
+        # Conflict-free SpMV (P5)
+        print("\n--- Conflict-free SpMV (P5) ---")
+        results['conflict_free'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_conflict_free=True
+        )
+
+        # Summary comparison
+        print("\n" + "="*70)
+        print("LOCAL SOLVE METHOD COMPARISON SUMMARY")
+        print("="*70)
+        print(f"{'Method':<20} {'Local Solve (ms)':<18} {'Total (ms)':<15} {'Speedup':<10} {'SPD':<6}")
+        print("-"*70)
+
+        baseline = results['standard']['total_per_iter_ms']
+        for name, res in results.items():
+            solve_time = np.mean(res['timing']['local_solve'])
+            total_time = res['total_per_iter_ms']
+            speedup = baseline / total_time if total_time > 0 else 0
+            spd = 'PASS' if res['spd_pass'] else 'FAIL'
+            print(f"{res['solve_method']:<20} {solve_time:<18.3f} {total_time:<15.3f} {speedup:<10.2f}x {spd:<6}")
+
+    elif args.compare_all:
+        # Compare all optimization combinations
+        print("\n" + "="*70)
+        print("COMPARISON: All Optimization Combinations")
+        print("="*70)
+
+        results = {}
+
+        # 1. Baseline: Cholesky + Standard SpMV + Warp Reduction
+        print("\n--- [Baseline] Cholesky + P1 (Warp Reduction) ---")
+        results['baseline'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=False, use_incomplete=False,
+            use_oneway_gj=False, use_conflict_free=False
+        )
+
+        # 2. IC(0) only
+        print("\n--- [IC(0)] IC(0) + P1 ---")
+        results['ic0'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=False, use_incomplete=True,
+            use_oneway_gj=False, use_conflict_free=False
+        )
+
+        # 3. IC(0) + Conflict-free SpMV
+        print("\n--- [IC(0)+P5] IC(0) + P1 + Conflict-free SpMV ---")
+        results['ic0_cf'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=False, use_incomplete=True,
+            use_oneway_gj=False, use_conflict_free=True
+        )
+
+        # 4. IC(0) + Banded SpMV (P6) - NEW
+        print("\n--- [IC(0)+P6] IC(0) + P1 + Banded SpMV ---")
+        results['ic0_banded'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=False, use_incomplete=True,
+            use_oneway_gj=False, use_conflict_free=False, use_banded=True
+        )
+
+        # 5. Cholesky + Conflict-free SpMV
+        print("\n--- [P5] Cholesky + P1 + Conflict-free SpMV ---")
+        results['chol_cf'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=True, use_cholesky=True,
+            use_blocked=False, use_incomplete=False,
+            use_oneway_gj=False, use_conflict_free=True
+        )
+
+        # 6. No warp reduction (for comparison)
+        print("\n--- [No P1] Cholesky only (no warp reduction) ---")
+        results['no_warp'] = benchmark_n_E_mas(
+            args.demo, args.iterations,
+            use_warp_reduction=False, use_cholesky=True,
+            use_blocked=False, use_incomplete=False,
+            use_oneway_gj=False, use_conflict_free=False
+        )
+
+        # Summary comparison
+        print("\n" + "="*70)
+        print("OPTIMIZATION COMBINATION COMPARISON SUMMARY")
+        print("="*70)
+        print(f"{'Config':<30} {'Invert (ms)':<12} {'Restrict (ms)':<14} {'Solve (ms)':<12} {'Total (ms)':<12} {'Speedup':<8} {'SPD':<6}")
+        print("-"*95)
+
+        baseline_total = results['baseline']['total_per_iter_ms']
+        config_names = {
+            'baseline': 'Cholesky + P1',
+            'ic0': 'IC(0) + P1',
+            'ic0_cf': 'IC(0) + P1 + P5',
+            'ic0_banded': 'IC(0) + P1 + P6',
+            'chol_cf': 'Cholesky + P1 + P5',
+            'no_warp': 'Cholesky (no P1)',
+        }
+
+        for key, res in results.items():
+            invert_time = np.mean(res['timing']['invert'])
+            restrict_time = np.mean(res['timing']['restrict'])
+            solve_time = np.mean(res['timing']['local_solve'])
+            total_time = res['total_per_iter_ms']
+            speedup = baseline_total / total_time if total_time > 0 else 0
+            spd = 'PASS' if res['spd_pass'] else 'FAIL'
+            config_name = config_names.get(key, key)
+            print(f"{config_name:<30} {invert_time:<12.3f} {restrict_time:<14.3f} {solve_time:<12.3f} {total_time:<12.3f} {speedup:<8.2f}x {spd:<6}")
+
+        # Find best configuration
+        best_key = min(results.keys(), key=lambda k: results[k]['total_per_iter_ms'] if results[k]['spd_pass'] else float('inf'))
+        best_result = results[best_key]
+        print("\n" + "="*70)
+        print(f"BEST CONFIGURATION: {config_names.get(best_key, best_key)}")
+        print(f"  Total time: {best_result['total_per_iter_ms']:.3f} ms")
+        print(f"  Speedup vs baseline: {baseline_total / best_result['total_per_iter_ms']:.2f}x")
+        print("="*70)
+
     else:
         benchmark_n_E_mas(
             args.demo,
@@ -439,5 +620,8 @@ if __name__ == '__main__':
             use_warp_reduction=not args.no_warp,
             use_cholesky=not args.gauss_jordan,
             use_blocked=args.blocked,
-            use_incomplete=args.incomplete
+            use_incomplete=args.incomplete,
+            use_oneway_gj=args.oneway_gj,
+            use_conflict_free=args.conflict_free,
+            use_banded=args.banded
         )

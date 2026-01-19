@@ -21,7 +21,7 @@ os.chdir(demo_dir)
 
 import taichi as ti
 from algorithm.pncg_base_ipc import pncg_ipc_deformer
-from algorithm.mas_preconditioner import MASPreconditioner
+from algorithm.mas_preconditioner_pkg import MASPreconditioner
 
 
 @ti.data_oriented
@@ -31,10 +31,16 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
     Collision-free version for testing.
     """
 
-    def __init__(self, demo='eight_E_stiffness_test', use_mas=True):
+    def __init__(self, demo='eight_E_stiffness_test', inversion_method='oneway_gj'):
+        """
+        Args:
+            demo: Demo configuration name
+            inversion_method: Block inversion method: 'cholesky', 'gauss_jordan', 'oneway_gj', 'incomplete'
+                              Note: Cholesky/Incomplete require SPD blocks - may fail on non-SPD blocks
+        """
         super().__init__(demo=demo)
 
-        self.use_mas = use_mas
+        self.inversion_method = inversion_method
         self.object_size = 1046
         self.N_object = int(self.n_verts / self.object_size)
 
@@ -42,20 +48,16 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
         self.per_vertex_color = ti.Vector.field(3, dtype=float, shape=self.n_verts)
         self._init_colors()
 
-        # Initialize MAS preconditioner if needed
-        if self.use_mas:
-            print(f"[MAS Test] Initializing MAS preconditioner...")
-            # Add z field for preconditioned gradient
-            self.mesh.verts.place({'z': ti.types.vector(3, float)})
-            # Create MAS without METIS for simplicity
-            self.mas = MASPreconditioner(
-                self.n_verts, self.n_cells, self.mesh,
-                use_metis=False
-            )
-            print(f"[MAS Test] MAS preconditioner initialized with {self.mas.level_num} levels")
-        else:
-            self.mas = None
-            print(f"[MAS Test] Using diagonal Jacobi preconditioner (baseline)")
+        # Initialize MAS preconditioner
+        print(f"[MAS Test] Initializing MAS preconditioner...")
+        # Add z field for preconditioned gradient
+        self.mesh.verts.place({'z': ti.types.vector(3, float)})
+        # Create MAS without METIS for simplicity
+        self.mas = MASPreconditioner(
+            self.n_verts, self.n_cells, self.mesh,
+            use_metis=False
+        )
+        print(f"[MAS Test] MAS preconditioner initialized with {self.mas.level_num} levels, inversion: {inversion_method}")
 
         # Performance tracking
         self.iter_history = []
@@ -93,26 +95,18 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
 
     @ti.kernel
     def compute_DK_direction_mas(self):
-        """Compute Dai-Kai conjugate direction using MAS preconditioner."""
-        g_p = 0.0
-        g_Py = 0.0
-        y_p = 0.0
-        y_Py = 0.0
+        """
+        Compute search direction using MAS preconditioner.
 
+        For MAS, we use steepest descent direction p = -z (always restart).
+        This is because MAS preconditioning is expensive and we don't have
+        a cheap way to compute P*y for the DK formula.
+
+        The MAS preconditioner should provide good enough conditioning that
+        steepest descent converges fast.
+        """
         for vert in self.mesh.verts:
-            y = vert.grad - vert.grad_prev
-            Py = y / vert.diagH
-            y_p += y.dot(vert.p)
-            g_Py += vert.grad.dot(Py)
-            y_Py += y.dot(Py)
-            g_p += vert.grad.dot(vert.p)
-
-        beta = 0.0
-        if ti.abs(y_p) > 1e-12:
-            beta = (g_Py - y_Py * g_p / y_p) / y_p
-
-        for vert in self.mesh.verts:
-            vert.p = -vert.z + beta * vert.p
+            vert.p = -vert.z
 
     @ti.kernel
     def compute_z_norm(self) -> float:
@@ -130,6 +124,15 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
             g_norm = vert.grad.norm()
             ti.atomic_max(g_max, g_norm)
         return g_max
+
+    @ti.kernel
+    def check_z_has_nan(self) -> int:
+        """Check if z field contains nan."""
+        has_nan = 0
+        for vert in self.mesh.verts:
+            if ti.math.isnan(vert.z[0]) or ti.math.isnan(vert.z[1]) or ti.math.isnan(vert.z[2]):
+                has_nan = 1
+        return has_nan
 
     def step_collision_free(self, use_grad_norm_stop=True, grad_tol=1e-3, verbose=True):
         """
@@ -167,25 +170,42 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
                         print(f'  Converged at iter {iter}, |g|_inf={grad_inf:.2e} (init={grad_inf_init:.2e})')
                     break
 
-            # Apply preconditioner and compute search direction
-            if self.use_mas and self.mas is not None:
-                if iter == 0:
-                    self.mas.rebuild(self)
-                    self.rebuild_count += 1
+            # Apply MAS preconditioner and compute search direction
+            # Rebuild MAS only at first iteration of each frame
+            if iter == 0:
+                if not self.mas.hierarchy_built:
+                    self.mas.build_hierarchy()
+                if hasattr(self, 'elastic_type'):
+                    self.mas.elastic_type = self.elastic_type
+                self.mas.assemble_block_matrices(self, use_full_hessian=True)
 
-                # Apply: z = P * grad
-                self.mas.apply()
+                # Select inversion method
+                use_cholesky = self.inversion_method in ['cholesky', 'incomplete']
+                use_incomplete = self.inversion_method == 'incomplete'
+                use_oneway_gj = self.inversion_method == 'oneway_gj'
 
-                # Compute search direction
-                if iter == 0:
-                    self.compute_init_p_mas()
-                else:
-                    self.compute_DK_direction_mas()
+                self.mas.invert_block_matrices(
+                    use_full_inversion=True,
+                    use_cholesky=use_cholesky,
+                    use_incomplete=use_incomplete,
+                    use_oneway_gj=use_oneway_gj
+                )
+                self.rebuild_count += 1
+
+            # Apply: z = P * grad
+            self.mas.apply()
+
+            # Check for nan in z
+            z_has_nan = self.check_z_has_nan()
+            if z_has_nan:
+                if verbose and iter == 0:
+                    print('  [Warning] MAS produced nan')
+
+            # Compute search direction using MAS
+            if iter == 0:
+                self.compute_init_p_mas()
             else:
-                if iter == 0:
-                    self.compute_init_p()
-                else:
-                    self.compute_DK_direction()
+                self.compute_DK_direction_mas()
 
             # Line search
             alpha, gTp, pHp = self.line_search_newton()
@@ -225,15 +245,15 @@ class SimpleMASTestSolver(pncg_ipc_deformer):
         return iter + 1
 
 
-def run_benchmark(use_mas=True, frames=50, demo='eight_E_stiffness_test', iter_max=200, grad_tol=1e-5):
+def run_benchmark(frames=50, demo='eight_E_stiffness_test', iter_max=200, grad_tol=1e-5, inversion_method='oneway_gj'):
     """Run benchmark."""
-    precond_name = "MAS" if use_mas else "Diagonal"
+    precond_name = f"MAS ({inversion_method})"
     print(f"\n{'='*60}")
     print(f"Benchmark: {precond_name} Preconditioner")
     print(f"Demo: {demo}, Frames: {frames}, iter_max: {iter_max}, grad_tol: {grad_tol}")
     print(f"{'='*60}")
 
-    solver = SimpleMASTestSolver(demo=demo, use_mas=use_mas)
+    solver = SimpleMASTestSolver(demo=demo, inversion_method=inversion_method)
 
     # Override iter_max for testing
     solver.iter_max = iter_max
@@ -271,8 +291,7 @@ def run_benchmark(use_mas=True, frames=50, demo='eight_E_stiffness_test', iter_m
     print(f"  Avg iterations: {avg_iters:.1f}")
     print(f"  Total iterations: {total_iters}")
     print(f"  Avg frame time: {avg_time:.2f}ms ({1000/avg_time:.1f} FPS)")
-    if use_mas:
-        print(f"  MAS rebuilds: {solver.rebuild_count}")
+    print(f"  MAS rebuilds: {solver.rebuild_count}")
     print(f"{'='*60}")
 
     return {
@@ -285,14 +304,16 @@ def run_benchmark(use_mas=True, frames=50, demo='eight_E_stiffness_test', iter_m
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simple MAS Preconditioner Test')
-    parser.add_argument('--diag', action='store_true', help='Use diagonal preconditioner')
-    parser.add_argument('--frames', type=int, default=20, help='Number of frames')
-    parser.add_argument('--iter_max', type=int, default=200, help='Max iterations per frame')
+    parser.add_argument('--inversion', type=str, default='incomplete',
+                        choices=['cholesky', 'gauss_jordan', 'oneway_gj', 'incomplete'],
+                        help='Block inversion method for MAS (default: incomplete)')
+    parser.add_argument('--frames', type=int, default=5, help='Number of frames')
+    parser.add_argument('--iter_max', type=int, default=30, help='Max iterations per frame')
     parser.add_argument('--grad_tol', type=float, default=1e-5, help='Gradient inf norm tolerance')
     parser.add_argument('--demo', type=str, default='eight_E_stiffness_test', help='Demo name')
     args = parser.parse_args()
 
     ti.init(arch=ti.gpu, default_fp=ti.f32)
 
-    run_benchmark(use_mas=not args.diag, frames=args.frames, demo=args.demo,
-                  iter_max=args.iter_max, grad_tol=args.grad_tol)
+    run_benchmark(frames=args.frames, demo=args.demo,
+                  iter_max=args.iter_max, grad_tol=args.grad_tol, inversion_method=args.inversion)

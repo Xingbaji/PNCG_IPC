@@ -1988,7 +1988,8 @@ class MASPreconditioner:
     def invert_block_matrices(self, use_full_inversion: bool = True,
                               use_cholesky: bool = True,
                               use_blocked: bool = False,
-                              use_incomplete: bool = False):
+                              use_incomplete: bool = False,
+                              use_oneway_gj: bool = False):
         """
         Invert all block matrices on GPU.
 
@@ -1999,6 +2000,7 @@ class MASPreconditioner:
                          (faster for SPD matrices). If False, use Gauss-Jordan elimination.
             use_blocked: If True, use blocked Cholesky for better GPU parallelism.
             use_incomplete: If True, use Incomplete Cholesky IC(0) approximation.
+            use_oneway_gj: If True, use One-way Gauss-Jordan without pivoting (P4 optimization).
         """
         print("[MAS] Inverting block matrices...")
 
@@ -2011,6 +2013,11 @@ class MASPreconditioner:
                 self._incomplete_cholesky_invert_blocks()
                 self._copy_inverse_to_sym()
                 print("[MAS] Full block inversion complete (Incomplete Cholesky IC(0))")
+            elif use_oneway_gj:
+                # One-way Gauss-Jordan without pivoting (P4 optimization)
+                self._oneway_gauss_jordan_invert_blocks()
+                self._copy_inverse_to_sym()
+                print("[MAS] Full block inversion complete (One-way Gauss-Jordan)")
             elif use_blocked and use_cholesky:
                 # Blocked Cholesky - better GPU utilization
                 self._blocked_cholesky_invert_blocks()
@@ -2260,6 +2267,320 @@ class MASPreconditioner:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
                     else:
                         self.full_block_inverse[block_id, i, col] = 0.0
+
+    # ========================================================================
+    # P4 Optimization: One-way Gauss-Jordan (No Pivoting)
+    # ========================================================================
+    #
+    # CUDA Reference: __inverse6_P96x96() in MASPreconditioner.cu lines 630-726
+    #
+    # Key insight from CUDA implementation:
+    # 1. For SPD matrices, pivoting is not needed (diagonal is always positive)
+    # 2. One-way elimination: process columns left-to-right only
+    # 3. Symmetry recovery: after elimination, copy symmetric elements
+    # 4. Each thread handles one column, enabling parallel column operations
+    #
+    # Algorithm:
+    # for j = 0 to N-1:
+    #     rt = A[j,j]
+    #     colm[:] = A[:,j]  # Save column j
+    #     A[j,j] = 1; A[i,j] = 0 for i != j  # Set column j to e_j
+    #     A[j,:] /= rt  # Scale row j
+    #     for k != j:
+    #         A[k,:] -= colm[k] * A[j,:]  # Eliminate
+    # Recover symmetry: A[i+1,i] = A[i,i+1] for 3x3 sub-blocks
+
+    @ti.kernel
+    def _oneway_gauss_jordan_invert_blocks(self):
+        """
+        One-way Gauss-Jordan inversion without pivoting.
+
+        Optimized for SPD matrices where:
+        - Diagonal elements are guaranteed positive (no pivoting needed)
+        - Symmetry can be recovered at the end instead of maintained throughout
+
+        This reduces operations compared to full Gauss-Jordan with partial pivoting.
+
+        CUDA Reference: __inverse6_P96x96() (MASPreconditioner.cu lines 630-726)
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        for block_id in range(n_blocks):
+            # Initialize full_block_inverse as a copy of the matrix
+            # (we'll transform it in-place to the inverse)
+            for i in range(BLOCK_DOF):
+                for j in range(BLOCK_DOF):
+                    self.full_block_inverse[block_id, i, j] = \
+                        self.full_block_matrix[block_id, i, j]
+
+            # One-way Gauss-Jordan elimination
+            for j in range(BLOCK_DOF):
+                # Get pivot (no search - assume SPD so diagonal is positive)
+                rt = self.full_block_inverse[block_id, j, j]
+
+                # Handle near-zero diagonal with regularization
+                if ti.abs(rt) < 1e-10:
+                    rt = 1e-6
+                    self.full_block_inverse[block_id, j, j] = rt
+
+                inv_rt = 1.0 / rt
+
+                # Scale row j by 1/rt
+                for i in range(BLOCK_DOF):
+                    self.full_block_inverse[block_id, j, i] *= inv_rt
+
+                # Eliminate in all other rows
+                for k in range(BLOCK_DOF):
+                    if k != j:
+                        factor = self.full_block_inverse[block_id, k, j]
+                        for i in range(BLOCK_DOF):
+                            self.full_block_inverse[block_id, k, i] -= \
+                                factor * self.full_block_inverse[block_id, j, i]
+
+            # Symmetry recovery (CUDA lines 707-711)
+            # For 3x3 sub-blocks: enforce symmetry by averaging
+            # Pattern: for each 3x3 block, copy upper to lower
+            for node_i in range(BANKSIZE):
+                for node_j in range(node_i + 1, BANKSIZE):
+                    # Copy upper triangle to lower triangle for 3x3 sub-block
+                    for di in ti.static(range(3)):
+                        for dj in ti.static(range(3)):
+                            row = node_i * 3 + di
+                            col = node_j * 3 + dj
+                            row_t = node_j * 3 + dj
+                            col_t = node_i * 3 + di
+                            # Average for numerical stability
+                            avg = 0.5 * (self.full_block_inverse[block_id, row, col] +
+                                        self.full_block_inverse[block_id, row_t, col_t])
+                            self.full_block_inverse[block_id, row, col] = avg
+                            self.full_block_inverse[block_id, row_t, col_t] = avg
+
+    # ========================================================================
+    # P5 Optimization: Conflict-free Symmetric Matrix-Vector Multiplication
+    # ========================================================================
+    #
+    # CUDA Reference: _schwarzLocalXSym6() in MASPreconditioner.cu lines 957-1027
+    #
+    # Key optimization: Instead of nested loops with branching for symmetric access,
+    # use a flattened parallel structure:
+    #
+    # 1. Parallel over (block_id, lane_i, lane_j) for upper triangle only
+    # 2. Each thread computes contribution M[i,j] * r[j] for upper triangle
+    # 3. Add symmetric contribution M[j,i] * r[j] = M[i,j]^T * r[j] simultaneously
+    # 4. Atomic-free accumulation using local buffers per output row
+    #
+    # CUDA uses __shfl_down_sync for warp reduction; Taichi uses ti.atomic_add
+    # with careful access patterns to minimize conflicts.
+
+    @ti.kernel
+    def _schwarz_local_solve_conflict_free(self):
+        """
+        Conflict-free symmetric matrix-vector multiplication.
+
+        Optimization over _schwarz_local_solve_full:
+        1. Parallel over all (block_id, lane_i) pairs
+        2. Unrolled 3x3 matrix-vector multiply (no inner loops)
+        3. Direct symmetric storage access without branching
+        4. Pre-computed symmetric indices
+
+        CUDA Reference: _schwarzLocalXSym6() (MASPreconditioner.cu lines 957-1027)
+        """
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Level 0: Parallel over (block_id, lane_i)
+        for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
+            idx_i = block_id * BANKSIZE + lane_i
+            if idx_i < self.n_verts:
+                # Load residual for row i
+                r_i = self.multi_level_r[idx_i]
+
+                # Accumulate z using unrolled computation
+                z0 = ti.f32(0.0)
+                z1 = ti.f32(0.0)
+                z2 = ti.f32(0.0)
+
+                # Process upper triangle (lane_j >= lane_i): use M[i,j] directly
+                for lane_j in range(BANKSIZE):
+                    idx_j = block_id * BANKSIZE + lane_j
+                    if idx_j < self.n_verts:
+                        r_j = self.multi_level_r[idx_j]
+
+                        # Compute symmetric index - always access upper triangle
+                        # sym_idx formula: row * BANKSIZE - row*(row+1)/2 + col (row <= col)
+                        min_lane = ti.min(lane_i, lane_j)
+                        max_lane = ti.max(lane_i, lane_j)
+                        sym_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                        inv_block = self.inv_block_matrices[block_id, sym_idx]
+
+                        # Matrix-vector multiply: z += inv_block @ r_j (or transpose if lower)
+                        if lane_i <= lane_j:
+                            # Upper triangle: use directly
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                            z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                            z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                        else:
+                            # Lower triangle: use transpose
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                            z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                            z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+        # Coarse levels
+        for level in range(1, self.level_num):
+            level_offset = self.level_size[level][1]
+            level_size = self.level_size[level][0]
+            n_coarse_blocks = (level_size + BANKSIZE - 1) // BANKSIZE
+
+            for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
+                first_node_in_block = level_offset + local_block_id * BANKSIZE
+                block_id = first_node_in_block // BANKSIZE
+
+                idx_i = level_offset + local_block_id * BANKSIZE + lane_i
+                if idx_i < level_offset + level_size:
+                    # Accumulate z
+                    z0 = ti.f32(0.0)
+                    z1 = ti.f32(0.0)
+                    z2 = ti.f32(0.0)
+
+                    for lane_j in range(BANKSIZE):
+                        idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                        if idx_j < level_offset + level_size:
+                            r_j = self.multi_level_r[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            sym_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            inv_block = self.inv_block_matrices[block_id, sym_idx]
+
+                            if lane_i <= lane_j:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                                z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                                z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                            else:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                                z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                                z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                    self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+    # ========================================================================
+    # P6 Optimization: Banded Sparse MV for IC(0)
+    # ========================================================================
+    #
+    # When using IC(0) with BANDWIDTH=6 (2 nodes × 3 DOF), the inverse matrix
+    # has a banded structure. Instead of computing all 16×16 = 256 node pairs,
+    # we only compute pairs within the bandwidth: |node_i - node_j| <= 2.
+    #
+    # This reduces computation from 256 to ~80 node pairs (16 diagonal + 32×2 off-diagonal).
+    #
+    # The key insight is that IC(0) preserves sparsity in L^{-1}, so (L L^T)^{-1}
+    # also has limited bandwidth in practice.
+    #
+    # Benefits:
+    # - 3x fewer multiplications in local solve
+    # - Better cache locality (sequential node access)
+    # - Combines well with IC(0) for maximum speedup
+
+    @ti.kernel
+    def _schwarz_local_solve_banded(self):
+        """
+        Banded sparse matrix-vector multiplication for IC(0).
+
+        Only computes z_i = sum_j M^{-1}[i,j] * r[j] for |node_i - node_j| <= NODE_BANDWIDTH.
+
+        For BANDWIDTH=6 (DOF level), this corresponds to NODE_BANDWIDTH=2 (node level).
+
+        Complexity: O(n_blocks * BANKSIZE * NODE_BANDWIDTH) instead of O(n_blocks * BANKSIZE^2)
+
+        P6 Optimization for use with IC(0).
+        """
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Node-level bandwidth: BANDWIDTH / 3 = 2 nodes
+        # We process node pairs where |lane_i - lane_j| <= 2
+        NODE_BANDWIDTH = 2
+
+        # Level 0: Banded sparse MV
+        for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
+            idx_i = block_id * BANKSIZE + lane_i
+            if idx_i < self.n_verts:
+                z0 = ti.f32(0.0)
+                z1 = ti.f32(0.0)
+                z2 = ti.f32(0.0)
+
+                # Only iterate over nodes within bandwidth
+                lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                for lane_j in range(lane_j_start, lane_j_end):
+                    idx_j = block_id * BANKSIZE + lane_j
+                    if idx_j < self.n_verts:
+                        r_j = self.multi_level_r[idx_j]
+
+                        # Symmetric index calculation
+                        min_lane = ti.min(lane_i, lane_j)
+                        max_lane = ti.max(lane_i, lane_j)
+                        sym_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                        inv_block = self.inv_block_matrices[block_id, sym_idx]
+
+                        # Matrix-vector multiply with transpose handling
+                        if lane_i <= lane_j:
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                            z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                            z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                        else:
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                            z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                            z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+        # Coarse levels: also use banded structure
+        for level in range(1, self.level_num):
+            level_offset = self.level_size[level][1]
+            level_size = self.level_size[level][0]
+            n_coarse_blocks = (level_size + BANKSIZE - 1) // BANKSIZE
+
+            for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
+                first_node_in_block = level_offset + local_block_id * BANKSIZE
+                block_id = first_node_in_block // BANKSIZE
+
+                idx_i = level_offset + local_block_id * BANKSIZE + lane_i
+                if idx_i < level_offset + level_size:
+                    z0 = ti.f32(0.0)
+                    z1 = ti.f32(0.0)
+                    z2 = ti.f32(0.0)
+
+                    # Banded iteration for coarse levels
+                    lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                    lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                    for lane_j in range(lane_j_start, lane_j_end):
+                        idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                        if idx_j < level_offset + level_size:
+                            r_j = self.multi_level_r[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            sym_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            inv_block = self.inv_block_matrices[block_id, sym_idx]
+
+                            if lane_i <= lane_j:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                                z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                                z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                            else:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                                z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                                z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                    self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
 
     # ========================================================================
     # Preconditioning Operation (z = P * g)
@@ -2786,7 +3107,8 @@ class MASPreconditioner:
             self.mesh.verts.z[idx] = ti.cast(z_total, ti.f32)
 
     def apply(self, use_full_solve: bool = True, use_parallel_solve: bool = False,
-              use_warp_reduction: bool = True):
+              use_warp_reduction: bool = True, use_conflict_free: bool = False,
+              use_banded: bool = False):
         """
         Apply MAS preconditioner: z = P * grad
 
@@ -2802,6 +3124,13 @@ class MASPreconditioner:
                                This can be faster on GPUs with many cores.
             use_warp_reduction: If True, use P1 optimized warp-level reduction
                                for restriction phase. Default True.
+            use_conflict_free: If True, use P5 conflict-free SpMV for local solve.
+                              This uses unrolled matrix-vector multiply for better
+                              instruction-level parallelism. Default False.
+            use_banded: If True, use P6 banded sparse MV for local solve.
+                       This is optimized for IC(0) which produces banded inverse.
+                       Only accesses node pairs within NODE_BANDWIDTH=2.
+                       Should be used together with IC(0) inversion for best results.
         """
         # Clear buffers
         self._clear_multi_level_buffers()
@@ -2815,7 +3144,13 @@ class MASPreconditioner:
 
         # Phase 2: Local solve
         if use_full_solve:
-            if use_parallel_solve:
+            if use_banded:
+                # P6 optimization: banded sparse MV for IC(0)
+                self._schwarz_local_solve_banded()
+            elif use_conflict_free:
+                # P5 optimization: conflict-free SpMV with unrolled MatVec
+                self._schwarz_local_solve_conflict_free()
+            elif use_parallel_solve:
                 self._schwarz_local_solve_full_parallel()
             else:
                 self._schwarz_local_solve_full()
@@ -4144,3 +4479,529 @@ class MASPreconditioner:
                     z_total += self.multi_level_z[coarse_idx]
 
             z_field[i] = ti.cast(z_total, ti.f32)
+
+
+# ==============================================================================
+# SRBK SpMV: Symmetric Reduce-By-Key Sparse Matrix-Vector Multiplication
+# ==============================================================================
+#
+# Reference: /root/Stiff-GIPC_init/StiffGIPC/linear_system/utils/spmv.cu
+#
+# This implements a GPU-optimized symmetric SpMV that:
+# 1. Only stores upper triangle of symmetric matrix
+# 2. Uses reduce-by-key pattern for efficient accumulation
+# 3. Processes both A[i,j] and A[j,i]^T simultaneously
+
+
+@ti.data_oriented
+class SRBKSpMV:
+    """
+    Symmetric Reduce-By-Key Sparse Matrix-Vector Multiplication.
+
+    This class implements the SRBK SpMV algorithm from StiffGIPC for computing
+    y = A * x where A is a symmetric sparse matrix stored in block-triplet format.
+
+    Key optimizations:
+    1. Upper triangle storage: Only store (i,j) where i <= j
+    2. Symmetric processing: Compute both upper and lower contributions simultaneously
+    3. Row-grouped accumulation: Triplets sorted by row for efficient reduction
+    4. Warp-level parallelism: Multiple threads per row reduce before atomic write
+    """
+
+    def __init__(self, max_triplets: int, n_dofs: int):
+        """
+        Initialize SRBK SpMV structures.
+
+        Args:
+            max_triplets: Maximum number of 3x3 block triplets
+            n_dofs: Number of degrees of freedom (3 * n_verts)
+        """
+        self.max_triplets = max_triplets
+        self.n_dofs = n_dofs
+        self.n_verts = n_dofs // 3
+
+        # Triplet storage: (row_id, col_id, value) where value is 3x3 block
+        # Row and col are block (vertex) indices, not DOF indices
+        self.triplet_row = ti.field(dtype=ti.i32, shape=max_triplets)
+        self.triplet_col = ti.field(dtype=ti.i32, shape=max_triplets)
+        self.triplet_val = ti.Matrix.field(3, 3, dtype=ti.f64, shape=max_triplets)
+
+        # Triplet count
+        self.n_triplets = ti.field(dtype=ti.i32, shape=())
+
+        # Row segment information for reduce-by-key
+        # row_starts[i] = first triplet index for row i
+        self.row_starts = ti.field(dtype=ti.i32, shape=self.n_verts + 1)
+
+        # Work buffers for reduction
+        self.y_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+
+        # Flag for whether triplets are sorted
+        self.sorted = False
+
+    def clear(self):
+        """Clear all triplets."""
+        self.n_triplets[None] = 0
+        self.sorted = False
+
+    @ti.kernel
+    def add_triplet(self, row: ti.i32, col: ti.i32, val: ti.types.matrix(3, 3, ti.f64)):
+        """
+        Add a single 3x3 block triplet.
+
+        For symmetric matrices, only add upper triangle (row <= col).
+        The SpMV will automatically handle the symmetric contribution.
+        """
+        idx = ti.atomic_add(self.n_triplets[None], 1)
+        if idx < self.max_triplets:
+            # Ensure upper triangle storage
+            if row <= col:
+                self.triplet_row[idx] = row
+                self.triplet_col[idx] = col
+                self.triplet_val[idx] = val
+            else:
+                self.triplet_row[idx] = col
+                self.triplet_col[idx] = row
+                self.triplet_val[idx] = val.transpose()
+
+    def sort_by_row(self):
+        """
+        Sort triplets by row index for efficient reduce-by-key.
+
+        Uses numpy for sorting since Taichi doesn't have efficient parallel sort.
+        """
+        n = self.n_triplets[None]
+        if n == 0:
+            self.sorted = True
+            return
+
+        # Extract to numpy
+        rows_np = self.triplet_row.to_numpy()[:n]
+        cols_np = self.triplet_col.to_numpy()[:n]
+        vals_np = self.triplet_val.to_numpy()[:n]
+
+        # Sort by row, then by col for stability
+        sort_idx = np.lexsort((cols_np, rows_np))
+
+        # Apply sorting
+        rows_sorted = rows_np[sort_idx]
+        cols_sorted = cols_np[sort_idx]
+        vals_sorted = vals_np[sort_idx]
+
+        # Write back
+        temp_rows = np.zeros(self.max_triplets, dtype=np.int32)
+        temp_cols = np.zeros(self.max_triplets, dtype=np.int32)
+        temp_vals = np.zeros((self.max_triplets, 3, 3), dtype=np.float64)
+        temp_rows[:n] = rows_sorted
+        temp_cols[:n] = cols_sorted
+        temp_vals[:n] = vals_sorted
+
+        self.triplet_row.from_numpy(temp_rows)
+        self.triplet_col.from_numpy(temp_cols)
+        self.triplet_val.from_numpy(temp_vals)
+
+        # Compute row_starts using CSR-style computation
+        # row_starts[i] = first triplet index for row i
+        # row_starts[n_verts] = total number of triplets
+        row_starts_np = np.zeros(self.n_verts + 1, dtype=np.int32)
+
+        # Count elements per row
+        row_counts = np.zeros(self.n_verts, dtype=np.int32)
+        for i in range(n):
+            row = rows_sorted[i]
+            row_counts[row] += 1
+
+        # Cumulative sum to get row starts
+        row_starts_np[0] = 0
+        for i in range(self.n_verts):
+            row_starts_np[i + 1] = row_starts_np[i] + row_counts[i]
+
+        self.row_starts.from_numpy(row_starts_np)
+        self.sorted = True
+
+    @ti.kernel
+    def spmv_naive(self, x: ti.template(), y: ti.template(), alpha: ti.f64, beta: ti.f64):
+        """
+        Naive symmetric SpMV: y = alpha * A * x + beta * y
+
+        This is the reference implementation without reduce-by-key optimization.
+        """
+        n = self.n_triplets[None]
+        n_verts = self.n_verts
+
+        # Scale existing y
+        if beta != 0.0:
+            for i in range(n_verts):
+                y[i] = beta * y[i]
+        else:
+            for i in range(n_verts):
+                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+
+        # Process each triplet
+        for tid in range(n):
+            i = self.triplet_row[tid]
+            j = self.triplet_col[tid]
+            mat = self.triplet_val[tid]
+
+            # Upper triangle contribution: y[i] += A[i,j] * x[j]
+            contrib = mat @ x[j]
+            for d in ti.static(range(3)):
+                ti.atomic_add(y[i][d], alpha * contrib[d])
+
+            # Lower triangle contribution: y[j] += A[j,i] * x[i] = A[i,j]^T * x[i]
+            if i != j:
+                contrib_t = mat.transpose() @ x[i]
+                for d in ti.static(range(3)):
+                    ti.atomic_add(y[j][d], alpha * contrib_t[d])
+
+    @ti.kernel
+    def spmv_row_parallel(self, x: ti.template(), y: ti.template(), alpha: ti.f64, beta: ti.f64):
+        """
+        Row-parallel symmetric SpMV: y = alpha * A * x + beta * y
+
+        This version processes each row in parallel, reducing atomic conflicts
+        by accumulating row contributions locally before writing.
+
+        Reference: _schwarzLocalXSym9 in MASPreconditioner.cu (lines 1045-1129)
+        """
+        n_verts = self.n_verts
+
+        # Initialize output
+        if beta != 0.0:
+            for i in range(n_verts):
+                y[i] = beta * y[i]
+        else:
+            for i in range(n_verts):
+                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+
+        # Clear work buffer
+        for i in range(n_verts):
+            self.y_buffer[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+
+        # Process each row in parallel
+        for row in range(n_verts):
+            start = self.row_starts[row]
+            end = self.row_starts[row + 1]
+
+            # Accumulate row contribution locally
+            row_sum = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+
+            for tid in range(start, end):
+                j = self.triplet_col[tid]
+                mat = self.triplet_val[tid]
+
+                # Upper triangle contribution: y[row] += A[row,j] * x[j]
+                row_sum += mat @ x[j]
+
+                # Lower triangle contribution: y[j] += A[j,row] * x[row]
+                if row != j:
+                    contrib_t = mat.transpose() @ x[row]
+                    for d in ti.static(range(3)):
+                        ti.atomic_add(self.y_buffer[j][d], contrib_t[d])
+
+            # Write row sum (no atomics needed for diagonal)
+            y[row] += alpha * row_sum
+
+        # Add lower triangle contributions
+        for i in range(n_verts):
+            y[i] += alpha * self.y_buffer[i]
+
+    def spmv(self, x, y, alpha: float = 1.0, beta: float = 0.0):
+        """
+        Compute y = alpha * A * x + beta * y
+
+        Args:
+            x: Input vector, ti.Vector.field(3, f64, shape=n_verts)
+            y: Output vector, ti.Vector.field(3, f64, shape=n_verts)
+            alpha: Scalar multiplier for A*x
+            beta: Scalar multiplier for existing y
+        """
+        if not self.sorted:
+            self.sort_by_row()
+
+        self.spmv_row_parallel(x, y, alpha, beta)
+
+
+# ==============================================================================
+# Improved Warp Reduction for Multi-level Restriction
+# ==============================================================================
+#
+# Reference: __buildMultiLevelR_optimized_new in MASPreconditioner.cu (lines 729-847)
+#
+# Key optimizations from CUDA:
+# 1. Boundary detection using __ballot_sync
+# 2. Interval calculation using __brev and __clz
+# 3. Warp-level reduction using __shfl_down_sync
+#
+# Taichi implementation uses field-based tree reduction as substitute.
+
+
+@ti.func
+def _bit_reverse_u32(x: ti.u32) -> ti.u32:
+    """
+    Reverse bits of a 32-bit unsigned integer.
+
+    Equivalent to CUDA's __brev() intrinsic.
+    """
+    x = ((x & ti.u32(0x55555555)) << 1) | ((x & ti.u32(0xAAAAAAAA)) >> 1)
+    x = ((x & ti.u32(0x33333333)) << 2) | ((x & ti.u32(0xCCCCCCCC)) >> 2)
+    x = ((x & ti.u32(0x0F0F0F0F)) << 4) | ((x & ti.u32(0xF0F0F0F0)) >> 4)
+    x = ((x & ti.u32(0x00FF00FF)) << 8) | ((x & ti.u32(0xFF00FF00)) >> 8)
+    x = (x << 16) | (x >> 16)
+    return x
+
+
+@ti.func
+def _count_leading_zeros_u32(x: ti.u32) -> ti.i32:
+    """
+    Count leading zeros in a 32-bit unsigned integer.
+
+    Equivalent to CUDA's __clz() intrinsic.
+    """
+    n = ti.i32(32)  # Default for x == 0
+
+    if x != 0:
+        n = ti.i32(0)
+        x_copy = x
+        if (x_copy & ti.u32(0xFFFF0000)) == 0:
+            n += 16
+            x_copy <<= 16
+        if (x_copy & ti.u32(0xFF000000)) == 0:
+            n += 8
+            x_copy <<= 8
+        if (x_copy & ti.u32(0xF0000000)) == 0:
+            n += 4
+            x_copy <<= 4
+        if (x_copy & ti.u32(0xC0000000)) == 0:
+            n += 2
+            x_copy <<= 2
+        if (x_copy & ti.u32(0x80000000)) == 0:
+            n += 1
+
+    return n
+
+
+@ti.func
+def _popcount_u32(x: ti.u32) -> ti.i32:
+    """
+    Count set bits (population count) in a 32-bit unsigned integer.
+
+    Equivalent to CUDA's __popc() intrinsic.
+    """
+    x = x - ((x >> 1) & ti.u32(0x55555555))
+    x = (x & ti.u32(0x33333333)) + ((x >> 2) & ti.u32(0x33333333))
+    x = (x + (x >> 4)) & ti.u32(0x0F0F0F0F)
+    x = x + (x >> 8)
+    x = x + (x >> 16)
+    return ti.i32(x & ti.u32(0x3F))
+
+
+@ti.func
+def _find_first_set_u32(x: ti.u32) -> ti.i32:
+    """
+    Find position of first set bit (1-indexed, returns 0 if no bits set).
+
+    Equivalent to CUDA's __ffs() intrinsic.
+    """
+    result = ti.i32(0)
+    if x != 0:
+        # x & (~x + 1) isolates the lowest set bit
+        lowest_bit = x & (~x + ti.u32(1))
+        result = 32 - _count_leading_zeros_u32(lowest_bit)
+    return result
+
+
+@ti.data_oriented
+class WarpReductionHelper:
+    """
+    Helper class for warp-level reduction operations.
+
+    Since Taichi 1.7.4 doesn't support ti.simt warp primitives,
+    this class provides field-based alternatives that emulate the
+    behavior of CUDA warp intrinsics.
+
+    Reference: MASPreconditioner.cu (lines 930-948)
+    """
+
+    def __init__(self, n_warps: int, warp_size: int = 16):
+        """
+        Initialize warp reduction helper.
+
+        Args:
+            n_warps: Number of warps (blocks) in the computation
+            warp_size: Size of each warp (default: BANKSIZE=16)
+        """
+        self.n_warps = n_warps
+        self.warp_size = warp_size
+
+        # Reduction buffer: [warp_id, lane_id, component]
+        self.reduction_buffer = ti.field(dtype=ti.f32, shape=(n_warps, warp_size, 3))
+
+        # Boundary mask for each warp
+        self.boundary_mask = ti.field(dtype=ti.u32, shape=n_warps)
+
+        # Reduction interval for each lane
+        self.reduction_interval = ti.field(dtype=ti.i32, shape=(n_warps, warp_size))
+
+    @ti.kernel
+    def compute_boundary_mask(self, connect_mask: ti.template(), n_verts: ti.i32):
+        """
+        Compute boundary mask for each warp based on connectivity.
+
+        A lane is a boundary if:
+        1. It's lane 0 (always a boundary)
+        2. Its connectivity differs from the previous lane
+
+        Reference: MASPreconditioner.cu lines 932-937
+        """
+        for warp_id in range(self.n_warps):
+            mask = ti.u32(0)
+
+            for lane_id in range(self.warp_size):
+                idx = warp_id * self.warp_size + lane_id
+                is_boundary = False
+
+                if idx < n_verts:
+                    if lane_id == 0:
+                        is_boundary = True
+                    else:
+                        # Check if connectivity differs from previous lane
+                        prev_idx = idx - 1
+                        curr_conn = connect_mask[idx]
+                        prev_conn = connect_mask[prev_idx] if prev_idx >= 0 else ti.u32(0)
+
+                        # Find representative for each
+                        curr_rep = _find_first_set_u32(curr_conn) - 1
+                        prev_rep = _find_first_set_u32(prev_conn) - 1
+
+                        is_boundary = (curr_rep != prev_rep)
+
+                if is_boundary:
+                    mask |= ti.u32(1) << ti.u32(lane_id)
+
+            self.boundary_mask[warp_id] = mask
+
+    @ti.kernel
+    def compute_reduction_intervals(self):
+        """
+        Compute reduction interval for each lane based on boundary mask.
+
+        The interval is the distance to the next boundary, used to determine
+        how many lanes should be reduced together.
+
+        Reference: MASPreconditioner.cu lines 936-937
+        """
+        for warp_id in range(self.n_warps):
+            mask = self.boundary_mask[warp_id]
+
+            for lane_id in range(self.warp_size):
+                # Reverse bits and count leading zeros after this position
+                reversed_mask = _bit_reverse_u32(mask)
+                shifted = reversed_mask << ti.u32(lane_id + 1)
+                clz = _count_leading_zeros_u32(shifted)
+
+                # Interval is min of clz and remaining lanes
+                interval = ti.min(clz, 31 - lane_id)
+                self.reduction_interval[warp_id, lane_id] = interval
+
+    @ti.kernel
+    def load_data(self, data: ti.template(), n_verts: ti.i32):
+        """Load data into reduction buffer."""
+        for idx in range(n_verts):
+            warp_id = idx // self.warp_size
+            lane_id = idx % self.warp_size
+
+            for d in ti.static(range(3)):
+                self.reduction_buffer[warp_id, lane_id, d] = data[idx][d]
+
+    @ti.kernel
+    def tree_reduce(self):
+        """
+        Perform tree reduction within each segment.
+
+        This emulates CUDA's __shfl_down_sync reduction pattern using
+        explicit memory operations.
+
+        Reference: MASPreconditioner.cu lines 940-948
+        """
+        for warp_id in range(self.n_warps):
+            # Reduction steps: stride = 8, 4, 2, 1
+            # Step 0: stride = 8
+            for lane_id in range(8):
+                src_lane = lane_id + 8
+                interval = self.reduction_interval[warp_id, lane_id]
+
+                if interval >= 8:
+                    for d in ti.static(range(3)):
+                        self.reduction_buffer[warp_id, lane_id, d] += \
+                            self.reduction_buffer[warp_id, src_lane, d]
+
+            # Step 1: stride = 4
+            for lane_id in range(8):
+                if lane_id < 4 or (lane_id >= 8 and lane_id < 12):
+                    src_lane = lane_id + 4
+                    interval = self.reduction_interval[warp_id, lane_id]
+
+                    if interval >= 4:
+                        for d in ti.static(range(3)):
+                            self.reduction_buffer[warp_id, lane_id, d] += \
+                                self.reduction_buffer[warp_id, src_lane, d]
+
+            # Step 2: stride = 2
+            for lane_id in range(self.warp_size):
+                if lane_id % 4 < 2:
+                    src_lane = lane_id + 2
+                    interval = self.reduction_interval[warp_id, lane_id]
+
+                    if interval >= 2:
+                        for d in ti.static(range(3)):
+                            self.reduction_buffer[warp_id, lane_id, d] += \
+                                self.reduction_buffer[warp_id, src_lane, d]
+
+            # Step 3: stride = 1
+            for lane_id in range(self.warp_size):
+                if lane_id % 2 == 0:
+                    src_lane = lane_id + 1
+                    interval = self.reduction_interval[warp_id, lane_id]
+
+                    if interval >= 1:
+                        for d in ti.static(range(3)):
+                            self.reduction_buffer[warp_id, lane_id, d] += \
+                                self.reduction_buffer[warp_id, src_lane, d]
+
+    @ti.kernel
+    def write_boundary_results(self, output: ti.template(), n_verts: ti.i32):
+        """
+        Write reduced results from boundary lanes to output.
+
+        Only boundary lanes (segment heads) write their accumulated values.
+        """
+        for warp_id in range(self.n_warps):
+            mask = self.boundary_mask[warp_id]
+
+            for lane_id in range(self.warp_size):
+                idx = warp_id * self.warp_size + lane_id
+
+                if idx < n_verts:
+                    # Check if this is a boundary lane
+                    is_boundary = (mask >> ti.u32(lane_id)) & 1
+
+                    if is_boundary:
+                        for d in ti.static(range(3)):
+                            output[idx][d] = self.reduction_buffer[warp_id, lane_id, d]
+
+    def reduce(self, data, output, n_verts: int, connect_mask):
+        """
+        Perform full segmented reduction.
+
+        Args:
+            data: Input data, ti.Vector.field(3, float, shape=n_verts)
+            output: Output data, ti.Vector.field(3, float, shape=n_verts)
+            n_verts: Number of vertices
+            connect_mask: Connectivity mask, ti.field(u32, shape=n_verts)
+        """
+        self.compute_boundary_mask(connect_mask, n_verts)
+        self.compute_reduction_intervals()
+        self.load_data(data, n_verts)
+        self.tree_reduce()
+        self.write_boundary_results(output, n_verts)

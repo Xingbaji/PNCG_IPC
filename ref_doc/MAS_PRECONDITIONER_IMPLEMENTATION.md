@@ -737,8 +737,60 @@ def estimate_total_nodes():
 
 ---
 
+## 11. Modular Package Structure
+
+MAS Preconditioner已被重构为模块化包结构 (`algorithm/mas_preconditioner_pkg/`):
+
+```
+mas_preconditioner_pkg/
+├── __init__.py          # 模块导出
+├── constants.py         # 核心常量 (BANKSIZE=16, MAX_LEVELS=6, SYM_BLOCK_COUNT=136)
+├── core.py              # 主MASPreconditioner类
+├── topology.py          # 网格拓扑和邻居构建
+├── assembly.py          # 矩阵组装 (弹性+接触Hessian)
+├── inversion.py         # 块矩阵求逆算法
+├── schwarz.py           # Schwarz局部求解器
+├── hierarchy.py         # 多级限制与延拓
+├── woodbury.py          # Woodbury低秩更新
+├── metis_integration.py # METIS重排序集成
+├── simple_api.py        # 简化API接口
+├── spmv.py              # 稀疏矩阵向量乘
+└── warp_utils.py        # Warp工具函数
+```
+
+### 使用方法
+
+```python
+# 从模块化包导入
+from algorithm.mas_preconditioner_pkg import MASPreconditioner
+
+# 使用方式与原单文件版本相同
+mas = MASPreconditioner(n_verts, n_cells, mesh, use_metis=False)
+mas.build_hierarchy()
+mas.assemble_block_matrices(solver)
+mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+mas.apply()
+```
+
+### 测试框架
+
+完整的单元测试框架位于 `n_E_demos/test_mas_pkg_unittest.py`:
+
+```bash
+# 运行所有测试 (37个)
+python test_mas_pkg_unittest.py
+
+# 性能基准测试
+python test_mas_pkg_unittest.py --benchmark
+```
+
+详见: `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md`
+
+---
+
 ## References
 
 1. **StiffGIPC Paper**: "StiffGIPC: Advancing GPU IPC for Stiff Affine-Deformable Simulation"
 2. **CUDA Reference**: `/root/Stiff-GIPC_init/StiffGIPC/MASPreconditioner.cu`
 3. **MAS Original Paper**: Wu et al. 2022, "A GPU-based multilevel additive schwarz preconditioner"
+4. **Testing Documentation**: `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md`

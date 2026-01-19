@@ -546,7 +546,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 50, 'height': 0.5,
-                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'ARAP_filter', 'adj': 0, 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -605,7 +605,52 @@ class model_loading:
                 'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
                 'use_mas': False,
             }
-            self.load_demo_n_object(demo, demo_dict)            
+            self.load_demo_n_object(demo, demo_dict)
+
+        # ========== MAS Free-Fall Validation Tests ==========
+        # Collision-free demos for validating MAS solver correctness
+        # Compare with Newton's law ground truth: y(t) = y0 + v0*t + 0.5*g*t^2
+
+        elif demo == 'cube_freefall':
+            # Basic cube free-fall test (smallest cube)
+            demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'model_paths': ['../model/mesh/cube/cube.node'],
+                         'rotations': [[0, 0, 0]],
+                         'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
+                         }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        elif demo == 'cube_freefall_10':
+            # cube_10 free-fall test
+            demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'model_paths': ['../model/mesh/cube_10/cube_10.node'],
+                         'rotations': [[0, 0, 0]],
+                         'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
+                         }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        elif demo == 'cube_freefall_20':
+            # cube_20 free-fall test
+            demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'model_paths': ['../model/mesh/cube_20/cube_20.node'],
+                         'rotations': [[0, 0, 0]],
+                         'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
+                         }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        elif demo == 'cube_freefall_40':
+            # cube_40 free-fall test (largest cube)
+            demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'model_paths': ['../model/mesh/cube_40/cube_40.node'],
+                         'rotations': [[0, 0, 0]],
+                         'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
+                         }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
         else:
             raise Exception('demo not found')
 
