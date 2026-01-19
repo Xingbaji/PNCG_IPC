@@ -234,6 +234,22 @@ class PrecondDirectionTester:
                 else:
                     vert.z[i] = vert.grad[i]
 
+    def extract_cell_verts(self):
+        """Extract cell-vertex connectivity using Taichi kernel."""
+        # Allocate storage for cell vertices
+        cell_verts_field = ti.field(dtype=ti.i32, shape=(self.n_cells, 4))
+
+        @ti.kernel
+        def _extract_cell_verts(cell_verts: ti.template()):
+            for c in self.mesh.cells:
+                cell_verts[c.id, 0] = c.verts[0].id
+                cell_verts[c.id, 1] = c.verts[1].id
+                cell_verts[c.id, 2] = c.verts[2].id
+                cell_verts[c.id, 3] = c.verts[3].id
+
+        _extract_cell_verts(cell_verts_field)
+        return cell_verts_field.to_numpy()
+
     def build_sparse_hessian(self):
         """
         Build full sparse Hessian matrix for ground truth computation.
@@ -262,7 +278,7 @@ class PrecondDirectionTester:
 
         # Element Hessian contributions
         # Get cell-vertex connectivity (4 vertices per tetrahedral cell)
-        cell_verts = self.mesh.cells.verts.to_numpy()  # Shape: (n_cells, 4)
+        cell_verts = self.extract_cell_verts()  # Shape: (n_cells, 4)
         B_np = self.mesh.cells.B.to_numpy()
         W_np = self.mesh.cells.W.to_numpy()
 
