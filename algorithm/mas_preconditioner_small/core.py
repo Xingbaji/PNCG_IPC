@@ -1,7 +1,8 @@
 """
 MAS Preconditioner Small - Core implementation.
 
-Simplified single-file implementation for fast compilation.
+Simplified single-file implementation with METIS support.
+METIS reordering is computed ONCE at initialization and reused.
 """
 
 import taichi as ti
@@ -29,28 +30,42 @@ def sym_index(row: ti.i32, col: ti.i32) -> ti.i32:
 @ti.data_oriented
 class MASPreconditionerSmall:
     """
-    Simplified MAS Preconditioner with minimal features for fast compilation.
+    Simplified MAS Preconditioner with METIS support.
 
-    Only includes:
+    Key features:
+    - METIS reordering computed ONCE at initialization
     - ARAP elastic Hessian
     - IC(0) inversion
     - Banded local solve
+    - Correct prolongation using going_next hierarchy
     """
 
-    def __init__(self, mesh, max_verts: int = None):
+    def __init__(self, mesh, metis_result=None, max_verts: int = None):
         """
         Initialize MAS Preconditioner.
 
         Args:
             mesh: MeshTaichi mesh object
+            metis_result: Pre-computed MetisReorderResult (computed once at sim start)
             max_verts: Maximum number of vertices (default: mesh.verts.size)
         """
         self.mesh = mesh
-        self.n_verts = mesh.verts.size
-        self.n_cells = mesh.cells.size
+        self.n_verts = len(mesh.verts)
+        self.n_cells = len(mesh.cells)
 
         if max_verts is None:
             max_verts = self.n_verts
+
+        # METIS reordering (computed once, reused throughout simulation)
+        self.use_metis = metis_result is not None and metis_result.is_valid()
+        self.metis_result = metis_result
+
+        if self.use_metis:
+            self.n_parts = metis_result.n_parts
+            print(f"[MAS-Small] Using METIS reordering: {self.n_parts} partitions")
+        else:
+            self.n_parts = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+            print(f"[MAS-Small] No METIS: {self.n_parts} sequential blocks")
 
         # Compute hierarchy sizes
         self.level_num = min(MAX_LEVELS, self._compute_level_num(self.n_verts))
@@ -79,6 +94,13 @@ class MASPreconditionerSmall:
         # Multi-level buffers
         self.multi_level_r = ti.Vector.field(3, dtype=ti.f32, shape=self.total_nodes_all_levels)
         self.multi_level_z = ti.Vector.field(3, dtype=ti.f32, shape=self.total_nodes_all_levels)
+
+        # METIS partition mappings (Taichi fields for GPU access)
+        if self.use_metis:
+            self.partId_map_real = ti.field(dtype=ti.i32, shape=self.n_parts * BANKSIZE)
+            self.real_map_partId = ti.field(dtype=ti.i32, shape=self.n_verts)
+            self.partId_map_real.from_numpy(metis_result.partId_map_real)
+            self.real_map_partId.from_numpy(metis_result.real_map_partId)
 
         # State flags
         self.hierarchy_built = False
@@ -158,14 +180,79 @@ class MASPreconditionerSmall:
             for i in range(last_size):
                 self.going_next[last_offset + i] = -1
 
+    @ti.kernel
+    def _build_going_next_metis(self, level_num: ti.i32):
+        """
+        Build going_next mapping using METIS partition structure.
+
+        For METIS, Level 0 vertices map to coarse level based on their partition ID,
+        not their sequential position.
+        """
+        if level_num == 1:
+            for i in range(self.n_verts):
+                self.going_next[i] = -1
+        else:
+            # Level 0: vertices map to coarse based on METIS partition
+            for i in range(self.n_verts):
+                # Get partition info
+                part_info = self.real_map_partId[i]
+                part_id = part_info // BANKSIZE
+                # Coarse node index = level_1_offset + partition_id
+                coarse_idx = self.level_size[1][1] + part_id
+                self.going_next[i] = coarse_idx
+
+            # Higher levels: sequential mapping (same as non-METIS)
+            for level in range(1, level_num - 1):
+                level_offset = self.level_size[level][1]
+                level_size_val = self.level_size[level][0]
+                next_offset = self.level_size[level + 1][1]
+
+                for i in range(level_size_val):
+                    idx = level_offset + i
+                    coarse_idx = next_offset + i // BANKSIZE
+                    self.going_next[idx] = coarse_idx
+
+            # Last level: map to -1
+            last_offset = self.level_size[level_num - 1][1]
+            last_size = self.level_size[level_num - 1][0]
+            for i in range(last_size):
+                self.going_next[last_offset + i] = -1
+
     def build_hierarchy(self):
         """Build the multi-level hierarchy."""
-        self._build_going_next(self.level_num)
+        if self.use_metis:
+            # Recompute level sizes for METIS
+            # Level 1 size = number of METIS partitions
+            level_1_size = self.n_parts
+            level_1_offset = self.n_verts
+
+            sizes = [self.n_verts, level_1_size]
+            offsets = [0, level_1_offset]
+
+            # Compute higher levels
+            size = level_1_size
+            offset = level_1_offset + size
+            for _ in range(2, self.level_num):
+                size = (size + BANKSIZE - 1) // BANKSIZE
+                sizes.append(size)
+                offsets.append(offset)
+                offset += size
+
+            # Update level_size field
+            for i in range(len(sizes)):
+                self.level_size[i] = ti.Vector([sizes[i], offsets[i]])
+
+            self._build_going_next_metis(self.level_num)
+            print(f"[MAS-Small] METIS hierarchy built: {self.level_num} levels, "
+                  f"L0={self.n_verts}, L1={level_1_size}")
+        else:
+            self._build_going_next(self.level_num)
+            print(f"[MAS-Small] Hierarchy built: {self.level_num} levels")
+
         self.hierarchy_built = True
-        print(f"[MAS-Small] Hierarchy built: {self.level_num} levels")
 
     # ========================================================================
-    # Matrix Assembly (ARAP only)
+    # Matrix Assembly
     # ========================================================================
 
     @ti.kernel
@@ -187,8 +274,23 @@ class MASPreconditionerSmall:
                 ti.atomic_add(self.block_matrices[warp_id, sym_idx][d, d], mass_val)
 
     @ti.kernel
+    def _add_inertia_contribution_metis(self, dt: ti.f32):
+        """Add mass matrix to diagonal blocks using METIS mapping."""
+        for idx in range(self.n_verts):
+            # Get block and lane from METIS partition
+            part_info = self.real_map_partId[idx]
+            block_id = part_info // BANKSIZE
+            lane_id = part_info % BANKSIZE
+
+            m = self.mesh.verts.m[idx]
+            sym_idx = sym_index(lane_id, lane_id)
+            mass_val = m / (dt * dt)
+            for d in ti.static(range(3)):
+                ti.atomic_add(self.block_matrices[block_id, sym_idx][d, d], mass_val)
+
+    @ti.kernel
     def _add_elastic_contribution_arap(self, mu: ti.f32, la: ti.f32, dt: ti.f32):
-        """Add ARAP elastic Hessian contribution."""
+        """Add ARAP elastic Hessian contribution (non-METIS version)."""
         for c in self.mesh.cells:
             W = c.W
             para = W * dt * dt
@@ -242,6 +344,107 @@ class MASPreconditionerSmall:
                                                   sub_block[dj, di])
                     else:
                         # Cross-warp: propagate to coarse level
+                        vert_i = v_ids[i]
+                        vert_j = v_ids[j]
+
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
+                        for di in ti.static(range(3)):
+                            for dj in ti.static(range(3)):
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
+                        for _ in range(self.level_num - 1):
+                            vert_i = self.going_next[vert_i]
+                            vert_j = self.going_next[vert_j]
+
+                            if vert_i < 0 or vert_j < 0:
+                                break
+
+                            coarse_warp_i = vert_i // BANKSIZE
+                            coarse_warp_j = vert_j // BANKSIZE
+
+                            if coarse_warp_i == coarse_warp_j:
+                                coarse_lane_i = vert_i % BANKSIZE
+                                coarse_lane_j = vert_j % BANKSIZE
+
+                                if coarse_lane_i <= coarse_lane_j:
+                                    s_idx = BANKSIZE * coarse_lane_i - coarse_lane_i * (coarse_lane_i + 1) // 2 + coarse_lane_j
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                          sub_block[di, dj])
+                                            if coarse_lane_i == coarse_lane_j:
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                              sub_block[dj, di])
+                                else:
+                                    s_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                          sub_block[dj, di])
+                                break
+
+    @ti.kernel
+    def _add_elastic_contribution_arap_metis(self, mu: ti.f32, la: ti.f32, dt: ti.f32):
+        """Add ARAP elastic Hessian contribution using METIS mapping."""
+        for c in self.mesh.cells:
+            W = c.W
+            para = W * dt * dt
+
+            v0, v1, v2, v3 = c.verts[0].id, c.verts[1].id, c.verts[2].id, c.verts[3].id
+            v_ids = ti.Vector([v0, v1, v2, v3])
+
+            # Get METIS partition info for each vertex
+            part_info_0 = self.real_map_partId[v0]
+            part_info_1 = self.real_map_partId[v1]
+            part_info_2 = self.real_map_partId[v2]
+            part_info_3 = self.real_map_partId[v3]
+
+            block_ids = ti.Vector([part_info_0 // BANKSIZE, part_info_1 // BANKSIZE,
+                                   part_info_2 // BANKSIZE, part_info_3 // BANKSIZE])
+            lane_ids = ti.Vector([part_info_0 % BANKSIZE, part_info_1 % BANKSIZE,
+                                  part_info_2 % BANKSIZE, part_info_3 % BANKSIZE])
+
+            # Compute deformation gradient
+            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
+            B = c.B
+            F = Ds @ B
+
+            # Compute element Hessian
+            dFdx = compute_dFdx(B)
+            d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
+            temp = d2PsidF2 @ dFdx
+            H_e = dFdx.transpose() @ temp
+            H_e = para * H_e
+
+            # Assemble to block matrices
+            for i in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):
+                    block_i = block_ids[i]
+                    block_j = block_ids[j]
+                    lane_i = lane_ids[i]
+                    lane_j = lane_ids[j]
+
+                    if block_i == block_j:
+                        # Same METIS partition: direct assembly
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
+                        for di in ti.static(range(3)):
+                            for dj in ti.static(range(3)):
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
+                        if lane_i <= lane_j:
+                            s_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                  sub_block[di, dj])
+                        else:
+                            s_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                  sub_block[dj, di])
+                    else:
+                        # Cross-partition: propagate to coarse level
                         vert_i = v_ids[i]
                         vert_j = v_ids[j]
 
@@ -338,8 +541,13 @@ class MASPreconditionerSmall:
     def assemble_block_matrices(self, solver):
         """Assemble Hessian contributions into block matrices."""
         self._clear_block_matrices()
-        self._add_inertia_contribution(solver.dt)
-        self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
+
+        if self.use_metis:
+            self._add_inertia_contribution_metis(solver.dt)
+            self._add_elastic_contribution_arap_metis(solver.mu, solver.la, solver.dt)
+        else:
+            self._add_inertia_contribution(solver.dt)
+            self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
 
         if self.hierarchy_built and self.level_num > 1:
             self._aggregate_fine_to_coarse()
@@ -347,7 +555,7 @@ class MASPreconditionerSmall:
         self.matrices_assembled = True
 
     # ========================================================================
-    # Block Inversion (IC(0) only)
+    # Block Inversion (IC(0))
     # ========================================================================
 
     @ti.kernel
@@ -459,7 +667,7 @@ class MASPreconditionerSmall:
         self.matrices_inverted = True
 
     # ========================================================================
-    # Apply Preconditioner (Banded solve only)
+    # Apply Preconditioner
     # ========================================================================
 
     @ti.kernel
@@ -471,23 +679,31 @@ class MASPreconditionerSmall:
 
     @ti.kernel
     def _build_multi_level_r(self):
-        """Build multi-level residual from gradient."""
+        """Build multi-level residual from gradient (non-METIS)."""
         # Level 0: copy from mesh gradient
         for i in range(self.n_verts):
             self.multi_level_r[i] = ti.cast(self.mesh.verts.grad[i], ti.f32)
 
-        # Coarse levels: aggregate from fine
-        for level in range(1, self.level_num):
-            prev_offset = self.level_size[level - 1][1]
-            prev_size = self.level_size[level - 1][0]
-            curr_offset = self.level_size[level][1]
-
-            for i in range(prev_size):
-                prev_idx = prev_offset + i
-                curr_idx = curr_offset + i // BANKSIZE
-                r = self.multi_level_r[prev_idx]
+        # Coarse levels: aggregate from fine via going_next
+        for i in range(self.n_verts):
+            r = self.multi_level_r[i]
+            coarse_idx = self.going_next[i]
+            if coarse_idx >= 0:
                 for d in ti.static(range(3)):
-                    ti.atomic_add(self.multi_level_r[curr_idx][d], r[d])
+                    ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
+
+        # Propagate to higher coarse levels
+        for level in range(1, self.level_num - 1):
+            level_offset = self.level_size[level][1]
+            level_size_val = self.level_size[level][0]
+
+            for i in range(level_size_val):
+                idx = level_offset + i
+                r = self.multi_level_r[idx]
+                coarse_idx = self.going_next[idx]
+                if coarse_idx >= 0:
+                    for d in ti.static(range(3)):
+                        ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
 
     @ti.kernel
     def _schwarz_local_solve_banded(self):
@@ -531,15 +747,15 @@ class MASPreconditionerSmall:
         # Coarse levels
         for level in range(1, self.level_num):
             level_offset = self.level_size[level][1]
-            level_size = self.level_size[level][0]
-            n_coarse_blocks = (level_size + BANKSIZE - 1) // BANKSIZE
+            level_size_val = self.level_size[level][0]
+            n_coarse_blocks = (level_size_val + BANKSIZE - 1) // BANKSIZE
 
             for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
                 first_node_in_block = level_offset + local_block_id * BANKSIZE
                 block_id = first_node_in_block // BANKSIZE
 
                 idx_i = level_offset + local_block_id * BANKSIZE + lane_i
-                if idx_i < level_offset + level_size:
+                if idx_i < level_offset + level_size_val:
                     z0 = ti.f32(0.0)
                     z1 = ti.f32(0.0)
                     z2 = ti.f32(0.0)
@@ -549,7 +765,91 @@ class MASPreconditionerSmall:
 
                     for lane_j in range(lane_j_start, lane_j_end):
                         idx_j = level_offset + local_block_id * BANKSIZE + lane_j
-                        if idx_j < level_offset + level_size:
+                        if idx_j < level_offset + level_size_val:
+                            r_j = self.multi_level_r[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            inv_block = self.inv_block_matrices[block_id, s_idx]
+
+                            if lane_i <= lane_j:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                                z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                                z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                            else:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                                z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                                z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                    self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+    @ti.kernel
+    def _schwarz_local_solve_banded_metis(self):
+        """Banded solve using METIS partition mapping."""
+        NODE_BANDWIDTH = 2
+
+        # Level 0: iterate over METIS partitions
+        for block_id in range(self.n_parts):
+            for lane_i in range(BANKSIZE):
+                part_idx_i = block_id * BANKSIZE + lane_i
+                idx_i = self.partId_map_real[part_idx_i]
+
+                if idx_i >= 0 and idx_i < self.n_verts:
+                    z0 = ti.f32(0.0)
+                    z1 = ti.f32(0.0)
+                    z2 = ti.f32(0.0)
+
+                    lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                    lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                    for lane_j in range(lane_j_start, lane_j_end):
+                        part_idx_j = block_id * BANKSIZE + lane_j
+                        idx_j = self.partId_map_real[part_idx_j]
+
+                        if idx_j >= 0 and idx_j < self.n_verts:
+                            r_j = self.multi_level_r[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            inv_block = self.inv_block_matrices[block_id, s_idx]
+
+                            if lane_i <= lane_j:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                                z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                                z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                            else:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                                z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                                z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                    self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+        # Coarse levels (same as non-METIS, sequential blocks)
+        for level in range(1, self.level_num):
+            level_offset = self.level_size[level][1]
+            level_size_val = self.level_size[level][0]
+            n_coarse_blocks = (level_size_val + BANKSIZE - 1) // BANKSIZE
+
+            for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
+                first_node_in_block = level_offset + local_block_id * BANKSIZE
+                block_id = first_node_in_block // BANKSIZE
+
+                idx_i = level_offset + local_block_id * BANKSIZE + lane_i
+                if idx_i < level_offset + level_size_val:
+                    z0 = ti.f32(0.0)
+                    z1 = ti.f32(0.0)
+                    z2 = ti.f32(0.0)
+
+                    lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                    lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                    for lane_j in range(lane_j_start, lane_j_end):
+                        idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                        if idx_j < level_offset + level_size_val:
                             r_j = self.multi_level_r[idx_j]
 
                             min_lane = ti.min(lane_i, lane_j)
@@ -572,23 +872,20 @@ class MASPreconditionerSmall:
     @ti.kernel
     def _collect_final_z(self, level_num: ti.i32):
         """
-        Collect z from all levels to fine level (prolongation).
+        Collect z from all levels (prolongation).
 
-        MAS preconditioner: z = M_0^{-1} r + sum_{l=1}^{L} C_l^T M_l^{-1} C_l r
+        CORRECT implementation: For each fine vertex, traverse the going_next
+        chain to collect contributions from all coarse levels.
 
-        For each fine vertex, add contributions from all coarse levels
-        that it maps to through the hierarchy.
+        z_i = z_i^{(0)} + z_{parent(i)}^{(1)} + z_{grandparent(i)}^{(2)} + ...
         """
-        # For each fine vertex
         for i in range(self.n_verts):
             # Start with level 0 contribution
             z_total = ti.cast(self.multi_level_z[i], ti.f64)
 
-            # Add contributions from coarse levels
-            # Trace through hierarchy using going_next
+            # Traverse hierarchy to collect coarse contributions
             coarse_idx = self.going_next[i]
-
-            for level in range(1, level_num):
+            for _ in range(1, level_num):
                 if coarse_idx >= 0:
                     z_coarse = self.multi_level_z[coarse_idx]
                     z_total += ti.cast(z_coarse, ti.f64)
@@ -602,7 +899,12 @@ class MASPreconditionerSmall:
         """Apply MAS preconditioner: z = P * grad"""
         self._clear_multi_level_buffers()
         self._build_multi_level_r()
-        self._schwarz_local_solve_banded()
+
+        if self.use_metis:
+            self._schwarz_local_solve_banded_metis()
+        else:
+            self._schwarz_local_solve_banded()
+
         self._collect_final_z(self.level_num)
 
     # ========================================================================
