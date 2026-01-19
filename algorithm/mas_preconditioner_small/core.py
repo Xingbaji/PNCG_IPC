@@ -129,34 +129,38 @@ class MASPreconditionerSmall:
     # ========================================================================
 
     @ti.kernel
-    def _build_going_next(self):
+    def _build_going_next(self, level_num: ti.i32):
         """Build going_next mapping for hierarchy."""
-        # Level 0: fine vertices map to coarse level
-        for i in range(self.n_verts):
-            coarse_idx = self.level_size[1][1] + i // BANKSIZE
-            self.going_next[i] = coarse_idx
+        if level_num == 1:
+            # Single level: all map to -1
+            for i in range(self.n_verts):
+                self.going_next[i] = -1
+        else:
+            # Level 0: fine vertices map to coarse level
+            for i in range(self.n_verts):
+                coarse_idx = self.level_size[1][1] + i // BANKSIZE
+                self.going_next[i] = coarse_idx
 
-        # Higher levels
-        for level in range(1, self.level_num - 1):
-            level_offset = self.level_size[level][1]
-            level_size = self.level_size[level][0]
-            next_offset = self.level_size[level + 1][1]
+            # Higher levels
+            for level in range(1, level_num - 1):
+                level_offset = self.level_size[level][1]
+                level_size_val = self.level_size[level][0]
+                next_offset = self.level_size[level + 1][1]
 
-            for i in range(level_size):
-                idx = level_offset + i
-                coarse_idx = next_offset + i // BANKSIZE
-                self.going_next[idx] = coarse_idx
+                for i in range(level_size_val):
+                    idx = level_offset + i
+                    coarse_idx = next_offset + i // BANKSIZE
+                    self.going_next[idx] = coarse_idx
 
-        # Last level: map to -1
-        if self.level_num > 1:
-            last_offset = self.level_size[self.level_num - 1][1]
-            last_size = self.level_size[self.level_num - 1][0]
+            # Last level: map to -1
+            last_offset = self.level_size[level_num - 1][1]
+            last_size = self.level_size[level_num - 1][0]
             for i in range(last_size):
                 self.going_next[last_offset + i] = -1
 
     def build_hierarchy(self):
         """Build the multi-level hierarchy."""
-        self._build_going_next()
+        self._build_going_next(self.level_num)
         self.hierarchy_built = True
         print(f"[MAS-Small] Hierarchy built: {self.level_num} levels")
 
@@ -566,41 +570,40 @@ class MASPreconditionerSmall:
                     self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
 
     @ti.kernel
-    def _collect_final_z(self):
-        """Collect z from all levels to fine level (prolongation)."""
-        # Start with level 0 contribution
+    def _collect_final_z(self, level_num: ti.i32):
+        """
+        Collect z from all levels to fine level (prolongation).
+
+        MAS preconditioner: z = M_0^{-1} r + sum_{l=1}^{L} C_l^T M_l^{-1} C_l r
+
+        For each fine vertex, add contributions from all coarse levels
+        that it maps to through the hierarchy.
+        """
+        # For each fine vertex
         for i in range(self.n_verts):
-            self.mesh.verts.z[i] = ti.cast(self.multi_level_z[i], ti.f64)
+            # Start with level 0 contribution
+            z_total = ti.cast(self.multi_level_z[i], ti.f64)
 
-        # Add coarse level contributions
-        for level in range(1, self.level_num):
-            level_offset = self.level_size[level][1]
-            prev_offset = self.level_size[level - 1][1]
-            prev_size = self.level_size[level - 1][0]
+            # Add contributions from coarse levels
+            # Trace through hierarchy using going_next
+            coarse_idx = self.going_next[i]
 
-            for i in range(prev_size):
-                prev_idx = prev_offset + i
-                coarse_idx = level_offset + i // BANKSIZE
-
-                # Trace back to fine level
-                fine_idx = prev_idx
-                if level > 1:
-                    # Need to trace through hierarchy
-                    for lv in range(level - 1, 0, -1):
-                        lv_offset = self.level_size[lv][1]
-                        fine_idx = (fine_idx - lv_offset) * BANKSIZE + self.level_size[lv - 1][1]
-
-                if fine_idx < self.n_verts:
+            for level in range(1, level_num):
+                if coarse_idx >= 0:
                     z_coarse = self.multi_level_z[coarse_idx]
-                    for d in ti.static(range(3)):
-                        ti.atomic_add(self.mesh.verts.z[fine_idx][d], ti.f64(z_coarse[d]))
+                    z_total += ti.cast(z_coarse, ti.f64)
+                    coarse_idx = self.going_next[coarse_idx]
+                else:
+                    break
+
+            self.mesh.verts.z[i] = z_total
 
     def apply(self):
         """Apply MAS preconditioner: z = P * grad"""
         self._clear_multi_level_buffers()
         self._build_multi_level_r()
         self._schwarz_local_solve_banded()
-        self._collect_final_z()
+        self._collect_final_z(self.level_num)
 
     # ========================================================================
     # High-level API
