@@ -163,7 +163,7 @@ class squeeze_armadillo_demo_spatial_hash(pncg_ipc_deformer):
         if not os.path.exists(dir):
             os.makedirs(dir)
         canvas = window.get_canvas()
-        scene = ti.ui.Scene()
+        scene = window.get_scene()
         camera = ti.ui.Camera()
         camera.position(*self.camera_position)
         camera.lookat(*self.camera_lookat)

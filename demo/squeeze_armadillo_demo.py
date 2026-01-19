@@ -177,7 +177,7 @@ class squeeze_armadillo_demo(pncg_ipc_deformer):
         if not os.path.exists(dir):
             os.makedirs(dir)
         canvas = window.get_canvas()
-        scene = ti.ui.Scene()
+        scene = window.get_scene()
         camera = ti.ui.Camera()
         camera.position(self.camera_position[0], self.camera_position[1], self.camera_position[2])
         camera.lookat(self.camera_lookat[0], self.camera_lookat[1], self.camera_lookat[2])

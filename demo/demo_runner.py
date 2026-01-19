@@ -206,7 +206,7 @@ Controls (interactive mode):
             show_window=show_window
         )
         self._canvas = self._window.get_canvas()
-        self._scene = ti.ui.Scene()
+        self._scene = self._window.get_scene()
         self._camera = ti.ui.Camera()
 
         # Set camera from solver if available

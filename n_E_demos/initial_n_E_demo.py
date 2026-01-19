@@ -117,8 +117,8 @@ class pncg_index_initial(pncg_ipc_deformer):
             tmp = self.compute_p_d2Psidx2_p(F, B, p, self.mu, self.la)
             pHp_index[index] += c.W * self.dt ** 2 * ti.max(tmp, 0.0)
 
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c

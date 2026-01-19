@@ -124,6 +124,7 @@ class model_loading:
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-4, 'iter_max': 50,  'height': 0.5,
                          'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                         'barrier_type': 'log',
                          'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                          'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                          'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -577,7 +578,7 @@ class model_loading:
                 'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
                 'barrier_type': 'cubic',  # Use cubic barrier function
                 'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
-                'cache_kappa': True,      # Cache kappa at iter 0, reuse in subsequent iterations
+                'cache_kappa': False,      # Cache kappa at iter 0, reuse in subsequent iterations
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -667,6 +668,12 @@ class model_loading:
                 self.adaptive_kappa = demo_dict['adaptive_kappa']
             else:
                 self.adaptive_kappa = False
+            # Cache kappa: when True, compute at iter 0 and cache for subsequent iterations
+            # When False, recompute kappa every iteration (only relevant when adaptive_kappa=True)
+            if 'cache_kappa' in demo_dict:
+                self.cache_kappa = demo_dict['cache_kappa']
+            else:
+                self.cache_kappa = True  # Default to caching for performance
 
         # MAS preconditioner options
         if 'use_mas' in demo_dict:

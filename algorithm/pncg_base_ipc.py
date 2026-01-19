@@ -81,14 +81,17 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
         self.dHat = model.dHat
         self.barrier_type = getattr(model, 'barrier_type', 'log')  # 'log' or 'cubic'
         self.adaptive_kappa = getattr(model, 'adaptive_kappa', False)  # Enable adaptive kappa
+        self.cache_kappa = getattr(model, 'cache_kappa', True)  # Cache kappa at iter 0 (only when adaptive_kappa=True)
         self.init_bvh()  # Initialize BVH instead of hash grid
-        print('dHat:', self.dHat, 'kappa:', self.kappa, 'barrier_type:', self.barrier_type, 'adaptive_kappa:', self.adaptive_kappa)
+        print('dHat:', self.dHat, 'kappa:', self.kappa, 'barrier_type:', self.barrier_type,
+              'adaptive_kappa:', self.adaptive_kappa, 'cache_kappa:', self.cache_kappa)
 
         self.config = model.dict
         self.config['dHat'] = self.dHat
         self.config['kappa'] = self.kappa
         self.config['barrier_type'] = self.barrier_type
         self.config['adaptive_kappa'] = self.adaptive_kappa
+        self.config['cache_kappa'] = self.cache_kappa
 
         # MAS preconditioner setup
         self.use_mas_preconditioner = getattr(model, 'use_mas', False)
@@ -267,8 +270,9 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
             F = Ds @ c.B
             Psi = self.compute_Psi(F, self.mu, self.la)
             E += (self.dt ** 2) * c.W * Psi
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        # Use compact array iteration (P0 optimization)
+        for i in range(self.n_contacts[None]):
+            pair = self.contact_pairs[i]
             ids = pair.a
             dist = pair.b
             cord = pair.c
@@ -313,9 +317,10 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
     def compute_grad_and_diagH_ipc(self):
         """Compute IPC potential contribution to gradient and diagH.
         Uses adaptive kappa if enabled, computed from current diagH.
+        Uses compact array iteration (P0 optimization).
         """
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c
@@ -363,9 +368,9 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
                 tmp = ti.Vector([diagH_d2Psidx2[3 * i], diagH_d2Psidx2[3 * i + 1], diagH_d2Psidx2[3 * i + 2]])
                 tmp = ti.max(tmp, 0.0)
                 c.verts[i].diagH += tmp
-        # IPC potential
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        # IPC potential - use compact array iteration (P0 optimization)
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c
@@ -410,8 +415,9 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
             tmp = self.compute_p_d2Psidx2_p(F, B, d, self.mu, self.la)
             ret += c.W * self.dt ** 2 * ti.max(tmp, 0.0)
 
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        # Use compact array iteration (P0 optimization)
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c
@@ -606,8 +612,9 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
             tmp = self.compute_p_d2Psidx2_p(F, B, p, self.mu, self.la)
             pHp += c.W * self.dt ** 2 * ti.max(tmp, 0.0)
 
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+        # Use compact array iteration (P0 optimization)
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c

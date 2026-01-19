@@ -301,7 +301,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
         # Interactive visualization
         window = ti.ui.Window("ABD Falling Cube", (800, 600), vsync=True)
         canvas = window.get_canvas()
-        scene = ti.ui.Scene()
+        scene = window.get_scene()
         camera = ti.ui.Camera()
         camera.position(3, 2, 3)
         camera.lookat(0, 0.5, 0)

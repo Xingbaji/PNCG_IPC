@@ -489,23 +489,24 @@ def _schwarz_local_solve_tiled(self):
 
 ### 4.2 实施计划
 
-#### Phase 1: 快速收益（1-2天）
-- [ ] P1: 替换位操作为`ti.math.popcnt/ctz`
-- [ ] P3: 合并`multi_level_r/z`为Struct field
+#### Phase 1: 快速收益（1-2天）✅ 已完成
+- [x] P1: 替换位操作为优化算法（De Bruijn序列 + 并行位计数）
+- [ ] P3: 合并`multi_level_r/z`为Struct field（待实施）
 
-#### Phase 2: 稀疏字典迁移（3-5天）
-- [ ] P0-1: 在`collision_detection_bvh.py`添加紧凑数组存储
-- [ ] P0-2: 添加`sync_to_compact_array()`方法
-- [ ] P0-3: 迁移核心算法文件（pncg_base_ipc, mas_pncg_solver）
-- [ ] P0-4: 迁移其他文件
-- [ ] P0-5: 移除旧bitmasked结构
+#### Phase 2: 稀疏字典迁移（3-5天）✅ 已完成
+- [x] P0-1: 在`collision_detection_bvh.py`添加紧凑数组存储
+- [x] P0-2: 碰撞检测同时写入紧凑数组和bitmasked（双写兼容）
+- [x] P0-3: 迁移`pncg_base_ipc.py`使用紧凑数组
+- [x] P0-4: 迁移`mas_preconditioner.py`使用紧凑数组
+- [ ] P0-5: 移除旧bitmasked结构（待全面测试后移除）
 
-#### Phase 3: MAS深度优化（3-5天）
-- [ ] P2: 实现`ti.block_local`弹性Hessian组装
-- [ ] P4: 实现tile-based局部求解
-- [ ] P5: 评估CPU批量求逆 vs GPU Cholesky
+#### Phase 3: MAS深度优化（3-5天）✅ 部分完成
+- [x] P2: SharedArray弹性Hessian组装（已有实现，可选启用）
+- [x] P2: 紧凑数组IPC接触Hessian组装
+- [ ] P4: 实现tile-based局部求解（待实施）
+- [ ] P5: 评估CPU批量求逆 vs GPU Cholesky（待实施）
 
-#### Phase 4: 验证与调优
+#### Phase 4: 验证与调优（待执行）
 - [ ] 性能基准测试（before/after对比）
 - [ ] 数值精度验证
 - [ ] 大规模网格测试
@@ -606,3 +607,4 @@ def add_contact(self, ...):
 | 日期 | 更新内容 |
 |------|----------|
 | 2026-01-19 | 初始版本，完成问题分析和优化方案设计 |
+| 2026-01-19 | 实施P0/P1/P2优化：紧凑数组存储、位操作优化、SharedArray组装 |

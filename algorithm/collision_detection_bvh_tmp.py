@@ -88,20 +88,30 @@ class collision_detection_bvh_module(pncg_base_deformer):
         # Max number of constraints
         self.MAX_C = 2 ** 21
 
-        # Contact pair struct
+        # Constraint storage using bitmasked sparse field (legacy, kept for compatibility)
         self.pair = ti.types.struct(
-            a=ti.types.vector(4, ti.u32),  # ids (vertex indices)
-            b=float,  # dist (distance)
-            c=ti.types.vector(4, float),  # cord (barycentric coordinates)
+            a=ti.types.vector(4, ti.u32),  # ids
+            b=float,  # dist
+            c=ti.types.vector(4, float),  # cord
             d=ti.types.vector(3, float)  # t (direction vector)
         )
+        self.cid = self.pair.field()
+        self.cid_root = ti.root.bitmasked(ti.ij, (2, self.MAX_C)).place(self.cid)
 
-        # Compact array storage for contacts - O(N) iteration
+        # ============================================================
+        # Compact array storage for contacts (P0 optimization)
+        # This provides O(N) iteration instead of O(MAX_C) bitmask scan
+        # ============================================================
         self.contact_pairs = self.pair.field(shape=self.MAX_C)
         self.n_contacts = ti.field(dtype=ti.i32, shape=())
+        # Flag to control which storage to use
+        self.use_compact_storage = True
 
         # Stack for BVH traversal (per-thread)
         self.BVH_STACK_SIZE = 64
+
+        # Collision pair counter
+        self.cp_count = ti.field(dtype=ti.i32, shape=())
 
         if self.adj == 1:
             self.define_adj_matrix()
@@ -114,8 +124,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
         print('BVH initialization complete.')
 
     @ti.func
-    def _hash_for_adj(self, x, y):
-        """Hash function for adjacency matrix lookup."""
+    def hash_coords_2(self, x, y):
         h = (x * 92837111) ^ (y * 689287499)
         return ti.abs(h) % self.MAX_C
 
@@ -156,6 +165,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
         """Find Point-Triangle constraints using BVH traversal."""
         INVALID = ti.u32(0xFFFFFFFF)
         gap = ti.sqrt(self.dHat)
+        n_triangles = self.n_boundary_triangles
 
         # For each boundary point, traverse the triangle BVH
         for pi in range(self.n_boundary_points):
@@ -230,6 +240,9 @@ class collision_detection_bvh_module(pncg_base_deformer):
             # Current edge's AABB
             edge_lower = ti.min(x_a0, x_a1)
             edge_upper = ti.max(x_a0, x_a1)
+
+            # Leaf index of current edge in BVH
+            self_leaf_idx = ei + n_edges - 1
 
             # BVH traversal stack (local array)
             stack = ti.Vector.zero(ti.u32, 64)
@@ -307,7 +320,6 @@ class collision_detection_bvh_module(pncg_base_deformer):
 
     @ti.func
     def attempt_PT_no_adj(self, triangle_id, p, t0, t1, t2, xp, x0, x1, x2):
-        # Note: triangle_id is unused here but kept for interface compatibility with attempt_PT_adj
         if p != t0 and p != t1 and p != t2 and point_triangle_ccd_broadphase(xp, x0, x1, x2, self.dHat):
             cord0, cord1, cord2 = dist3D_Point_Triangle(xp, x0, x1, x2)
             xt = cord0 * x0 + cord1 * x1 + cord2 * x2
@@ -316,11 +328,15 @@ class collision_detection_bvh_module(pncg_base_deformer):
             if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
                 ids = ti.Vector([p, t0, t1, t2], ti.i32)
                 cord = ti.Vector([1.0, -cord0, -cord1, -cord2], float)
+                # Write to compact array (primary storage)
                 self._add_contact_pair(ids, dist, cord, t_pt)
+                # Also write to bitmasked for backward compatibility
+                hash_index = self.hash_coords_2(p, triangle_id)
+                self.cid[0, hash_index] = self.pair(ids, dist, cord, t_pt)
 
     @ti.func
     def attempt_PT_adj(self, triangle_id, p, t0, t1, t2, xp, x0, x1, x2):
-        hash_adj = self._hash_for_adj(p, triangle_id)
+        hash_adj = self.hash_coords_2(p, triangle_id)
         if p != t0 and p != t1 and p != t2 and self.adj_matrix[hash_adj] == 0 and point_triangle_ccd_broadphase(xp, x0, x1, x2, self.dHat):
             cord0, cord1, cord2 = dist3D_Point_Triangle(xp, x0, x1, x2)
             xt = cord0 * x0 + cord1 * x1 + cord2 * x2
@@ -329,22 +345,29 @@ class collision_detection_bvh_module(pncg_base_deformer):
             if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
                 ids = ti.Vector([p, t0, t1, t2], ti.i32)
                 cord = ti.Vector([1.0, -cord0, -cord1, -cord2], float)
+                # Write to compact array (primary storage)
                 self._add_contact_pair(ids, dist, cord, t_pt)
+                # Also write to bitmasked for backward compatibility
+                hash_index = self.hash_coords_2(p, triangle_id)
+                self.cid[0, hash_index] = self.pair(ids, dist, cord, t_pt)
 
     @ti.func
     def attempt_EE_no_adj(self, edge_id_0, edge_id_1, a0, a1, b0, b1, x_a0, x_a1, x_b0, x_b1):
-        # Note: edge_id_0/edge_id_1 unused here but kept for interface compatibility with attempt_EE_adj
         if a0 != b0 and a0 != b1 and a1 != b0 and a1 != b1 and edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, self.dHat):
             t_ee, sc, tc = dist3D_Segment_to_Segment(x_a0, x_a1, x_b0, x_b1)
             dist = t_ee.norm()
             if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
                 cord = ti.Vector([sc - 1.0, -sc, 1.0 - tc, tc], float)
                 ids = ti.Vector([a0, a1, b0, b1], ti.i32)
+                # Write to compact array (primary storage)
                 self._add_contact_pair(ids, dist, cord, t_ee)
+                # Also write to bitmasked for backward compatibility
+                hash_index = self.hash_coords_2(edge_id_0, edge_id_1)
+                self.cid[1, hash_index] = self.pair(ids, dist, cord, t_ee)
 
     @ti.func
     def attempt_EE_adj(self, edge_id_0, edge_id_1, a0, a1, b0, b1, x_a0, x_a1, x_b0, x_b1):
-        hash_adj = self._hash_for_adj(self.n_verts + edge_id_0, edge_id_1)
+        hash_adj = self.hash_coords_2(self.n_verts + edge_id_0, edge_id_1)
         if self.adj_matrix[hash_adj] == 0:
             if a0 != b0 and a0 != b1 and a1 != b0 and a1 != b1 and edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, self.dHat):
                 t_ee, sc, tc = dist3D_Segment_to_Segment(x_a0, x_a1, x_b0, x_b1)
@@ -352,7 +375,11 @@ class collision_detection_bvh_module(pncg_base_deformer):
                 if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
                     cord = ti.Vector([sc - 1.0, -sc, 1.0 - tc, tc], float)
                     ids = ti.Vector([a0, a1, b0, b1], ti.i32)
+                    # Write to compact array (primary storage)
                     self._add_contact_pair(ids, dist, cord, t_ee)
+                    # Also write to bitmasked for backward compatibility
+                    hash_index = self.hash_coords_2(edge_id_0, edge_id_1)
+                    self.cid[1, hash_index] = self.pair(ids, dist, cord, t_ee)
 
     def find_cnts(self, PRINT=False, TIME_LOG=False, use_refit=False):
         """Find all collision constraints using BVH.
@@ -366,8 +393,9 @@ class collision_detection_bvh_module(pncg_base_deformer):
             ti.sync()
             t_start = time.perf_counter()
 
-        # Reset contact counter
-        self.n_contacts[None] = 0
+        # Reset both storage systems
+        self.cid_root.deactivate_all()
+        self.n_contacts[None] = 0  # Reset compact array counter
 
         # Build or refit BVH trees
         if TIME_LOG:
@@ -421,7 +449,8 @@ class collision_detection_bvh_module(pncg_base_deformer):
         Uses full build on first call, then refit on subsequent calls.
         Optionally rebuilds every 'rate' iterations for better quality.
         """
-        self.n_contacts[None] = 0
+        self.cid_root.deactivate_all()
+        self.n_contacts[None] = 0  # Reset compact array counter
 
         if iter == 0:
             # Full build on first call
@@ -435,6 +464,74 @@ class collision_detection_bvh_module(pncg_base_deformer):
 
         if PRINT:
             self.print_cnts()
+
+    @ti.kernel
+    def check_collision_3d_bvh(self) -> ti.i32:
+        """Check if there's any segment-triangle intersection using BVH."""
+        INVALID = ti.u32(0xFFFFFFFF)
+        result = 0
+        gap = ti.sqrt(self.dHat)
+
+        for ti_idx in range(self.n_boundary_triangles):
+            t0 = self.boundary_triangles[ti_idx, 0]
+            t1 = self.boundary_triangles[ti_idx, 1]
+            t2 = self.boundary_triangles[ti_idx, 2]
+            x0 = self.mesh.verts.x[t0]
+            x1 = self.mesh.verts.x[t1]
+            x2 = self.mesh.verts.x[t2]
+
+            # Triangle AABB
+            tri_lower = ti.min(ti.min(x0, x1), x2)
+            tri_upper = ti.max(ti.max(x0, x1), x2)
+
+            # BVH traversal
+            stack = ti.Vector.zero(ti.u32, 64)
+            stack_ptr = 0
+            stack[stack_ptr] = 0
+            stack_ptr += 1
+
+            while stack_ptr > 0:
+                stack_ptr -= 1
+                node_id = stack[stack_ptr]
+
+                L_idx = self.bvh_edges.left_idx[node_id]
+                R_idx = self.bvh_edges.right_idx[node_id]
+
+                # Check left child
+                if self._aabb_overlap_with_tri(tri_lower, tri_upper, L_idx, gap):
+                    element_idx = self.bvh_edges.element_idx[L_idx]
+                    if element_idx != INVALID:
+                        j = element_idx
+                        a0 = self.boundary_edges[j, 0]
+                        a1 = self.boundary_edges[j, 1]
+                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
+                            x_a0 = self.mesh.verts.x[a0]
+                            x_a1 = self.mesh.verts.x[a1]
+                            if segment_intersect_triangle_new(x_a0, x_a1, x0, x1, x2):
+                                result = 1
+                    else:
+                        if stack_ptr < 63:
+                            stack[stack_ptr] = L_idx
+                            stack_ptr += 1
+
+                # Check right child
+                if self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
+                    element_idx = self.bvh_edges.element_idx[R_idx]
+                    if element_idx != INVALID:
+                        j = element_idx
+                        a0 = self.boundary_edges[j, 0]
+                        a1 = self.boundary_edges[j, 1]
+                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
+                            x_a0 = self.mesh.verts.x[a0]
+                            x_a1 = self.mesh.verts.x[a1]
+                            if segment_intersect_triangle_new(x_a0, x_a1, x0, x1, x2):
+                                result = 1
+                    else:
+                        if stack_ptr < 63:
+                            stack[stack_ptr] = R_idx
+                            stack_ptr += 1
+
+        return result
 
     @ti.func
     def _aabb_overlap_with_tri(self, tri_lower: ti.template(), tri_upper: ti.template(),
@@ -454,260 +551,16 @@ class collision_detection_bvh_module(pncg_base_deformer):
     def check_dcd(self):
         """Check discrete collision detection using BVH."""
         self.build_bvh()
-        ret = self.check_edge_triangle_intersection_bvh()
+        ret = self.check_collision_3d_bvh()
         return ret
-
-    # ===================== Penetration Detection API =====================
-    # Based on GIPC.cu implementation for intersection checking
-
-    @ti.kernel
-    def check_edge_triangle_intersection_bvh(self) -> ti.i32:
-        """
-        Check if any edge intersects any triangle using BVH traversal.
-        Based on GIPC.cu _edgeTriIntersectionQuery implementation.
-
-        Uses Cramer's rule for exact intersection testing with early exit
-        when segment endpoints are on the same side of the triangle plane.
-
-        Returns:
-            1 if any intersection found, 0 otherwise
-        """
-        INVALID = ti.u32(0xFFFFFFFF)
-        result = 0
-        gap = 0.0  # No gap for exact intersection test
-
-        # For each triangle, traverse the edge BVH to find potential intersections
-        for ti_idx in range(self.n_boundary_triangles):
-            if result == 0:  # Early exit if intersection already found
-                t0 = self.boundary_triangles[ti_idx, 0]
-                t1 = self.boundary_triangles[ti_idx, 1]
-                t2 = self.boundary_triangles[ti_idx, 2]
-                x0 = self.mesh.verts.x[t0]
-                x1 = self.mesh.verts.x[t1]
-                x2 = self.mesh.verts.x[t2]
-
-                # Triangle AABB
-                tri_lower = ti.min(ti.min(x0, x1), x2)
-                tri_upper = ti.max(ti.max(x0, x1), x2)
-
-                # BVH traversal using stack
-                stack = ti.Vector.zero(ti.u32, 64)
-                stack_ptr = 0
-                stack[stack_ptr] = 0  # Start from root
-                stack_ptr += 1
-
-                while stack_ptr > 0 and result == 0:
-                    stack_ptr -= 1
-                    node_id = stack[stack_ptr]
-
-                    L_idx = self.bvh_edges.left_idx[node_id]
-                    R_idx = self.bvh_edges.right_idx[node_id]
-
-                    # Check left child
-                    if self._aabb_overlap_with_tri(tri_lower, tri_upper, L_idx, gap):
-                        element_idx = self.bvh_edges.element_idx[L_idx]
-                        if element_idx != INVALID:
-                            # Leaf node - check edge-triangle intersection
-                            edge_idx = element_idx
-                            a0 = self.boundary_edges[edge_idx, 0]
-                            a1 = self.boundary_edges[edge_idx, 1]
-                            # Skip if edge shares vertex with triangle (adjacent)
-                            if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                                x_a0 = self.mesh.verts.x[a0]
-                                x_a1 = self.mesh.verts.x[a1]
-                                if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                    result = 1
-                        else:
-                            # Internal node - push to stack
-                            if stack_ptr < 63:
-                                stack[stack_ptr] = L_idx
-                                stack_ptr += 1
-
-                    # Check right child
-                    if result == 0 and self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
-                        element_idx = self.bvh_edges.element_idx[R_idx]
-                        if element_idx != INVALID:
-                            # Leaf node - check edge-triangle intersection
-                            edge_idx = element_idx
-                            a0 = self.boundary_edges[edge_idx, 0]
-                            a1 = self.boundary_edges[edge_idx, 1]
-                            # Skip if edge shares vertex with triangle (adjacent)
-                            if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                                x_a0 = self.mesh.verts.x[a0]
-                                x_a1 = self.mesh.verts.x[a1]
-                                if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                    result = 1
-                        else:
-                            # Internal node - push to stack
-                            if stack_ptr < 63:
-                                stack[stack_ptr] = R_idx
-                                stack_ptr += 1
-
-        return result
-
-    @ti.kernel
-    def check_ground_intersection(self, ground_normal: ti.template(), ground_offset: ti.f32) -> ti.i32:
-        """
-        Check if any vertex has penetrated the ground plane.
-        Based on GIPC.cu checkGroundIntersection implementation.
-
-        Args:
-            ground_normal: Ground plane normal (vec3), pointing outward (typically (0, 1, 0))
-            ground_offset: Ground plane offset (scalar), plane equation: n · x = offset
-
-        Returns:
-            1 if any vertex penetrated, 0 otherwise
-        """
-        result = 0
-        for i in range(self.n_verts):
-            if result == 0:
-                vertex_pos = self.mesh.verts.x[i]
-                dist = vertex_pos.dot(ground_normal) - ground_offset
-                if dist < 0.0:
-                    result = 1
-        return result
-
-    def is_intersected(self, check_ground=True):
-        """
-        High-level API to check if mesh has any penetration/intersection.
-        Based on GIPC.cu isIntersected implementation.
-
-        This function checks:
-        1. Ground plane intersection (if enabled)
-        2. Edge-triangle intersection (self-intersection)
-
-        Args:
-            check_ground: Whether to check ground plane penetration
-
-        Returns:
-            True if any intersection found, False otherwise
-        """
-        # Ensure BVH is built
-        self.build_bvh()
-
-        # Check ground intersection
-        if check_ground and hasattr(self, 'ground') and self.ground is not None:
-            ground_y = self.ground
-            ground_normal = ti.Vector([0.0, 1.0, 0.0])
-            if self.check_ground_intersection(ground_normal, ground_y):
-                print("[Penetration] Ground intersection detected!")
-                return True
-
-        # Check edge-triangle intersection (self-intersection)
-        if self.check_edge_triangle_intersection_bvh():
-            print("[Penetration] Edge-triangle intersection detected!")
-            return True
-
-        return False
-
-    def check_penetration(self, verbose=True):
-        """
-        Alias for is_intersected() with verbose output.
-        """
-        result = self.is_intersected()
-        if verbose:
-            if result:
-                print("[Penetration Check] FAILED - Mesh has penetration!")
-            else:
-                print("[Penetration Check] PASSED - No penetration detected.")
-        return result
-
-    @ti.kernel
-    def count_edge_triangle_intersections(self) -> ti.i32:
-        """
-        Count the total number of edge-triangle intersections.
-        Useful for debugging and analysis.
-
-        Returns:
-            Number of edge-triangle intersections
-        """
-        INVALID = ti.u32(0xFFFFFFFF)
-        count = 0
-        gap = 0.0
-
-        for ti_idx in range(self.n_boundary_triangles):
-            t0 = self.boundary_triangles[ti_idx, 0]
-            t1 = self.boundary_triangles[ti_idx, 1]
-            t2 = self.boundary_triangles[ti_idx, 2]
-            x0 = self.mesh.verts.x[t0]
-            x1 = self.mesh.verts.x[t1]
-            x2 = self.mesh.verts.x[t2]
-
-            tri_lower = ti.min(ti.min(x0, x1), x2)
-            tri_upper = ti.max(ti.max(x0, x1), x2)
-
-            stack = ti.Vector.zero(ti.u32, 64)
-            stack_ptr = 0
-            stack[stack_ptr] = 0
-            stack_ptr += 1
-
-            while stack_ptr > 0:
-                stack_ptr -= 1
-                node_id = stack[stack_ptr]
-
-                L_idx = self.bvh_edges.left_idx[node_id]
-                R_idx = self.bvh_edges.right_idx[node_id]
-
-                if self._aabb_overlap_with_tri(tri_lower, tri_upper, L_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[L_idx]
-                    if element_idx != INVALID:
-                        edge_idx = element_idx
-                        a0 = self.boundary_edges[edge_idx, 0]
-                        a1 = self.boundary_edges[edge_idx, 1]
-                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                            x_a0 = self.mesh.verts.x[a0]
-                            x_a1 = self.mesh.verts.x[a1]
-                            if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                ti.atomic_add(count, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = L_idx
-                            stack_ptr += 1
-
-                if self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[R_idx]
-                    if element_idx != INVALID:
-                        edge_idx = element_idx
-                        a0 = self.boundary_edges[edge_idx, 0]
-                        a1 = self.boundary_edges[edge_idx, 1]
-                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                            x_a0 = self.mesh.verts.x[a0]
-                            x_a1 = self.mesh.verts.x[a1]
-                            if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                ti.atomic_add(count, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = R_idx
-                            stack_ptr += 1
-
-        return count
-
-    @ti.kernel
-    def count_ground_penetrations(self, ground_normal: ti.template(), ground_offset: ti.f32) -> ti.i32:
-        """
-        Count the number of vertices that have penetrated the ground plane.
-
-        Args:
-            ground_normal: Ground plane normal (vec3)
-            ground_offset: Ground plane offset (scalar)
-
-        Returns:
-            Number of vertices below ground
-        """
-        count = 0
-        for i in range(self.n_verts):
-            vertex_pos = self.mesh.verts.x[i]
-            dist = vertex_pos.dot(ground_normal) - ground_offset
-            if dist < 0.0:
-                ti.atomic_add(count, 1)
-        return count
 
     @ti.kernel
     def print_cnts(self) -> ti.i32:
-        N = self.n_contacts[None]
+        N = 0
         min_dist = 1.0
-        for idx in range(N):
-            pair = self.contact_pairs[idx]
+        for k, j in self.cid:
+            N += 1
+            pair = self.cid[k, j]
             dist = pair.b
             ti.atomic_min(min_dist, dist)
         print('number of cnts', N, 'min dist', min_dist)
@@ -779,7 +632,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
                         x1 = self.mesh.verts.x[t1]
                         x2 = self.mesh.verts.x[t2]
                         if point_triangle_ccd_broadphase(xp, x0, x1, x2, 1.0 * self.dHat) and p != t0 and p != t1 and p != t2:
-                            hash_index = self._hash_for_adj(p, i)
+                            hash_index = self.hash_coords_2(p, i)
                             self.adj_matrix[hash_index] = 1
                             ti.atomic_add(n_PT, 1)
                     else:
@@ -798,7 +651,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
                         x1 = self.mesh.verts.x[t1]
                         x2 = self.mesh.verts.x[t2]
                         if point_triangle_ccd_broadphase(xp, x0, x1, x2, 1.0 * self.dHat) and p != t0 and p != t1 and p != t2:
-                            hash_index = self._hash_for_adj(p, i)
+                            hash_index = self.hash_coords_2(p, i)
                             self.adj_matrix[hash_index] = 1
                             ti.atomic_add(n_PT, 1)
                     else:
@@ -848,7 +701,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
                             x_b0 = self.mesh.verts.x[b0]
                             x_b1 = self.mesh.verts.x[b1]
                             if edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, 1.0 * self.dHat) and a0 != b0 and a1 != b1 and a0 != b1 and a1 != b0:
-                                hash_index = self._hash_for_adj(self.n_verts + ei, ej)
+                                hash_index = self.hash_coords_2(self.n_verts + ei, ej)
                                 self.adj_matrix[hash_index] = 1
                                 ti.atomic_add(n_EE, 1)
                     else:
@@ -866,7 +719,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
                             x_b0 = self.mesh.verts.x[b0]
                             x_b1 = self.mesh.verts.x[b1]
                             if edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, 1.0 * self.dHat) and a0 != b0 and a1 != b1 and a0 != b1 and a1 != b0:
-                                hash_index = self._hash_for_adj(self.n_verts + ei, ej)
+                                hash_index = self.hash_coords_2(self.n_verts + ei, ej)
                                 self.adj_matrix[hash_index] = 1
                                 ti.atomic_add(n_EE, 1)
                     else:

@@ -106,7 +106,7 @@ class base_deformer:
         import time
         window = ti.ui.Window("visual fem", (800, 600), show_window=False)
         canvas = window.get_canvas()
-        scene = ti.ui.Scene()
+        scene = window.get_scene()
         camera = ti.ui.Camera()
         camera.position(self.camera_position[0], self.camera_position[1], self.camera_position[2])
         camera.lookat(self.camera_lookat[0], self.camera_lookat[1], self.camera_lookat[2])
@@ -245,7 +245,7 @@ class base_deformer:
         if not os.path.exists(dir):
             os.makedirs(dir)
         canvas = window.get_canvas()
-        scene = ti.ui.Scene()
+        scene = window.get_scene()
         camera = ti.ui.Camera()
         camera.position(self.camera_position[0], self.camera_position[1], self.camera_position[2])
         camera.lookat(self.camera_lookat[0], self.camera_lookat[1], self.camera_lookat[2])
