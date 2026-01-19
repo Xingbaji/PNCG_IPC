@@ -13,7 +13,8 @@
 | 对称性修复后测试 | 6 | 0 | 6 |
 | Ground Truth 测试 | 22 | 0 | 22 |
 | 多层级测试 | 19 | 0 | 25 (6 skipped) |
-| **总计** | **47** | **0** | **53** |
+| **MatVec 准确性测试** | **15** | **0** | **15** |
+| **总计** | **62** | **0** | **68** |
 
 **成功率**: 100% (所有必要测试通过)
 
@@ -140,6 +141,46 @@ test_06_preconditioner_validity: OK
 
 **结果**: 19/25 测试通过 (6 skipped due to single-level mesh)
 
+### 5.4 MatVec 准确性测试 (test_matvec_accuracy.py)
+
+验证矩阵向量乘 z = M^{-1} * r 的准确性:
+
+**NumPy Ground Truth 测试:**
+- 对称索引覆盖 (136 entries): OK
+- 对称索引对称性: OK
+- Identity 矩阵展开: OK
+- 随机 SPD 矩阵展开: OK
+- Identity MatVec: OK
+- 对角 MatVec: OK
+- 随机 SPD MatVec: OK
+- 逆矩阵 MatVec 准确性: OK
+
+**Taichi vs NumPy 测试:**
+- Identity MatVec: OK (误差 < 1e-5)
+- 随机 SPD MatVec: OK (误差 < 1e-4)
+- 数值精度 f32 vs f64: OK (max 相对误差 1.58e-07)
+
+**全求解器测试:**
+- apply() 无 NaN: OK
+- g^T z > 0: OK (6.83e-10)
+- Block 0 局部求解: OK (相对误差 3.50e-08)
+- 求解器变体一致性: OK (conflict_free vs full: 1.45e-07)
+
+**结果**: 15/15 测试通过
+
+### 5.5 MatVec 性能基准
+
+| 变体 | 平均时间 | 标准差 | 最小时间 | g^Tz > 0 |
+|------|----------|--------|----------|----------|
+| full_solve (default) | 2.53ms | 0.12ms | 2.40ms | Yes |
+| conflict_free | 2.28ms | 0.08ms | 2.24ms | Yes |
+| parallel | 2.32ms | 0.03ms | 2.30ms | Yes |
+| diagonal_only | 0.37ms | 0.03ms | 0.34ms | Yes |
+
+**推荐**:
+- 最快有效变体: `diagonal_only` (0.37ms, 但精度较低)
+- 最稳定高精度: `conflict_free` (2.28ms)
+
 ---
 
 ## 6. 推荐配置
@@ -246,6 +287,12 @@ PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_mas_ground_truth.py -v
 
 # 运行多层级测试
 PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_mas_multilevel.py -v
+
+# 运行 MatVec 准确性和性能测试
+PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_matvec_accuracy.py -v
+
+# 仅运行 MatVec 性能基准
+python ../unittest/tests/test_matvec_accuracy.py --benchmark
 ```
 
 ---

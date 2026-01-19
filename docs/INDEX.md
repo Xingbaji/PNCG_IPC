@@ -33,6 +33,7 @@ docs/
 
 | 文档 | 描述 |
 |------|------|
+| [MAS_PNCG_ALGORITHM.md](algorithm/MAS_PNCG_ALGORITHM.md) | **MAS-PNCG 算法详解** (纯算法) |
 | [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | MAS预条件器完整实现 |
 | [MAS_PRECONDITIONER_PKG_TESTING.md](algorithm/MAS_PRECONDITIONER_PKG_TESTING.md) | MAS包测试框架 |
 | [GCP_IMPLEMENTATION.md](algorithm/GCP_IMPLEMENTATION.md) | 几何接触势能(GCP)实现 |
