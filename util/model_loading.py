@@ -614,7 +614,7 @@ class model_loading:
         elif demo == 'cube_freefall':
             # Basic cube free-fall test (smallest cube)
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
-                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube/cube.node'],
                          'rotations': [[0, 0, 0]],
                          'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
@@ -624,7 +624,7 @@ class model_loading:
         elif demo == 'cube_freefall_10':
             # cube_10 free-fall test
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
-                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_10/cube_10.node'],
                          'rotations': [[0, 0, 0]],
                          'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
@@ -634,7 +634,7 @@ class model_loading:
         elif demo == 'cube_freefall_20':
             # cube_20 free-fall test
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
-                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_20/cube_20.node'],
                          'rotations': [[0, 0, 0]],
                          'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
@@ -644,7 +644,7 @@ class model_loading:
         elif demo == 'cube_freefall_40':
             # cube_40 free-fall test (largest cube)
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
-                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_filter',
+                         'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_40/cube_40.node'],
                          'rotations': [[0, 0, 0]],
                          'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],

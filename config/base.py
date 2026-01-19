@@ -15,7 +15,7 @@ class MaterialConfig:
     E: float = 1e4              # Young's modulus (Pa)
     nu: float = 0.4             # Poisson's ratio (dimensionless, 0 < nu < 0.5)
     density: float = 1000.0     # Mass density (kg/m^3)
-    elastic_type: str = "ARAP_filter"  # Constitutive model
+    elastic_type: str = "ARAP_SPD"  # Constitutive model (SPD-projected Hessian)
 
     @property
     def mu(self) -> float:

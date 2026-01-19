@@ -77,6 +77,28 @@ class base_deformer:
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH
             self.compute_p_d2Psidx2_p = compute_pHp_NH
             self.compute_d2PsidF2 = compute_d2PsidF2_NH
+        # =====================================================================
+        # SPD-projected Hessian materials (eigenanalysis-based)
+        # These provide guaranteed positive semi-definite Hessian matrices
+        # =====================================================================
+        elif elastic == 'STVK_SPD':  # St. Venant-Kirchhoff with SPD projection
+            self.compute_Psi = compute_Psi_ARAP  # Use ARAP energy as placeholder
+            self.compute_dPsidx = compute_dPsidx_STVK_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_STVK_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_STVK_SPD
+            self.compute_d2PsidF2 = compute_d2PsidF2_STVK_SPD
+        elif elastic == 'NH_SPD':  # Neo-Hookean with SPD projection
+            self.compute_Psi = compute_Psi_NH
+            self.compute_dPsidx = compute_dPsidx_NH_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_NH_SPD
+            self.compute_d2PsidF2 = compute_d2PsidF2_NH_SPD
+        elif elastic == 'ARAP_SPD':  # ARAP with full SPD projection
+            self.compute_Psi = compute_Psi_ARAP
+            self.compute_dPsidx = compute_dPsidx_ARAP_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_ARAP_SPD
+            self.compute_d2PsidF2 = compute_d2PsidF2_ARAP_SPD
         else:
             print('Wrong elastic type')
 

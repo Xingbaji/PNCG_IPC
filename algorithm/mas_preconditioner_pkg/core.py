@@ -227,8 +227,20 @@ class MASPreconditioner(
         self.block_level = ti.field(dtype=ti.i32, shape=self.total_blocks)
         self.n_blocks_per_level = ti.field(dtype=ti.i32, shape=MAX_LEVELS)
 
-        # Elastic type tracking per cell (0=ARAP, 1=SNH, 2=FCR, 3=NH)
+        # Elastic type tracking per cell
+        # 0=ARAP, 1=SNH, 2=FCR, 3=ARAP_SPD, 4=NH_SPD, 5=STVK_SPD
         self.elastic_type = 0  # Default to ARAP
+
+        # Mapping from string elastic type to integer for assembly
+        self.ELASTIC_TYPE_MAP = {
+            'ARAP': 0, 'ARAP_filter': 0,
+            'SNH': 1,
+            'FCR': 2, 'FCR_filter': 2,
+            'ARAP_SPD': 3,
+            'NH_SPD': 4,
+            'STVK_SPD': 5,
+            'NH': 1,  # Map NH to SNH for assembly (similar structure)
+        }
 
         # SharedArray optimization: cell-to-warp mapping for reduction
         self._allocate_cell_warp_mapping()
@@ -302,7 +314,12 @@ class MASPreconditioner(
 
         # Set elastic type from solver if available
         if hasattr(solver, 'elastic_type'):
-            self.elastic_type = solver.elastic_type
+            elastic_str = solver.elastic_type
+            if isinstance(elastic_str, str):
+                self.elastic_type = self.ELASTIC_TYPE_MAP.get(elastic_str, 0)
+                print(f"[MAS] Elastic type: {elastic_str} -> {self.elastic_type}")
+            else:
+                self.elastic_type = elastic_str
 
         self.assemble_block_matrices(solver, use_full_hessian)
         self.invert_block_matrices(method=method, adaptive_regularization=adaptive_regularization)

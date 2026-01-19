@@ -1247,15 +1247,15 @@ class METISMixin:
         self.assemble_block_matrices(solver, use_full_hessian)
         self.invert_block_matrices(method=method, adaptive_regularization=adaptive_regularization)
 
-    def apply_metis(self, use_full_solve: bool = True):
+    def apply_metis(self, solve_method: str = 'banded'):
         """
         Apply MAS preconditioner using METIS partition structure.
 
         Args:
-            use_full_solve: If True, use full block inverse in local solve
+            solve_method: Local solve method (see apply() for options)
         """
         if not hasattr(self, 'use_metis_reorder') or not self.use_metis_reorder:
-            self.apply(use_full_solve)
+            self.apply(solve_method)
             return
 
         # Clear buffers
@@ -1265,7 +1265,7 @@ class METISMixin:
         self._build_multi_level_r()
 
         # Phase 2: Local solve with METIS mapping
-        if use_full_solve:
+        if solve_method.lower() != 'diagonal':
             self._schwarz_local_solve_full_metis()
         else:
             self._schwarz_local_solve()

@@ -234,27 +234,39 @@ class SimpleAPIMixin:
     # Apply Preconditioner from Arrays
     # ========================================================================
 
-    def apply_simple(self, grad_field, z_field, use_warp_reduction: bool = True):
+    def apply_simple(self, grad_field, z_field, solve_method: str = 'banded'):
         """
         Apply preconditioner using direct field access.
 
         Args:
             grad_field: Input gradient, ti.Vector.field(3, float, shape=n_verts)
             z_field: Output preconditioned direction, ti.Vector.field(3, float, shape=n_verts)
-            use_warp_reduction: Whether to use P1 warp reduction optimization
+            solve_method: Local solve method (see apply() for options)
         """
         # Clear buffers
         self._clear_multi_level_buffers()
 
         # Phase 1: Restriction (copy gradient to multi_level_r)
-        if use_warp_reduction and WARP_REDUCTION_ENABLED:
+        if WARP_REDUCTION_ENABLED:
             self._clear_warp_sum_buffer()
             self._restrict_simple_optimized(grad_field)
         else:
             self._restrict_simple(grad_field)
 
         # Phase 2: Local solve
-        self._schwarz_local_solve_full()
+        method = solve_method.lower()
+        if method == 'banded':
+            self._schwarz_local_solve_banded()
+        elif method == 'conflict_free':
+            self._schwarz_local_solve_conflict_free()
+        elif method == 'parallel':
+            self._schwarz_local_solve_full_parallel()
+        elif method == 'full':
+            self._schwarz_local_solve_full()
+        elif method == 'diagonal':
+            self._schwarz_local_solve()
+        else:
+            self._schwarz_local_solve_banded()
 
         # Phase 3: Prolongation
         self._prolong_simple(z_field)

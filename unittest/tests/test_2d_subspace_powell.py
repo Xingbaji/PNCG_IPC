@@ -7,6 +7,7 @@ in a collision-free free-fall scenario.
 Key Algorithms Tested:
 1. 2D Subspace Minimization (Section 3.2):
    - Optimal search direction via 2x2 system: p = -μz + νp
+   - Step size α=1.0 (optimal scaling already in μ, ν)
    - Compares convergence with 1D (steepest descent) method
 
 2. Powell's Restart Criterion (Section 3.3):
@@ -20,7 +21,8 @@ Ground Truth (Newton's Laws):
 No collision detection, no Woodbury updates - pure elastic + inertia.
 
 Usage:
-    python test_2d_subspace_powell.py                     # Default test
+    python test_2d_subspace_powell.py                     # Default test (headless)
+    python test_2d_subspace_powell.py --visual            # Interactive visualization
     python test_2d_subspace_powell.py --demo cube_freefall_10
     python test_2d_subspace_powell.py --compare           # Compare 1D vs 2D
     python test_2d_subspace_powell.py --powell-test       # Test Powell restart
@@ -44,6 +46,22 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, demo_dir)
 os.chdir(demo_dir)
 
+# Suppress MAS verbose output by default
+import builtins
+_original_print = builtins.print
+_mas_verbose = False
+
+def _filtered_print(*args, **kwargs):
+    """Print filter that suppresses MAS/METIS messages unless verbose mode."""
+    if args:
+        msg = str(args[0])
+        if msg.startswith("[MAS]") or msg.startswith("[METIS]"):
+            if not _mas_verbose:
+                return
+    _original_print(*args, **kwargs)
+
+builtins.print = _filtered_print
+
 import taichi as ti
 from math_utils.elastic_util import *
 from util.model_loading import model_loading
@@ -62,7 +80,7 @@ class SubspacePowellValidator:
     Compares centroid motion with Newton's law prediction.
     """
 
-    def __init__(self, demo='cube_freefall_10', inversion_method='oneway_gj',
+    def __init__(self, demo='cube_freefall_10', inversion_method='ic',
                  use_2d_subspace=True, use_powell_restart=True):
         """
         Args:
@@ -127,6 +145,10 @@ class SubspacePowellValidator:
         # Precompute (mass, B, W)
         self.precompute()
 
+        # Initialize indices for rendering
+        self.indices = ti.field(ti.i32, shape=len(self.mesh.cells) * 4 * 3)
+        self.init_indices()
+
         # Assign elastic type
         self.assign_elastic_type(model.elastic_type)
 
@@ -162,7 +184,11 @@ class SubspacePowellValidator:
         self.total_iters = 0
 
     def assign_elastic_type(self, elastic):
-        """Set elastic type functions."""
+        """Set elastic type functions.
+
+        MAS preconditioner uses integer elastic_type:
+        0=ARAP, 1=SNH, 2=FCR, 3=ARAP_SPD, 4=NH_SPD, 5=STVK_SPD
+        """
         if elastic == 'ARAP':
             self.compute_dPsidx = compute_dPsidx_ARAP
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP
@@ -186,12 +212,25 @@ class SubspacePowellValidator:
         elif elastic == 'NH':
             self.compute_dPsidx = compute_dPsidx_NH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH
+            self.elastic_type = 1  # Map NH to SNH for MAS assembly
+        # SPD-projected Hessian materials (eigenanalysis-based)
+        elif elastic == 'ARAP_SPD':
+            self.compute_dPsidx = compute_dPsidx_ARAP_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
             self.elastic_type = 3
+        elif elastic == 'NH_SPD':
+            self.compute_dPsidx = compute_dPsidx_NH_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH_SPD
+            self.elastic_type = 4
+        elif elastic == 'STVK_SPD':
+            self.compute_dPsidx = compute_dPsidx_STVK_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_STVK_SPD
+            self.elastic_type = 5
         else:
-            print(f'Warning: Unknown elastic type {elastic}, using ARAP_filter')
-            self.compute_dPsidx = compute_dPsidx_ARAP
-            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_filter
-            self.elastic_type = 0
+            print(f'Warning: Unknown elastic type {elastic}, using ARAP_SPD')
+            self.compute_dPsidx = compute_dPsidx_ARAP_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
+            self.elastic_type = 3
         self.elastic_type_str = elastic
 
     @ti.kernel
@@ -203,6 +242,15 @@ class SubspacePowellValidator:
             c.W = ti.abs(Ds.determinant()) / 6.0
             for i in ti.static(range(4)):
                 c.verts[i].m += self.density * c.W / 4.0
+
+    @ti.kernel
+    def init_indices(self):
+        """Initialize indices for rendering (tetrahedron surface triangles)."""
+        for c in self.mesh.cells:
+            ind = [[0, 2, 1], [0, 3, 2], [0, 1, 3], [1, 2, 3]]
+            for i in ti.static(range(4)):
+                for j in ti.static(range(3)):
+                    self.indices[c.id * 12 + i * 3 + j] = c.verts[ind[i][j]].id
 
     def compute_centroid(self):
         """Compute mass-weighted centroid of the mesh."""
@@ -279,16 +327,19 @@ class SubspacePowellValidator:
     # ========================================================================
 
     @ti.kernel
-    def compute_Hv_z(self):
-        """Compute Hv = H * z (Hessian times preconditioned gradient)."""
+    def compute_Hv_both(self):
+        """Compute both Hv = H*z and w = H*p in one kernel to reduce compilation."""
+        # Initialize
         for vert in self.mesh.verts:
             vert.Hv = ti.Vector.zero(float, 3)
+            vert.w = ti.Vector.zero(float, 3)
 
-        # Inertia: M * z
+        # Inertia: M * z and M * p
         for vert in self.mesh.verts:
             vert.Hv += vert.m * vert.z
+            vert.w += vert.m * vert.p
 
-        # Elastic: H_elastic * z (diagonal approximation)
+        # Elastic contribution (diagonal approximation)
         for c in self.mesh.cells:
             Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
             B = c.B
@@ -299,40 +350,21 @@ class SubspacePowellValidator:
 
             for i in range(4):
                 z_i = c.verts[i].z
-                Hd_i = ti.Vector([
-                    ti.max(diagH[3*i], 0.0) * z_i[0],
-                    ti.max(diagH[3*i+1], 0.0) * z_i[1],
-                    ti.max(diagH[3*i+2], 0.0) * z_i[2]
-                ], float)
-                c.verts[i].Hv += Hd_i
-
-    @ti.kernel
-    def compute_Hv_p(self):
-        """Compute w = H * p (Hessian times search direction)."""
-        for vert in self.mesh.verts:
-            vert.w = ti.Vector.zero(float, 3)
-
-        # Inertia: M * p
-        for vert in self.mesh.verts:
-            vert.w += vert.m * vert.p
-
-        # Elastic: H_elastic * p (diagonal approximation)
-        for c in self.mesh.cells:
-            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
-            B = c.B
-            F = Ds @ B
-            para = c.W * self.dt ** 2
-
-            diagH = para * self.compute_diag_d2Psidx2(F, B, self.mu, self.la)
-
-            for i in range(4):
                 p_i = c.verts[i].p
-                Hp_i = ti.Vector([
-                    ti.max(diagH[3*i], 0.0) * p_i[0],
-                    ti.max(diagH[3*i+1], 0.0) * p_i[1],
-                    ti.max(diagH[3*i+2], 0.0) * p_i[2]
-                ], float)
-                c.verts[i].w += Hp_i
+                d0 = ti.max(diagH[3*i], 0.0)
+                d1 = ti.max(diagH[3*i+1], 0.0)
+                d2 = ti.max(diagH[3*i+2], 0.0)
+
+                c.verts[i].Hv += ti.Vector([d0 * z_i[0], d1 * z_i[1], d2 * z_i[2]], float)
+                c.verts[i].w += ti.Vector([d0 * p_i[0], d1 * p_i[1], d2 * p_i[2]], float)
+
+    def compute_Hv_z(self):
+        """Compute Hv = H * z (wrapper for compatibility)."""
+        self.compute_Hv_both()
+
+    def compute_Hv_p(self):
+        """Compute w = H * p (no-op since compute_Hv_both does both)."""
+        pass  # Already computed by compute_Hv_both
 
     # ========================================================================
     # 2D Subspace Minimization (Section 3.2)
@@ -443,15 +475,20 @@ class SubspacePowellValidator:
             self.g_z_prev[None] += ti.f64(g.dot(z_prev))
             self.g_z[None] += ti.f64(g.dot(z))
 
-    def check_powell_restart(self) -> bool:
-        """Check Powell's restart criterion: r_k = |g·z_prev| / (g·z)."""
+    def check_powell_restart(self, verbose=False) -> bool:
+        """Check Powell's restart criterion: r_k = |g·z_prev| / |g·z|."""
         g_z_prev = abs(float(self.g_z_prev[None]))
-        g_z = float(self.g_z[None])
+        g_z = abs(float(self.g_z[None]))  # Fix: should use abs()
 
         if g_z < 1e-12:
+            if verbose:
+                print(f'      Powell: |g_z|={g_z:.2e} < 1e-12, forcing restart')
             return True
 
         r_k = g_z_prev / g_z
+
+        if verbose:
+            print(f'      Powell: |g·z_prev|={g_z_prev:.2e}, |g·z|={g_z:.2e}, r_k={r_k:.4f}, threshold={self.restart_threshold}')
 
         if r_k > self.restart_threshold:
             return True
@@ -549,16 +586,8 @@ class SubspacePowellValidator:
                     self.mas.build_hierarchy()
                 self.mas.assemble_block_matrices(self, use_full_hessian=True)
 
-                use_cholesky = self.inversion_method in ['cholesky', 'incomplete']
-                use_incomplete = self.inversion_method == 'incomplete'
-                use_oneway_gj = self.inversion_method == 'oneway_gj'
-
-                self.mas.invert_block_matrices(
-                    use_full_inversion=True,
-                    use_cholesky=use_cholesky,
-                    use_incomplete=use_incomplete,
-                    use_oneway_gj=use_oneway_gj
-                )
+                # Use new API: invert_block_matrices(method=...)
+                self.mas.invert_block_matrices(method=self.inversion_method)
 
             # Apply MAS preconditioner: z = P * grad
             self.mas.apply()
@@ -572,7 +601,9 @@ class SubspacePowellValidator:
             # Compute H*z for 2D subspace
             self.compute_Hv_z()
 
-            # Compute search direction
+            # Compute search direction and determine step size
+            use_unit_alpha = False  # Flag for 2D subspace with α=1
+
             if iter == 0 or do_restart:
                 # First iteration or restart: 1D optimization
                 self.compute_init_search_direction_1d()
@@ -583,20 +614,30 @@ class SubspacePowellValidator:
             else:
                 if self.use_2d_subspace:
                     # 2D subspace optimization
+                    # The 2x2 system already finds optimal scaling, so α=1 is optimal
                     self.compute_subspace_scalars()
                     mu, nu = self.solve_2x2_subspace()
                     self.update_search_direction_2d(mu, nu)
+                    use_unit_alpha = True  # Key: α=1 for 2D subspace
                 else:
                     # 1D: steepest descent
                     self.compute_steepest_descent_direction()
                     self.compute_Hv_p()
 
-            # Line search
-            result = self.line_search_newton()
-            alpha, gTp, pHp = result[0], result[1], result[2]
+            # Step size selection
+            if use_unit_alpha:
+                # 2D subspace: optimal step size is 1.0
+                # (μ, ν already incorporate the optimal scaling)
+                alpha = 1.0
+                gTp = 0.0  # Not needed for logging
+                pHp = 0.0
+            else:
+                # 1D or restart: use Newton line search
+                result = self.line_search_newton()
+                alpha, gTp, pHp = result[0], result[1], result[2]
 
-            if verbose and iter == 0:
-                print(f'    alpha={alpha:.4f}, gTp={gTp:.2e}, pHp={pHp:.2e}')
+            if verbose and iter < 5:
+                print(f'    iter {iter}: alpha={alpha:.4f}')
 
             # Update position
             self.update_x(alpha)
@@ -604,7 +645,7 @@ class SubspacePowellValidator:
             # Powell's restart criterion
             if self.use_powell_restart and iter > 0:
                 self.compute_powell_scalars()
-                do_restart = self.check_powell_restart()
+                do_restart = self.check_powell_restart(verbose=False)
             else:
                 do_restart = False
 
@@ -665,7 +706,7 @@ class SubspacePowellValidator:
 
 
 def run_test(demo='cube_freefall_10', frames=5, initial_vy=-1.0,
-             grad_tol=1e-6, iter_max=100, inversion_method='oneway_gj',
+             grad_tol=1e-6, iter_max=100, inversion_method='ic',
              use_2d_subspace=True, use_powell_restart=True, verbose=True):
     """
     Run 2D subspace and Powell restart test.
@@ -864,6 +905,81 @@ def test_powell_restart(demo='cube_freefall_10', frames=5, initial_vy=-1.0,
     return {'no_powell': result_no_powell, 'with_powell': result_powell}
 
 
+def run_visual(demo='cube_freefall_10', initial_vy=-1.0,
+               grad_tol=1e-6, iter_max=100, inversion_method='ic',
+               use_2d_subspace=True, use_powell_restart=True):
+    """
+    Run interactive visualization.
+
+    Args:
+        demo: Demo configuration name
+        initial_vy: Initial downward velocity
+        grad_tol: Gradient tolerance for convergence
+        iter_max: Maximum iterations per frame
+        inversion_method: MAS block inversion method
+        use_2d_subspace: If True, use 2D subspace minimization
+        use_powell_restart: If True, use Powell restart criterion
+    """
+    mode_str = []
+    if use_2d_subspace:
+        mode_str.append("2D Subspace")
+    else:
+        mode_str.append("1D (Steepest)")
+    if use_powell_restart:
+        mode_str.append("Powell Restart")
+
+    print(f"\n{'='*70}")
+    print(f"Interactive Visualization: {', '.join(mode_str)}")
+    print(f"{'='*70}")
+    print(f"Demo: {demo}, Initial Vy: {initial_vy}")
+    print(f"Controls: Mouse drag to rotate, scroll to zoom, close window to exit")
+    print(f"{'='*70}\n")
+
+    # Create solver
+    solver = SubspacePowellValidator(
+        demo=demo,
+        inversion_method=inversion_method,
+        use_2d_subspace=use_2d_subspace,
+        use_powell_restart=use_powell_restart
+    )
+    solver.iter_max = iter_max
+
+    # Set initial velocity
+    solver.set_initial_velocity(initial_vy)
+
+    # Create window
+    window = ti.ui.Window('2D Subspace & Powell Restart Demo', (1024, 768))
+    canvas = window.get_canvas()
+    scene = window.get_scene()
+    camera = ti.ui.Camera()
+    camera.position(*solver.camera_position)
+    camera.lookat(*solver.camera_lookat)
+
+    frame_count = 0
+    while window.running:
+        # Step simulation
+        iters, elapsed, restarts = solver.step(verbose=False, grad_tol=grad_tol)
+        frame_count += 1
+
+        # Validate against ground truth
+        result = solver.validate_frame(verbose=True)
+
+        # Update camera
+        camera.track_user_inputs(window, movement_speed=0.03, hold_key=ti.ui.RMB)
+        scene.set_camera(camera)
+
+        # Render
+        scene.ambient_light((0.8, 0.8, 0.8))
+        scene.point_light(pos=(0.5, 1.5, 1.5), color=(1, 1, 1))
+        scene.mesh(solver.mesh.verts.x, solver.indices, color=(0.5, 0.7, 0.9))
+
+        canvas.scene(scene)
+        window.show()
+
+    print(f"\n[Visual] Simulation ended after {frame_count} frames")
+    return solver
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='2D Subspace & Powell Restart Test')
     parser.add_argument('--demo', type=str, default='cube_freefall_10',
@@ -872,19 +988,42 @@ if __name__ == '__main__':
     parser.add_argument('--vy', type=float, default=-1.0, help='Initial downward velocity')
     parser.add_argument('--grad_tol', type=float, default=1e-6, help='Gradient tolerance')
     parser.add_argument('--iter_max', type=int, default=100, help='Max iterations per frame')
-    parser.add_argument('--inversion', type=str, default='oneway_gj',
-                        choices=['cholesky', 'gauss_jordan', 'oneway_gj', 'incomplete'],
-                        help='MAS block inversion method')
+    parser.add_argument('--inversion', type=str, default='ic',
+                        choices=['ic', 'cholesky', 'blocked_cholesky', 'gauss_jordan', 'gj', 'oneway_gj', 'diagonal'],
+                        help='MAS block inversion method (default: ic)')
     parser.add_argument('--compare', action='store_true', help='Compare 1D vs 2D subspace')
     parser.add_argument('--powell-test', action='store_true', help='Test Powell restart effect')
     parser.add_argument('--no-2d', action='store_true', help='Disable 2D subspace (use 1D)')
     parser.add_argument('--no-powell', action='store_true', help='Disable Powell restart')
     parser.add_argument('--quiet', action='store_true', help='Less verbose output')
+    parser.add_argument('--visual', action='store_true', help='Run with interactive visualization')
+    parser.add_argument('--no-cache', action='store_true', help='Disable Taichi offline cache')
+    parser.add_argument('--mas-verbose', action='store_true', help='Enable MAS verbose output')
     args = parser.parse_args()
 
-    ti.init(arch=ti.gpu, default_fp=ti.f32)
+    # Enable MAS verbose output if requested
+    if args.mas_verbose:
+        import builtins
+        builtins.print = _original_print
 
-    if args.compare:
+    # Enable offline cache to speed up subsequent runs
+    # First run will be slow, but subsequent runs will be much faster
+    if args.no_cache:
+        ti.init(arch=ti.gpu, default_fp=ti.f32)
+    else:
+        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
+
+    if args.visual:
+        run_visual(
+            demo=args.demo,
+            initial_vy=args.vy,
+            grad_tol=args.grad_tol,
+            iter_max=args.iter_max,
+            inversion_method=args.inversion,
+            use_2d_subspace=not args.no_2d,
+            use_powell_restart=not args.no_powell
+        )
+    elif args.compare:
         compare_1d_vs_2d(
             demo=args.demo, frames=args.frames, initial_vy=args.vy,
             grad_tol=args.grad_tol, iter_max=args.iter_max

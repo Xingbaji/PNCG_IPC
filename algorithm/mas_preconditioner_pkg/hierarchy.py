@@ -378,56 +378,48 @@ class HierarchyMixin:
     # Main Apply Method (Restriction + Local Solve + Prolongation)
     # ========================================================================
 
-    def apply(self, use_full_solve: bool = True, use_parallel_solve: bool = False,
-              use_warp_reduction: bool = True, use_conflict_free: bool = False,
-              use_banded: bool = False):
+    def apply(self, solve_method: str = 'banded'):
         """
         Apply MAS preconditioner: z = P * grad
 
         Three phases:
-        1. Restriction: gradient -> multi_level_r
+        1. Restriction: gradient -> multi_level_r (uses optimized warp reduction)
         2. Local solve: multi_level_r -> multi_level_z
         3. Prolongation: multi_level_z -> z
 
         Args:
-            use_full_solve: If True, use full block inverse in local solve.
-                           If False, use diagonal-only approximation.
-            use_parallel_solve: If True, use parallelized local solve with atomics.
-                               This can be faster on GPUs with many cores.
-            use_warp_reduction: If True, use P1 optimized warp-level reduction
-                               for restriction phase. Default True.
-            use_conflict_free: If True, use P5 conflict-free SpMV for local solve.
-                              This uses unrolled matrix-vector multiply for better
-                              instruction-level parallelism. Default False.
-            use_banded: If True, use P6 banded sparse MV for local solve.
-                       This is optimized for IC(0) which produces banded inverse.
-                       Only accesses node pairs within NODE_BANDWIDTH=2.
-                       Should be used together with IC(0) inversion for best results.
+            solve_method: Local solve method. Options:
+                - 'banded' (default): Banded SpMV optimized for IC(0), fastest
+                - 'conflict_free': Unrolled MatVec with better ILP
+                - 'parallel': Parallelized full block solve
+                - 'full': Standard full block solve
+                - 'diagonal': Diagonal-only approximation, lowest quality
         """
         # Clear buffers
         self._clear_multi_level_buffers()
 
-        # Phase 1: Restriction
-        if use_warp_reduction and WARP_REDUCTION_ENABLED:
+        # Phase 1: Restriction (always use optimized version)
+        if WARP_REDUCTION_ENABLED:
             self._clear_warp_sum_buffer()
             self._build_multi_level_r_optimized()
         else:
             self._build_multi_level_r()
 
-        # Phase 2: Local solve (delegated to SchwarzMixin)
-        if use_full_solve:
-            if use_banded:
-                # P6 optimization: banded sparse MV for IC(0)
-                self._schwarz_local_solve_banded()
-            elif use_conflict_free:
-                # P5 optimization: conflict-free SpMV with unrolled MatVec
-                self._schwarz_local_solve_conflict_free()
-            elif use_parallel_solve:
-                self._schwarz_local_solve_full_parallel()
-            else:
-                self._schwarz_local_solve_full()
-        else:
+        # Phase 2: Local solve
+        method = solve_method.lower()
+        if method == 'banded':
+            self._schwarz_local_solve_banded()
+        elif method == 'conflict_free':
+            self._schwarz_local_solve_conflict_free()
+        elif method == 'parallel':
+            self._schwarz_local_solve_full_parallel()
+        elif method == 'full':
+            self._schwarz_local_solve_full()
+        elif method == 'diagonal':
             self._schwarz_local_solve()
+        else:
+            raise ValueError(f"Unknown solve method: {solve_method}. "
+                           f"Options: banded, conflict_free, parallel, full, diagonal")
 
         # Phase 3: Prolongation
         self._collect_final_z()

@@ -29,7 +29,7 @@ def cube_config():
             E=1e4,
             nu=0.4,
             density=500.0,
-            elastic_type="ARAP_filter"
+            elastic_type="ARAP_SPD"
         ),
         solver=SolverConfig(
             epsilon=1e-10,
@@ -55,7 +55,7 @@ def cube_10_config():
             E=1e4,
             nu=0.4,
             density=500.0,
-            elastic_type="ARAP_filter"
+            elastic_type="ARAP_SPD"
         ),
         solver=SolverConfig(
             epsilon=1e-7,
@@ -81,7 +81,7 @@ def cube_20_config():
             E=1e4,
             nu=0.4,
             density=500.0,
-            elastic_type="ARAP_filter"
+            elastic_type="ARAP_SPD"
         ),
         solver=SolverConfig(
             epsilon=1e-5,

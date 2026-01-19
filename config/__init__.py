@@ -33,7 +33,7 @@ Example with all parameters:
             E=1e4,           # Young's modulus
             nu=0.4,          # Poisson's ratio
             density=1000.0,  # kg/m^3
-            elastic_type="ARAP_filter"
+            elastic_type="ARAP_SPD"
         ),
         solver=SolverConfig(
             epsilon=1e-5,    # Convergence tolerance

@@ -19,8 +19,18 @@ from .constants import BANKSIZE, SYM_BLOCK_COUNT
 # These must be imported at module level for Taichi kernels
 from math_utils.matrix_util import compute_dFdx
 from math_utils.elastic_util import (
-    compute_d2PsidF2_ARAP_filter, compute_d2PsidF2_SNH, compute_d2PsidF2_FCR_filter
+    compute_d2PsidF2_ARAP_filter, compute_d2PsidF2_SNH, compute_d2PsidF2_FCR_filter,
+    # SPD-projected Hessian functions (eigenanalysis-based)
+    compute_d2PsidF2_ARAP_SPD, compute_d2PsidF2_NH_SPD, compute_d2PsidF2_STVK_SPD
 )
+
+# Elastic type constants
+ELASTIC_ARAP = 0
+ELASTIC_SNH = 1
+ELASTIC_FCR = 2
+ELASTIC_ARAP_SPD = 3
+ELASTIC_NH_SPD = 4
+ELASTIC_STVK_SPD = 5
 
 
 # ==============================================================================
@@ -117,12 +127,18 @@ class AssemblyMixin:
 
             # Compute d2PsidF2 (9x9 matrix) based on elastic type
             d2PsidF2 = ti.Matrix.zero(ti.f32, 9, 9)
-            if elastic_type == 0:  # ARAP
+            if elastic_type == ELASTIC_ARAP:  # ARAP (filtered)
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
-            elif elastic_type == 1:  # SNH
+            elif elastic_type == ELASTIC_SNH:  # SNH
                 d2PsidF2 = compute_d2PsidF2_SNH(F, mu, la)
-            elif elastic_type == 2:  # FCR
+            elif elastic_type == ELASTIC_FCR:  # FCR (filtered)
                 d2PsidF2 = compute_d2PsidF2_FCR_filter(F, mu, la)
+            elif elastic_type == ELASTIC_ARAP_SPD:  # ARAP with full SPD projection
+                d2PsidF2 = compute_d2PsidF2_ARAP_SPD(F, mu, la)
+            elif elastic_type == ELASTIC_NH_SPD:  # Neo-Hookean with SPD projection
+                d2PsidF2 = compute_d2PsidF2_NH_SPD(F, mu, la)
+            elif elastic_type == ELASTIC_STVK_SPD:  # StVK with SPD projection
+                d2PsidF2 = compute_d2PsidF2_STVK_SPD(F, mu, la)
             else:
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
 
@@ -229,12 +245,18 @@ class AssemblyMixin:
             dFdx = compute_dFdx(B)
 
             d2PsidF2 = ti.Matrix.zero(ti.f32, 9, 9)
-            if elastic_type == 0:
+            if elastic_type == ELASTIC_ARAP:
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
-            elif elastic_type == 1:
+            elif elastic_type == ELASTIC_SNH:
                 d2PsidF2 = compute_d2PsidF2_SNH(F, mu, la)
-            elif elastic_type == 2:
+            elif elastic_type == ELASTIC_FCR:
                 d2PsidF2 = compute_d2PsidF2_FCR_filter(F, mu, la)
+            elif elastic_type == ELASTIC_ARAP_SPD:
+                d2PsidF2 = compute_d2PsidF2_ARAP_SPD(F, mu, la)
+            elif elastic_type == ELASTIC_NH_SPD:
+                d2PsidF2 = compute_d2PsidF2_NH_SPD(F, mu, la)
+            elif elastic_type == ELASTIC_STVK_SPD:
+                d2PsidF2 = compute_d2PsidF2_STVK_SPD(F, mu, la)
             else:
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
 

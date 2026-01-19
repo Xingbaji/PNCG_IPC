@@ -15,12 +15,13 @@ This document describes the implementation of **Geometric Contact Potential (GCP
 
 Standard IPC (Incremental Potential Contact) requires:
 1. **Small `dHat`**: Detection distance must be smaller than minimum edge length
-2. **Adjacency Filtering**: At rest configuration, adjacent boundary elements within `dHat` must be explicitly excluded via `define_adj_matrix()`
+2. **Adjacency Filtering**: At rest configuration, adjacent boundary elements within `dHat` must be explicitly excluded
 
 **Why this is limiting:**
 - Small `dHat` requires more iterations to detect approaching contacts
-- Adjacency matrix consumes O(n²) memory in worst case
 - Mesh-dependent: changing mesh requires recomputing adjacency
+
+**Note:** The adjacency matrix feature (`adj_matrix`) has been removed from the codebase as it is no longer needed with GCP.
 
 ---
 

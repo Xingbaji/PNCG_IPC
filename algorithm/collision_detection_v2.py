@@ -31,14 +31,8 @@ class collision_detection_module_v2(collision_detection_module):
         self.pse_E = ti.algorithms.PrefixSumExecutor(self.table_size + 1)
         self.pse_P = ti.algorithms.PrefixSumExecutor(self.table_size + 1)
 
-        if self.adj == 1:
-            # when dHat is too large, there would be constraints at rest pose, so filter some constraints
-            self.define_adj_matrix()
-            self.attempt_PT = self.attempt_PT_adj
-            self.attempt_EE = self.attempt_EE_adj
-        else:
-            self.attempt_PT = self.attempt_PT_no_adj
-            self.attempt_EE = self.attempt_EE_no_adj
+        self.attempt_PT = self.attempt_PT_no_adj
+        self.attempt_EE = self.attempt_EE_no_adj
 
     @ti.kernel
     def count_cells_edges(self):

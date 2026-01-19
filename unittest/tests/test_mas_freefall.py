@@ -24,11 +24,15 @@ import time
 import argparse
 import numpy as np
 
-# Setup paths
+# Setup paths - find project root (PNCG_IPC) and set up properly
 current_file_path = os.path.abspath(__file__)
-parent_dir = os.path.dirname(os.path.dirname(current_file_path))
-sys.path.insert(0, parent_dir)
-demo_dir = os.path.join(parent_dir, 'demo')
+tests_dir = os.path.dirname(current_file_path)
+unittest_dir = os.path.dirname(tests_dir)
+project_root = os.path.dirname(unittest_dir)
+demo_dir = os.path.join(project_root, 'demo')
+
+# Add project root and demo to path
+sys.path.insert(0, project_root)
 sys.path.insert(0, demo_dir)
 os.chdir(demo_dir)
 
@@ -132,7 +136,7 @@ class FreeFallMASValidator:
         """Set elastic type functions.
 
         MAS preconditioner uses integer elastic_type:
-        0=ARAP, 1=SNH, 2=FCR, 3=NH
+        0=ARAP, 1=SNH, 2=FCR, 3=ARAP_SPD, 4=NH_SPD, 5=STVK_SPD
         """
         if elastic == 'ARAP':
             self.compute_dPsidx = compute_dPsidx_ARAP
@@ -157,12 +161,25 @@ class FreeFallMASValidator:
         elif elastic == 'NH':
             self.compute_dPsidx = compute_dPsidx_NH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH
+            self.elastic_type = 1  # Map NH to SNH for MAS assembly
+        # SPD-projected Hessian materials (eigenanalysis-based)
+        elif elastic == 'ARAP_SPD':
+            self.compute_dPsidx = compute_dPsidx_ARAP_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
             self.elastic_type = 3
+        elif elastic == 'NH_SPD':
+            self.compute_dPsidx = compute_dPsidx_NH_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH_SPD
+            self.elastic_type = 4
+        elif elastic == 'STVK_SPD':
+            self.compute_dPsidx = compute_dPsidx_STVK_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_STVK_SPD
+            self.elastic_type = 5
         else:
-            print(f'Warning: Unknown elastic type {elastic}, using ARAP_filter')
-            self.compute_dPsidx = compute_dPsidx_ARAP
-            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_filter
-            self.elastic_type = 0
+            print(f'Warning: Unknown elastic type {elastic}, using ARAP_SPD')
+            self.compute_dPsidx = compute_dPsidx_ARAP_SPD
+            self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
+            self.elastic_type = 3
         self.elastic_type_str = elastic
 
     @ti.kernel

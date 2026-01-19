@@ -566,7 +566,7 @@ class InversionMixin:
                               method: str = 'ic',
                               force_symmetry: bool = True,
                               regularization_epsilon: float = 0.0,
-                              adaptive_regularization: float = 0.05):
+                              adaptive_regularization: float = 0.0):
         """
         Invert all block matrices on GPU.
 
