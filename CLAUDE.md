@@ -75,6 +75,8 @@ MASPreconditioner (algorithm/mas_preconditioner_pkg/)
 
 ## Testing
 
+**⚠️ CRITICAL: 修改代码后必须运行测试！**
+
 ```bash
 # Run all unit tests
 cd unittest
@@ -86,7 +88,14 @@ python test_mas_preconditioner.py
 python test_metis_reorder.py
 ```
 
+**测试要求：**
+1. **每次修改代码后**，必须运行相关的单元测试
+2. **提交代码前**，必须确保所有测试通过
+3. **添加新功能时**，必须编写对应的测试用例
+
 ## Knowledge Base
+
+**⚠️ CRITICAL: 修改代码后必须更新知识库！**
 
 项目文档按以下结构组织：
 
@@ -108,10 +117,11 @@ docs/
 | `docs/papers/` | 论文和tex源文件 | 较少更新 |
 | `experiment_reports/` | 实验报告 | 每次重要实验后 |
 
-**完成重要修改或实验后，必须创建实验报告或者更新知识库**
-
-**重要修改或实验结果，必须对应地更新知识库**
-
+**知识库更新要求：**
+1. **修改算法实现** → 更新 `docs/algorithm/` 对应文档
+2. **修改架构设计** → 更新 `docs/design/` 对应文档
+3. **完成重要实验** → 创建 `experiment_reports/` 实验报告
+4. **添加新功能** → 更新相关文档并在 `docs/INDEX.md` 中添加索引
 
 ```bash
 # 创建实验报告
@@ -119,6 +129,17 @@ touch experiment_reports/$(date +%Y-%m-%d)_experiment_name.md
 ```
 
 详细规范见 `docs/KNOWLEDGE_BASE_GUIDE.md`，文档索引见 `docs/INDEX.md`。
+
+## Development Workflow
+
+**每次修改代码的标准流程：**
+
+```
+1. 修改代码
+2. 运行测试 → python unittest/run_all_tests.py
+3. 更新知识库 → docs/ 或 experiment_reports/
+4. 提交代码 → git add -A && git commit -m "[module] desc" && git push
+```
 
 ## Version Control
 
