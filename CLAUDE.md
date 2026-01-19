@@ -25,12 +25,11 @@ PNCG_IPC implements the **MAS-PNCG** framework from the paper "An Efficient Mult
 
 | Feature | File | Status |
 |---------|------|--------|
-| MAS Preconditioner (Monolithic) | `mas_preconditioner.py` | ✅ Complete (5,006 lines) |
-| MAS Preconditioner (Modular) | `mas_preconditioner_pkg/` | ✅ Complete (5,149 lines, 13 modules) |
+| MAS Preconditioner | `mas_preconditioner_pkg/` | ✅ Complete (5,300+ lines, 13 modules) |
 | MAS-PNCG Solver | `mas_pncg_solver.py` | ✅ Complete (882 lines) |
 | 2D Subspace Minimization | `mas_pncg_solver.py` | ✅ Complete |
 | Powell's Restart Criterion | `mas_pncg_solver.py` | ✅ Complete |
-| Sparse-Input Woodbury Updates | `mas_preconditioner.py` | ✅ Complete |
+| Sparse-Input Woodbury Updates | `mas_preconditioner_pkg/woodbury.py` | ✅ Complete |
 | BVH Collision Detection | `collision_detection_bvh.py` | ✅ Complete (806 lines) |
 | LBVH Construction | `lbvh.py` | ✅ Complete (754 lines) |
 | METIS Graph Partitioning | `metis_reorder.py` | ✅ Complete (662 lines) |
@@ -38,6 +37,8 @@ PNCG_IPC implements the **MAS-PNCG** framework from the paper "An Efficient Mult
 | Hierarchical Partition | `hierarchical_partition.py` | ✅ Complete (545 lines) |
 | HUP MAS Preconditioner | `hup_mas_preconditioner.py` | ✅ Complete (766 lines) |
 | Configuration System | `config/` | ✅ Complete |
+
+> **Note:** The monolithic `mas_preconditioner.py` has been deprecated and moved to `tmp/`. Use the modular `mas_preconditioner_pkg/` instead.
 
 ## Commands
 
@@ -125,10 +126,10 @@ MAS模块化包包含完整的单元测试框架 (`n_E_demos/test_mas_pkg_unitte
 ```
 PNCG_IPC/
 ├── algorithm/              # Core solver implementations (~20,000 lines)
-│   ├── mas_preconditioner.py       # MAS preconditioner monolithic (5,006 lines)
-│   ├── mas_preconditioner_pkg/     # MAS preconditioner modular (5,149 lines)
+│   ├── mas_preconditioner_pkg/     # MAS preconditioner modular (5,300+ lines)
+│   │   ├── __init__.py             # Package initialization
 │   │   ├── core.py                 # Main MASPreconditioner class (359 lines)
-│   │   ├── assembly.py             # Matrix assembly (676 lines)
+│   │   ├── assembly.py             # Matrix assembly (700+ lines)
 │   │   ├── metis_integration.py    # METIS partitioning (595 lines)
 │   │   ├── topology.py             # Mesh topology (587 lines)
 │   │   ├── woodbury.py             # Woodbury updates (520 lines)
@@ -180,8 +181,8 @@ pncg_base_ipc (PNCG solver with IPC barrier functions)
 Demo classes (application-specific boundary conditions)
 
 MASPreconditioner (standalone, used by mas_pncg_solver)
-  - Monolithic version: algorithm/mas_preconditioner.py
-  - Modular version: algorithm/mas_preconditioner_pkg/
+  - Location: algorithm/mas_preconditioner_pkg/
+  - Mixin-based architecture with 13 specialized modules
 HUPMASPreconditioner (standalone, hierarchical update variant)
 GCPContactPotential (standalone, geometric contact potential)
 ```
@@ -189,22 +190,19 @@ GCPContactPotential (standalone, geometric contact potential)
 ### Key Modules
 
 **algorithm/**
-- `mas_preconditioner.py` - Multilevel Additive Schwarz preconditioner with:
-  - Full 48x48 block inversion (BANKSIZE=16 nodes × 3 DOF)
-  - Multi-level hierarchy construction (up to 6 levels)
-  - Connectivity-aware coarsening with topology-based adjacency
-  - Sparse-Input Woodbury rank-1 updates (TOP_K_UPDATES=8)
-  - METIS integration for optimal vertex ordering
-- `mas_preconditioner_pkg/` - Modular MAS implementation:
+- `mas_preconditioner_pkg/` - Multilevel Additive Schwarz preconditioner (modular):
   - `core.py` - Main MASPreconditioner class and orchestration
   - `assembly.py` - Elastic + contact Hessian matrix assembly
+  - `topology.py` - Mesh topology, neighbor list, hierarchy construction
+  - `inversion.py` - Block matrix inversion (5 algorithms)
+  - `schwarz.py` - Schwarz local solvers (6 variants)
+  - `hierarchy.py` - Multi-level restriction/prolongation with P1 optimization
+  - `woodbury.py` - Sparse-Input Woodbury rank-1 updates (TOP_K_UPDATES=8)
   - `metis_integration.py` - METIS-based graph partitioning
-  - `topology.py` - Mesh topology and neighbor list building
-  - `woodbury.py` - Sparse-Input Woodbury rank-1 updates
-  - `inversion.py` - Block matrix inversion algorithms
-  - `hierarchy.py` - Multi-level restriction/prolongation
-  - `schwarz.py` - Schwarz local solvers
+  - `warp_utils.py` - Bit manipulation and warp-level operations
+  - `simple_api.py` - Simplified API without MeshTaichi
   - `spmv.py` - SRBK SpMV implementation
+  - `constants.py` - Core constants (BANKSIZE=16, MAX_LEVELS=6, etc.)
 - `mas_pncg_solver.py` - Complete MAS-PNCG algorithm with:
   - 2D subspace minimization (Eq. 6 from paper)
   - Powell's restart criterion (RESTART_THRESHOLD=0.3)
@@ -335,13 +333,28 @@ return x_{k+1}
 
 ## Version Control
 
-**Important:** After modifying code, commit and push changes promptly to avoid losing work and keep the repository up to date.
+**CRITICAL:** After EVERY code modification, you MUST immediately commit and push changes. Do not wait or batch multiple changes.
+
+### Auto-commit Rule
+After completing any code edit (using Edit or Write tools), immediately run:
 
 ```bash
-git add -A
-git commit -m "Your commit message"
-git push
+git add -A && git commit -m "描述性提交信息" && git push
 ```
+
+### Commit Message Guidelines
+- Use clear, descriptive messages in Chinese or English
+- Format: `[模块] 简短描述`
+- Examples:
+  - `[assembly] Fix symmetric storage for elastic Hessian`
+  - `[CLAUDE.md] Update documentation for modular MAS`
+  - `[mas_pncg_solver] Update import to use mas_preconditioner_pkg`
+
+### Why This Matters
+- Prevents loss of work if session disconnects
+- Keeps repository synchronized
+- Provides clear history of changes
+- Allows easy rollback if needed
 
 ## Known Issues
 

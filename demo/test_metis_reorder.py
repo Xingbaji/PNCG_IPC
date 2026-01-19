@@ -109,7 +109,7 @@ def test_metis_mas_integration():
     import taichi as ti
     ti.init(arch=ti.gpu, default_fp=ti.f64)
 
-    from algorithm.mas_preconditioner import MASPreconditioner, BANKSIZE
+    from algorithm.mas_preconditioner_pkg import MASPreconditioner, BANKSIZE
 
     # Check that METIS methods exist
     required_methods = [

@@ -16,7 +16,7 @@ import numpy as np
 ti.init(arch=ti.gpu, default_fp=ti.f32, device_memory_GB=4.0)
 
 from algorithm.pncg_base_ipc import pncg_ipc_deformer
-from algorithm.mas_preconditioner import MASPreconditioner, BANKSIZE
+from algorithm.mas_preconditioner_pkg import MASPreconditioner, BANKSIZE
 
 
 @ti.data_oriented

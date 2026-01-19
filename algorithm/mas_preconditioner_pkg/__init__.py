@@ -19,11 +19,13 @@ The implementation is split into several modules for better organization:
 - warp_utils.py: Bit manipulation and warp reduction utilities
 
 Usage:
-    from algorithm.mas_preconditioner import MASPreconditioner
+    from algorithm.mas_preconditioner_pkg import MASPreconditioner
 
     # Or import specific components:
-    from algorithm.mas_preconditioner.spmv import SRBKSpMV
-    from algorithm.mas_preconditioner.constants import BANKSIZE
+    from algorithm.mas_preconditioner_pkg.spmv import SRBKSpMV
+    from algorithm.mas_preconditioner_pkg.constants import BANKSIZE
+
+Note: The monolithic mas_preconditioner.py has been deprecated and moved to tmp/.
 """
 
 # Main class export

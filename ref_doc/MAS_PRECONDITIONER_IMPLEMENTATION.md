@@ -686,7 +686,9 @@ def estimate_total_nodes():
 
 ## 10. Implementation Checklist
 
-### ✅ Currently Implemented in mas_preconditioner.py
+### ✅ Currently Implemented in mas_preconditioner_pkg/
+
+> **Note:** The monolithic `mas_preconditioner.py` has been deprecated and moved to `tmp/`. Use the modular `mas_preconditioner_pkg/` package instead.
 - [x] Class structure and initialization
 - [x] Neighbor list from mesh topology
 - [x] Level 0 connectivity mask

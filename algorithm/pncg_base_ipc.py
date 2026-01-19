@@ -6,7 +6,7 @@ This module replaces spatial hashing with LBVH for better performance.
 import time
 from algorithm.collision_detection_bvh import *
 from util.model_loading import *
-from algorithm.mas_preconditioner import MASPreconditioner
+from algorithm.mas_preconditioner_pkg import MASPreconditioner
 
 
 @ti.data_oriented

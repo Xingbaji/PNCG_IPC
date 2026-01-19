@@ -80,7 +80,7 @@ def test_mas_hierarchy_construction():
     print("Test: MAS Hierarchy Construction")
     print("="*60)
 
-    from algorithm.mas_preconditioner import MASPreconditioner
+    from algorithm.mas_preconditioner_pkg import MASPreconditioner
 
     # Create a mock mesh for testing
     class MockVerts:

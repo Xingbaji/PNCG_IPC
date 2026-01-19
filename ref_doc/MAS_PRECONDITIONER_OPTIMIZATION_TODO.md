@@ -22,10 +22,12 @@
 | 问题类型 | 影响范围 | 性能影响 | 优化难度 |
 |----------|----------|----------|----------|
 | 稀疏字典遍历 | **全局（16+文件，56+处）** | 高 | 中 |
-| 过度原子操作 | mas_preconditioner.py | 中-高 | 中 |
-| 串行块求逆 | mas_preconditioner.py | 中 | 高 |
-| 位操作模拟 | mas_preconditioner.py | 低-中 | 低 |
+| 过度原子操作 | mas_preconditioner_pkg/ | 中-高 | 中 |
+| 串行块求逆 | mas_preconditioner_pkg/inversion.py | 中 | 高 |
+| 位操作模拟 | mas_preconditioner_pkg/warp_utils.py | 低-中 | 低 |
 | 数据布局 | 多个文件 | 低-中 | 低 |
+
+> **Note:** 原始的单体版本 `mas_preconditioner.py` 已被弃用并移动到 `tmp/`。所有优化应针对模块化版本 `mas_preconditioner_pkg/`。
 
 ---
 

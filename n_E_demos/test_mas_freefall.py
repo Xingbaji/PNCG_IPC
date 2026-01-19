@@ -35,7 +35,7 @@ os.chdir(demo_dir)
 import taichi as ti
 from math_utils.elastic_util import *
 from util.model_loading import model_loading
-from algorithm.mas_preconditioner import MASPreconditioner
+from algorithm.mas_preconditioner_pkg import MASPreconditioner
 
 
 @ti.data_oriented

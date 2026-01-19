@@ -17,7 +17,7 @@ import taichi as ti
 import numpy as np
 from algorithm.collision_detection_bvh import *
 from util.model_loading import *
-from algorithm.mas_preconditioner import MASPreconditioner, BANKSIZE
+from algorithm.mas_preconditioner_pkg import MASPreconditioner, BANKSIZE
 from math_utils.matrix_util import compute_dFdx_p, compute_dFdxT_p
 
 # Constants

@@ -24,7 +24,7 @@ os.chdir(demo_dir)
 
 import taichi as ti
 from algorithm.pncg_base_ipc import pncg_ipc_deformer
-from algorithm.mas_preconditioner import MASPreconditioner
+from algorithm.mas_preconditioner_pkg import MASPreconditioner
 from demo_runner import DemoRunner
 
 

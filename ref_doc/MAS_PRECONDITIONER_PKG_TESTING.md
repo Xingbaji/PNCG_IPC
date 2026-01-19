@@ -6,6 +6,8 @@
 
 MAS Preconditioner Package是将原始的`mas_preconditioner.py`(约5000行)重构为模块化目录结构的结果。测试框架用于验证每个模块的正确性和性能。
 
+> **Note:** 原始的单体版本 `mas_preconditioner.py` 已被弃用并移动到 `tmp/` 文件夹。请使用模块化版本 `mas_preconditioner_pkg/`。
+
 ### 测试文件位置
 
 ```
