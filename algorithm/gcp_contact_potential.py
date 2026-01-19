@@ -978,15 +978,16 @@ class GCPModule:
 
                 # Compute dtdx^T
                 dtdx_t = ti.Vector.zero(float, 12)
-                for i in range(4):
-                    dtdx_t[3*i:3*i+3] = cord[i] * t
+                for i in ti.static(range(4)):
+                    for j in ti.static(range(3)):
+                        dtdx_t[3*i+j] = cord[i] * t[j]
 
                 # pHp contributions
                 pHp_0 = para0 * (p_tmp.dot(dtdx_t) ** 2)
 
                 # d_dtdx contribution
                 p_dtdx = ti.Vector.zero(float, 3)
-                for i in range(4):
+                for i in ti.static(range(4)):
                     p_dtdx += cord[i] * p[ids[i]]
                 pHp_1 = para1 * p_dtdx.norm_sqr()
 

@@ -58,7 +58,7 @@ class GCPDemoSolver(collision_detection_bvh_module):
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
         self.adj = 0  # GCP doesn't need adjacency matrix!
-        self.ground_barrier = model.ground_barrier
+        self.ground_barrier = getattr(model, 'ground_barrier', 1)  # Default to 1 if not specified
         self.frame = 0
         self.SMALL_NUM = 1e-7
 
@@ -92,6 +92,10 @@ class GCPDemoSolver(collision_detection_bvh_module):
         self.assign_elastic_type(model.elastic_type)
 
         # Boundary elements
+        if not hasattr(model, 'boundary_points'):
+            raise RuntimeError(f"Demo '{demo}' does not have boundary data. "
+                             "GCP demo requires demos with collision detection "
+                             "(e.g., 'eight_E_drop_demo_contact', 'cube_10', 'cube_20')")
         self.boundary_points = model.boundary_points
         self.boundary_edges = model.boundary_edges
         self.boundary_triangles = model.boundary_triangles
@@ -307,13 +311,14 @@ class GCPDemoSolver(collision_detection_bvh_module):
                 p_tmp[9:12] = self.mesh.verts.p[ids[3]]
 
                 dtdx_t = ti.Vector.zero(float, 12)
-                for i in range(4):
-                    dtdx_t[3*i:3*i+3] = cord[i] * t
+                for i in ti.static(range(4)):
+                    for j in ti.static(range(3)):
+                        dtdx_t[3*i+j] = cord[i] * t[j]
 
                 pHp_0 = para0 * (p_tmp.dot(dtdx_t) ** 2)
 
                 p_dtdx = ti.Vector.zero(float, 3)
-                for i in range(4):
+                for i in ti.static(range(4)):
                     p_dtdx += cord[i] * self.mesh.verts.p[ids[i]]
                 pHp_1 = para1 * p_dtdx.norm_sqr()
 
@@ -439,7 +444,8 @@ def main():
     parser = argparse.ArgumentParser(description='GCP Contact Potential Demo')
     parser.add_argument('--headless', action='store_true', help='Run without GUI')
     parser.add_argument('--frames', type=int, default=100, help='Number of frames')
-    parser.add_argument('--demo', type=str, default='cube_0', help='Demo configuration')
+    parser.add_argument('--demo', type=str, default='eight_E_drop_demo_contact',
+                        help='Demo configuration (must have boundary data, e.g., eight_E_drop_demo_contact, cube_10)')
     parser.add_argument('--compare', action='store_true', help='Compare GCP vs IPC')
     args = parser.parse_args()
 

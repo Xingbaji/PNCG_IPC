@@ -574,15 +574,35 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
-                'dHat': 0.01, 'kappa': 0.001, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
                 'barrier_type': 'cubic',  # Use cubic barrier function
+                'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
+                'cache_kappa': True,      # Cache kappa at iter 0, reuse in subsequent iterations
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
                 'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
                 'camera_position': [2.02077697, -0.54062709, 2.59427191],
                 'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
-                'use_mas': False,  # Enable MAS preconditioner
+                'use_mas': False,
+            }
+            self.load_demo_n_object(demo, demo_dict)
+        elif demo == 'eight_E_cubic_no_cache':
+            # Same as eight_E_cubic but without kappa caching (update kappa every iteration)
+            demo_dict = {
+                'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'barrier_type': 'cubic',  # Use cubic barrier function
+                'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
+                'cache_kappa': False,     # Update kappa every iteration (no caching)
+                'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
+                'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
+                'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
+                'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
+                'camera_position': [2.02077697, -0.54062709, 2.59427191],
+                'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
+                'use_mas': False,
             }
             self.load_demo_n_object(demo, demo_dict)            
         else:

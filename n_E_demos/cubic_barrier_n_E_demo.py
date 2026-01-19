@@ -57,13 +57,27 @@ class pncg_index_cubic(pncg_ipc_deformer):
         self.CNT = 0
         self.bvh_initialized = False  # Track if BVH has been built
 
+        # Cache for adaptive kappa values (computed once per frame at iter 0)
+        # Uses same sparse structure as cid to store per-constraint kappa
+        if self.adaptive_kappa:
+            self.cached_kappa = ti.field(dtype=float)
+            ti.root.bitmasked(ti.ij, (2, self.MAX_C)).place(self.cached_kappa)
+            self.kappa_computed_this_frame = False
+
         # Verify cubic barrier is enabled (should be set via demo config)
         print(f"[CubicBarrier] barrier_type = '{self.barrier_type}' (expected: 'cubic')")
+        print(f"[CubicBarrier] adaptive_kappa = {self.adaptive_kappa}")
         if self.barrier_type != 'cubic':
             print(f"[CubicBarrier] WARNING: barrier_type is '{self.barrier_type}', not 'cubic'!")
             print(f"[CubicBarrier] Make sure demo config has 'barrier_type': 'cubic'")
         else:
             print(f"[CubicBarrier] Cubic barrier function is ENABLED")
+        if not self.adaptive_kappa:
+            print(f"[CubicBarrier] WARNING: adaptive_kappa is False! Using fixed kappa={self.kappa}")
+            print(f"[CubicBarrier] For proper dynamic stiffness, set 'adaptive_kappa': True in demo config")
+        else:
+            print(f"[CubicBarrier] Elasticity-inclusive dynamic stiffness is ENABLED (Eq. 4)")
+            print(f"[CubicBarrier] Kappa will be computed at iter 0 and cached for subsequent iterations")
 
     @ti.kernel
     def init_index(self):
@@ -119,53 +133,339 @@ class pncg_index_cubic(pncg_ipc_deformer):
         return H
 
     @ti.func
-    def compute_effective_kappa(self, d):
+    def compute_effective_kappa_fixed(self, d):
         """
-        Compute effective kappa for cubic barrier at distance d.
+        Compute effective kappa for cubic barrier at distance d with fixed kappa.
         For cubic barrier: ψ = -2κ/(3ĝ) * (g - ĝ)³
-        The effective stiffness is ∂²ψ/∂g² = 4κ * (1 - g/ĝ)
+        The effective stiffness contribution is ∂²ψ/∂g² = 4κ * (1 - g/ĝ)
         """
         eff_kappa = 0.0
         if d < self.dHat:
             eff_kappa = 4.0 * self.kappa * (1.0 - d / self.dHat)
         return eff_kappa
 
+    @ti.func
+    def compute_effective_kappa_adaptive(self, ids: ti.types.vector(4, ti.u32),
+                                          cord: ti.types.vector(4, float),
+                                          t: ti.types.vector(3, float),
+                                          dist: float) -> float:
+        """
+        Compute elasticity-inclusive dynamic stiffness (Equation 4 from cubic barrier paper).
+
+        κ̄ = m/g² + n·(H·n)
+
+        Where:
+        - m: average vertex mass (weighted by barycentric coordinates)
+        - g: gap distance (clamped to avoid division by zero)
+        - n: contact direction (normalized)
+        - H: elasticity Hessian (using diagonal approximation)
+
+        Returns the effective stiffness multiplied by the cubic barrier curvature factor.
+        """
+        # Compute average mass of involved vertices (weighted by barycentric coords)
+        m_avg = 0.0
+        for i in ti.static(range(4)):
+            m_avg += self.mesh.verts.m[ids[i]] * ti.abs(cord[i])
+
+        # Clamp distance to avoid division by zero
+        g_clamped = ti.max(dist, 1e-8)
+
+        # First term: m/g² (inertial contribution - ensures infinite stiffness as gap → 0)
+        kappa_inertia = m_avg / (g_clamped * g_clamped)
+
+        # Second term: n·(H·n) (elasticity contribution)
+        # w_i = cord[i] * t is the extended contact direction for vertex i
+        # n·(H·n) ≈ Σ_i (w_i · diagH_i · w_i) / ||w||²
+        kappa_elastic = 0.0
+        w_norm_sq = 0.0
+        for i in ti.static(range(4)):
+            w_i = cord[i] * t  # Extended direction for vertex i
+            diagH_i = self.mesh.verts.diagH[ids[i]]
+            # w_i · (diagH · w_i)
+            kappa_elastic += w_i[0] * diagH_i[0] * w_i[0] + \
+                            w_i[1] * diagH_i[1] * w_i[1] + \
+                            w_i[2] * diagH_i[2] * w_i[2]
+            w_norm_sq += w_i.norm_sqr()
+
+        # Normalize by ||w||² to get n·(H·n)
+        if w_norm_sq > 1e-10:
+            kappa_elastic = kappa_elastic / w_norm_sq
+
+        # Total adaptive kappa: κ̄ = m/g² + max(n·(H·n), 0)
+        kappa_adaptive = kappa_inertia + ti.max(kappa_elastic, 0.0)
+
+        # Return effective kappa: κ̄ × barrier_curvature_factor
+        # For cubic barrier: curvature = 4 * (1 - g/ĝ)
+        curvature_factor = 0.0
+        if dist < self.dHat:
+            curvature_factor = 4.0 * (1.0 - dist / self.dHat)
+
+        return kappa_adaptive * curvature_factor
+
+    @ti.func
+    def compute_adaptive_kappa_base(self, ids: ti.types.vector(4, ti.u32),
+                                     cord: ti.types.vector(4, float),
+                                     t: ti.types.vector(3, float),
+                                     dist: float) -> float:
+        """
+        Compute base adaptive kappa (κ̄ = m/g² + n·(H·n)) without curvature factor.
+        This is cached and reused across iterations within a frame.
+        """
+        # Compute average mass of involved vertices
+        m_avg = 0.0
+        for i in ti.static(range(4)):
+            m_avg += self.mesh.verts.m[ids[i]] * ti.abs(cord[i])
+
+        # Clamp distance to avoid division by zero
+        g_clamped = ti.max(dist, 1e-8)
+
+        # First term: m/g²
+        kappa_inertia = m_avg / (g_clamped * g_clamped)
+
+        # Second term: n·(H·n)
+        kappa_elastic = 0.0
+        w_norm_sq = 0.0
+        for i in ti.static(range(4)):
+            w_i = cord[i] * t
+            diagH_i = self.mesh.verts.diagH[ids[i]]
+            kappa_elastic += w_i[0] * diagH_i[0] * w_i[0] + \
+                            w_i[1] * diagH_i[1] * w_i[1] + \
+                            w_i[2] * diagH_i[2] * w_i[2]
+            w_norm_sq += w_i.norm_sqr()
+
+        if w_norm_sq > 1e-10:
+            kappa_elastic = kappa_elastic / w_norm_sq
+
+        return kappa_inertia + ti.max(kappa_elastic, 0.0)
+
     @ti.kernel
-    def compute_barrier_kappa_stats(self) -> ti.types.vector(4, float):
+    def compute_and_cache_adaptive_kappa(self):
+        """
+        Compute adaptive kappa for all constraints and cache them.
+        Called once per frame at iter 0, after diagH is computed.
+        """
+        for k, j in self.cid:
+            pair = self.cid[k, j]
+            ids = pair.a
+            dist = pair.b
+            cord = pair.c
+            t = pair.d
+
+            if dist < self.dHat:
+                kappa_base = self.compute_adaptive_kappa_base(ids, cord, t, dist)
+                self.cached_kappa[k, j] = kappa_base
+            else:
+                self.cached_kappa[k, j] = 0.0
+
+    @ti.func
+    def get_cached_kappa(self, k: int, j: int, dist: float) -> float:
+        """
+        Get the cached kappa multiplied by curvature factor.
+        Used in iterations > 0 to avoid recomputing adaptive kappa.
+        """
+        kappa_base = self.cached_kappa[k, j]
+        curvature_factor = 0.0
+        if dist < self.dHat:
+            curvature_factor = 4.0 * (1.0 - dist / self.dHat)
+        return kappa_base * curvature_factor
+
+    @ti.kernel
+    def compute_barrier_kappa_stats(self) -> ti.types.vector(6, float):
         """
         Compute statistics of effective kappa for all constraints.
-        Returns: [n_constraints, sum_kappa, max_kappa, min_dist]
+        Returns: [n_constraints, sum_kappa, max_kappa, min_dist, max_kappa_inertia, max_kappa_elastic]
+
+        When adaptive_kappa is enabled, this uses the dynamic stiffness formula:
+        κ̄ = m/g² + n·(H·n)
+
+        Otherwise, it uses fixed kappa: 4 × kappa × (1 - d/dHat)
         """
         n_constraints = 0.0
         sum_kappa = 0.0
         max_kappa = 0.0
         min_dist = 1e10
+        max_kappa_inertia = 0.0  # Track m/g² component
+        max_kappa_elastic = 0.0  # Track n·(H·n) component
 
         # Contact constraints
         for k, j in self.cid:
             pair = self.cid[k, j]
+            ids = pair.a
             dist = pair.b
+            cord = pair.c
+            t = pair.d
+
             if dist < self.dHat:
-                eff_kappa = self.compute_effective_kappa(dist)
+                eff_kappa = 0.0
+                if ti.static(self.adaptive_kappa):
+                    # Use adaptive kappa with dynamic stiffness
+                    eff_kappa = self.compute_effective_kappa_adaptive(ids, cord, t, dist)
+
+                    # Also compute individual components for diagnostics
+                    m_avg = 0.0
+                    for i in ti.static(range(4)):
+                        m_avg += self.mesh.verts.m[ids[i]] * ti.abs(cord[i])
+                    g_clamped = ti.max(dist, 1e-8)
+                    kappa_inertia = m_avg / (g_clamped * g_clamped)
+                    ti.atomic_max(max_kappa_inertia, kappa_inertia)
+
+                    kappa_elastic = 0.0
+                    w_norm_sq = 0.0
+                    for i in ti.static(range(4)):
+                        w_i = cord[i] * t
+                        diagH_i = self.mesh.verts.diagH[ids[i]]
+                        kappa_elastic += w_i[0] * diagH_i[0] * w_i[0] + \
+                                        w_i[1] * diagH_i[1] * w_i[1] + \
+                                        w_i[2] * diagH_i[2] * w_i[2]
+                        w_norm_sq += w_i.norm_sqr()
+                    if w_norm_sq > 1e-10:
+                        kappa_elastic = kappa_elastic / w_norm_sq
+                    ti.atomic_max(max_kappa_elastic, ti.max(kappa_elastic, 0.0))
+                else:
+                    # Use fixed kappa
+                    eff_kappa = self.compute_effective_kappa_fixed(dist)
+
                 n_constraints += 1.0
                 sum_kappa += eff_kappa
                 ti.atomic_max(max_kappa, eff_kappa)
                 ti.atomic_min(min_dist, dist)
 
-        # Ground barrier constraints
+        # Ground barrier constraints (use fixed kappa for ground - no contact pair info)
         if ti.static(self.ground_barrier == 1):
             for i in range(self.boundary_points.shape[0]):
                 p = self.boundary_points[i]
                 x_a0 = self.mesh.verts.x[p]
                 dist = x_a0[1] - self.ground
                 if dist < self.dHat:
-                    eff_kappa = self.compute_effective_kappa(dist)
+                    # Ground barrier always uses fixed kappa (no contact direction available)
+                    eff_kappa = self.compute_effective_kappa_fixed(dist)
                     n_constraints += 1.0
                     sum_kappa += eff_kappa
                     ti.atomic_max(max_kappa, eff_kappa)
                     ti.atomic_min(min_dist, dist)
 
-        return ti.Vector([n_constraints, sum_kappa, max_kappa, min_dist])
+        return ti.Vector([n_constraints, sum_kappa, max_kappa, min_dist, max_kappa_inertia, max_kappa_elastic])
+
+    @ti.kernel
+    def compute_grad_and_diagH_inertia_elastic_only(self):
+        """
+        Compute gradient and diagH for inertia and elastic potentials only.
+        IPC contributions will be added separately after caching adaptive kappa.
+        """
+        ti.mesh_local(self.mesh.verts.grad)
+        # Inertia potential
+        for vert in self.mesh.verts:
+            m = vert.m
+            vert.grad_prev = vert.grad
+            vert.grad = m * (vert.x - vert.x_hat)
+            vert.diagH = m * ti.Vector.one(float, 3)
+        # Elastic potential
+        for c in self.mesh.cells:
+            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
+            B = c.B
+            F = Ds @ B
+            para = c.W * self.dt ** 2
+            dPsidx = para * self.compute_dPsidx(F, B, self.mu, self.la)
+            diagH_d2Psidx2 = para * self.compute_diag_d2Psidx2(F, B, self.mu, self.la)
+            for i in range(4):
+                c.verts[i].grad += ti.Vector([dPsidx[3 * i], dPsidx[3 * i + 1], dPsidx[3 * i + 2]], float)
+                tmp = ti.Vector([diagH_d2Psidx2[3 * i], diagH_d2Psidx2[3 * i + 1], diagH_d2Psidx2[3 * i + 2]])
+                tmp = ti.max(tmp, 0.0)
+                c.verts[i].diagH += tmp
+
+    @ti.kernel
+    def add_grad_and_diagH_ipc_with_cached_kappa(self):
+        """
+        Add IPC contribution to gradient and diagH using cached kappa values.
+        Used in iterations > 0 to avoid recomputing adaptive kappa.
+        """
+        for k, j in self.cid:
+            pair = self.cid[k, j]
+            ids = pair.a
+            dist = pair.b
+            cord = pair.c
+            t = pair.d
+            dist2 = dist ** 2
+
+            if dist < self.dHat:
+                # Get cached kappa base and compute gradient/Hessian
+                kappa_base = self.cached_kappa[k, j]
+
+                # Cubic barrier gradient: -2κ/ĝ * (g - ĝ)²
+                y = dist - self.dHat
+                bg = -2.0 * kappa_base * (y * y) / self.dHat
+
+                # Cubic barrier Hessian: 4κ * (1 - g/ĝ)
+                bH = 4.0 * kappa_base * (1.0 - dist / self.dHat)
+
+                para = bg / dist
+                para0 = (bH - para) / dist2
+                for i in range(4):
+                    CORD = cord[i]
+                    ID = ids[i]
+                    self.mesh.verts.grad[ID] += para * CORD * t
+                    diag_tmp = CORD * CORD * (para0 * t * t + para * ti.Vector.one(float, 3))
+                    diag_tmp_spd = ti.max(diag_tmp, 0.0)
+                    self.mesh.verts.diagH[ID] += diag_tmp_spd
+
+    @ti.kernel
+    def add_grad_and_diagH_ipc_and_cache_kappa(self):
+        """
+        Add IPC contribution to gradient and diagH, computing and caching adaptive kappa.
+        Used at iter 0 of each frame.
+        """
+        for k, j in self.cid:
+            pair = self.cid[k, j]
+            ids = pair.a
+            dist = pair.b
+            cord = pair.c
+            t = pair.d
+            dist2 = dist ** 2
+
+            if dist < self.dHat:
+                # Compute adaptive kappa and cache it
+                kappa_base = self.compute_adaptive_kappa_base(ids, cord, t, dist)
+                self.cached_kappa[k, j] = kappa_base
+
+                # Cubic barrier gradient: -2κ/ĝ * (g - ĝ)²
+                y = dist - self.dHat
+                bg = -2.0 * kappa_base * (y * y) / self.dHat
+
+                # Cubic barrier Hessian: 4κ * (1 - g/ĝ)
+                bH = 4.0 * kappa_base * (1.0 - dist / self.dHat)
+
+                para = bg / dist
+                para0 = (bH - para) / dist2
+                for i in range(4):
+                    CORD = cord[i]
+                    ID = ids[i]
+                    self.mesh.verts.grad[ID] += para * CORD * t
+                    diag_tmp = CORD * CORD * (para0 * t * t + para * ti.Vector.one(float, 3))
+                    diag_tmp_spd = ti.max(diag_tmp, 0.0)
+                    self.mesh.verts.diagH[ID] += diag_tmp_spd
+            else:
+                self.cached_kappa[k, j] = 0.0
+
+    def compute_grad_and_diagH_cached(self, iter: int):
+        """
+        Compute gradient and diagH with adaptive kappa caching.
+        - iter 0: Compute and cache adaptive kappa
+        - iter > 0: Use cached kappa values
+        """
+        # First compute inertia and elastic contributions
+        self.compute_grad_and_diagH_inertia_elastic_only()
+
+        # Then add IPC contributions
+        if self.adaptive_kappa:
+            if iter == 0:
+                # Compute and cache adaptive kappa at iter 0
+                self.add_grad_and_diagH_ipc_and_cache_kappa()
+            else:
+                # Use cached kappa for iter > 0
+                self.add_grad_and_diagH_ipc_with_cached_kappa()
+        else:
+            # No adaptive kappa, use parent's IPC computation
+            self.compute_grad_and_diagH_ipc()
 
     @ti.kernel
     def compute_DK_index(self):
@@ -194,6 +494,7 @@ class pncg_index_cubic(pncg_ipc_deformer):
 
     @ti.kernel
     def compute_alpha_index_and_update_x(self) -> float:
+        """Original version using fixed kappa (for non-adaptive mode)."""
         gTp_index = ti.Vector.zero(float, self.N_object)
         pHp_index = ti.Vector.zero(float, self.N_object)
         alpha_index = ti.Vector.zero(float, self.N_object)
@@ -279,6 +580,107 @@ class pncg_index_cubic(pncg_ipc_deformer):
 
         return Delta_E
 
+    @ti.kernel
+    def compute_alpha_index_and_update_x_cached_kappa(self) -> float:
+        """Version using cached kappa (for adaptive mode)."""
+        gTp_index = ti.Vector.zero(float, self.N_object)
+        pHp_index = ti.Vector.zero(float, self.N_object)
+        alpha_index = ti.Vector.zero(float, self.N_object)
+        p_max_index = ti.Vector.zero(float, self.N_object)
+
+        for vert in self.mesh.verts:
+            index = vert.index
+            gTp_index[index] += vert.grad.dot(vert.p)
+
+        for vert in self.mesh.verts:
+            index = vert.index
+            pHp_index[index] += vert.p.norm_sqr() * vert.m
+
+        for c in self.mesh.cells:
+            index = c.verts[0].index
+            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
+            B = c.B
+            F = Ds @ B
+            p = ti.Vector.zero(float, 12)
+            p[0:3] = c.verts[0].p
+            p[3:6] = c.verts[1].p
+            p[6:9] = c.verts[2].p
+            p[9:12] = c.verts[3].p
+            tmp = self.compute_p_d2Psidx2_p(F, B, p, self.mu, self.la)
+            pHp_index[index] += c.W * self.dt ** 2 * ti.max(tmp, 0.0)
+
+        # IPC contribution using cached kappa
+        for k, j in self.cid:
+            pair = self.cid[k, j]
+            ids = pair.a
+            dist = pair.b
+            cord = pair.c
+            t = pair.d
+            dist2 = dist * dist
+
+            if dist < self.dHat:
+                # Use cached kappa base
+                kappa_base = self.cached_kappa[k, j]
+
+                # Cubic barrier gradient: -2κ/ĝ * (g - ĝ)²
+                y = dist - self.dHat
+                bg = -2.0 * kappa_base * (y * y) / self.dHat
+
+                # Cubic barrier Hessian: 4κ * (1 - g/ĝ)
+                bH = 4.0 * kappa_base * (1.0 - dist / self.dHat)
+
+                para1 = bg / dist
+                para0 = (bH - para1) / dist2
+                p_tmp = ti.Vector.zero(float, 12)
+                p_tmp[0:3] = self.mesh.verts.p[ids[0]]
+                p_tmp[3:6] = self.mesh.verts.p[ids[1]]
+                p_tmp[6:9] = self.mesh.verts.p[ids[2]]
+                p_tmp[9:12] = self.mesh.verts.p[ids[3]]
+                dtdx_t = compute_dtdx_t(t, cord)
+                pHp_0 = para0 * (p_tmp.dot(dtdx_t) ** 2)
+                d_dtdx = compute_d_dtdx(p_tmp, cord)
+                pHp_1 = para1 * d_dtdx.norm_sqr()
+                pHp = ti.max(pHp_0 + pHp_1, 0.0)
+                index0 = self.mesh.verts.index[ids[0]]
+                index1 = self.mesh.verts.index[ids[2]]
+                pHp_index[index0] += pHp * 0.5
+                pHp_index[index1] += pHp * 0.5
+
+        # Ground barrier (uses fixed kappa)
+        min_dist = 1e-2 * self.dHat
+        for i in range(self.boundary_points.shape[0]):
+            p = self.boundary_points[i]
+            index = self.mesh.verts.index[p]
+            x_a0 = self.mesh.verts.x[p]
+            dist = x_a0[1] - self.ground
+            if dist < self.dHat:
+                if dist <= min_dist:
+                    dist = min_dist
+                p_tmp = self.mesh.verts.p[p][1]
+                ret_value = p_tmp * self.barrier_H(dist) * p_tmp
+                pHp_index[index] += ret_value
+
+        for vert in self.mesh.verts:
+            index = vert.index
+            d_norm = vert.p.norm()
+            ti.atomic_max(p_max_index[index], d_norm)
+
+        Delta_E = 0.0
+        for i in range(self.N_object):
+            alpha_i = -gTp_index[i] / pHp_index[i]
+            if alpha_i * p_max_index[i] > 0.5 * self.dHat:
+                alpha_index[i] = 0.5 * self.dHat / p_max_index[i]
+            else:
+                alpha_index[i] = alpha_i
+            Delta_E -= (alpha_index[i] * gTp_index[i] + 0.5 * alpha_index[i] ** 2 * pHp_index[i])
+
+        for vert in self.mesh.verts:
+            index = vert.index
+            alpha = alpha_index[index]
+            vert.x += alpha * vert.p
+
+        return Delta_E
+
     def step(self, logger=None):
         print('Frame', self.frame)
         self.assign_xn_xhat()
@@ -303,7 +705,21 @@ class pncg_index_cubic(pncg_ipc_deformer):
                 ti.sync()
                 logger.log_time('find_cnts_ms', (time.perf_counter() - t0) * 1000)
 
-            # Log cubic barrier kappa stats after collision detection
+            # Compute gradient and diagonal Hessian
+            if logger:
+                ti.sync()
+                t0 = time.perf_counter()
+            if self.adaptive_kappa:
+                # Use cached kappa approach: compute at iter 0, reuse in subsequent iterations
+                self.compute_grad_and_diagH_cached(iter)
+            else:
+                # Use standard computation
+                self.compute_grad_and_diagH()
+            if logger:
+                ti.sync()
+                logger.log_time('compute_grad_diagH_ms', (time.perf_counter() - t0) * 1000)
+
+            # Log cubic barrier kappa stats (after diagH is computed for adaptive kappa)
             if iter == 0:
                 kappa_stats = self.compute_barrier_kappa_stats()
                 n_constraints = int(kappa_stats[0])
@@ -311,18 +727,17 @@ class pncg_index_cubic(pncg_ipc_deformer):
                     mean_kappa = kappa_stats[1] / n_constraints
                     max_kappa = kappa_stats[2]
                     min_dist = kappa_stats[3]
-                    print(f"  [CubicBarrier] constraints={n_constraints}, "
-                          f"mean_kappa={mean_kappa:.4f}, max_kappa={max_kappa:.4f}, "
-                          f"min_dist={min_dist:.6f}, base_kappa={self.kappa}")
-
-            # Compute gradient and diagonal Hessian
-            if logger:
-                ti.sync()
-                t0 = time.perf_counter()
-            self.compute_grad_and_diagH()
-            if logger:
-                ti.sync()
-                logger.log_time('compute_grad_diagH_ms', (time.perf_counter() - t0) * 1000)
+                    max_kappa_inertia = kappa_stats[4]  # m/g² component
+                    max_kappa_elastic = kappa_stats[5]  # n·(H·n) component
+                    if self.adaptive_kappa:
+                        print(f"  [CubicBarrier] constraints={n_constraints}, "
+                              f"eff_kappa: mean={mean_kappa:.2f}, max={max_kappa:.2f}")
+                        print(f"  [CubicBarrier] κ̄ components: max_inertia(m/g²)={max_kappa_inertia:.2f}, "
+                              f"max_elastic(n·Hn)={max_kappa_elastic:.2f}, min_dist={min_dist:.6f}")
+                    else:
+                        print(f"  [CubicBarrier] constraints={n_constraints}, "
+                              f"mean_kappa={mean_kappa:.4f}, max_kappa={max_kappa:.4f}, "
+                              f"min_dist={min_dist:.6f}, base_kappa={self.kappa}")
 
             # Ground barrier
             if logger:
@@ -350,7 +765,11 @@ class pncg_index_cubic(pncg_ipc_deformer):
             if logger:
                 ti.sync()
                 t0 = time.perf_counter()
-            delta_E = self.compute_alpha_index_and_update_x()
+            if self.adaptive_kappa:
+                # Use cached kappa version
+                delta_E = self.compute_alpha_index_and_update_x_cached_kappa()
+            else:
+                delta_E = self.compute_alpha_index_and_update_x()
             if logger:
                 ti.sync()
                 logger.log_time('line_search_ms', (time.perf_counter() - t0) * 1000)

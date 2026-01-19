@@ -421,7 +421,7 @@ def compute_d2PsidF2_ARAP_filter(F, mu, la):
     if s0 + s2 < 2.0:
         lambda1 = 1.0
     if s0 + s1 < 2.0:
-        lambda0 = 1.0
+        lambda2 = 1.0 # fixed error: lambda0->lambda2
 
     U0 = U[:, 0]
     U1 = U[:, 1]

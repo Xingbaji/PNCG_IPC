@@ -906,7 +906,7 @@ class MASPreconditioner:
             sym_idx = self._sym_index(lane_id, lane_id)
 
             # Add mass to diagonal (scaled by 1/dt^2 for implicit)
-            mass_val = m
+            mass_val = m / (dt * dt)
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[warp_id, sym_idx][d, d], mass_val)
 
@@ -943,15 +943,16 @@ class MASPreconditioner:
             dFdx = compute_dFdx(B)
 
             # Compute d2PsidF2 (9x9 matrix) based on elastic type
+            # Use _filter versions to ensure SPD (project negative eigenvalues)
             d2PsidF2 = ti.Matrix.zero(ti.f64, 9, 9)
             if elastic_type == 0:  # ARAP
-                d2PsidF2 = compute_d2PsidF2_ARAP(F, mu, la)
+                d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
             elif elastic_type == 1:  # SNH
                 d2PsidF2 = compute_d2PsidF2_SNH(F, mu, la)
             elif elastic_type == 2:  # FCR
-                d2PsidF2 = compute_d2PsidF2_FCR(F, mu, la)
-            else:  # Default to ARAP
-                d2PsidF2 = compute_d2PsidF2_ARAP(F, mu, la)
+                d2PsidF2 = compute_d2PsidF2_FCR_filter(F, mu, la)
+            else:  # Default to ARAP with filter
+                d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
 
             # Compute element Hessian: H_e = dFdx^T @ d2PsidF2 @ dFdx (12x12)
             # First compute temp = d2PsidF2 @ dFdx (9x12)
@@ -2489,8 +2490,8 @@ class MASPreconditioner:
             # Diagonal block index in symmetric storage
             sym_idx = self._sym_index(lane_id, lane_id)
 
-            # Add mass to diagonal
-            mass_val = m
+            # Add mass to diagonal (scaled by 1/dt^2 for implicit)
+            mass_val = m / (dt * dt)
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[block_id, sym_idx][d, d], mass_val)
 

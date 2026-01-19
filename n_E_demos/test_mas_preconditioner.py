@@ -32,7 +32,7 @@ os.chdir(demo_dir)
 import taichi as ti
 
 
-def test_hierarchy_build(demo='eight_E_stiffness_mas'):
+def test_hierarchy_build(demo='eight_E_stiffness_mas', use_metis=False):
     """Test 1: Build hierarchy only."""
     print("\n" + "="*70)
     print("TEST 1: Hierarchy Build")
@@ -62,12 +62,12 @@ def test_hierarchy_build(demo='eight_E_stiffness_mas'):
     n_cells = len(mesh.cells)
     print(f"    n_verts: {n_verts}, n_cells: {n_cells}")
 
-    # Create MAS preconditioner
-    print(f"\n[1.2] Creating MASPreconditioner...")
+    # Create MAS preconditioner (disable METIS to avoid segfault)
+    print(f"\n[1.2] Creating MASPreconditioner (use_metis={use_metis})...")
     try:
-        mas = MASPreconditioner(n_verts, n_cells, mesh)
+        mas = MASPreconditioner(n_verts, n_cells, mesh, use_metis=use_metis)
         print(f"    Created successfully!")
-        print(f"    n_levels (max): {mas.n_levels}")
+        print(f"    level_num: {mas.level_num}")
     except Exception as e:
         print(f"    FAILED: {e}")
         import traceback
