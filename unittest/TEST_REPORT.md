@@ -13,8 +13,8 @@
 | 对称性修复后测试 | 6 | 0 | 6 |
 | Ground Truth 测试 | 22 | 0 | 22 |
 | 多层级测试 | 19 | 0 | 25 (6 skipped) |
-| **MatVec 准确性测试** | **15** | **0** | **15** |
-| **总计** | **62** | **0** | **68** |
+| **MatVec 准确性测试** | **26** | **0** | **26** |
+| **总计** | **73** | **0** | **79** |
 
 **成功率**: 100% (所有必要测试通过)
 
@@ -143,30 +143,49 @@ test_06_preconditioner_validity: OK
 
 ### 5.4 MatVec 准确性测试 (test_matvec_accuracy.py)
 
-验证矩阵向量乘 z = M^{-1} * r 的准确性:
+验证完整 MAS preconditioner pipeline 的准确性，包括 restriction、local solve 和 prolongation。
 
-**NumPy Ground Truth 测试:**
+**NumPy Ground Truth 测试 (4 tests):**
 - 对称索引覆盖 (136 entries): OK
 - 对称索引对称性: OK
 - Identity 矩阵展开: OK
 - 随机 SPD 矩阵展开: OK
+
+**单块 MatVec 测试 (4 tests):**
 - Identity MatVec: OK
 - 对角 MatVec: OK
 - 随机 SPD MatVec: OK
 - 逆矩阵 MatVec 准确性: OK
 
-**Taichi vs NumPy 测试:**
+**Taichi vs NumPy 测试 (3 tests):**
 - Identity MatVec: OK (误差 < 1e-5)
 - 随机 SPD MatVec: OK (误差 < 1e-4)
 - 数值精度 f32 vs f64: OK (max 相对误差 1.58e-07)
 
-**全求解器测试:**
+**全求解器 MatVec 测试 (4 tests):**
 - apply() 无 NaN: OK
 - g^T z > 0: OK (6.83e-10)
-- Block 0 局部求解: OK (相对误差 3.50e-08)
-- 求解器变体一致性: OK (conflict_free vs full: 1.45e-07)
+- Block 0 局部求解: OK (相对误差 1.11e-07)
+- 求解器变体一致性: OK (conflict_free vs full: 1.01e-07)
 
-**结果**: 15/15 测试通过
+**Restriction 测试 (3 tests):**
+- 输出有效性 (无 NaN/Inf): OK
+- Level 0 非零: OK
+- 粗网格层填充: OK
+
+**Prolongation 测试 (3 tests):**
+- 仅 Level 0 延拓: OK
+- 多层聚合: OK (Level 0 + Level 1 = 3.0)
+- 聚合表有效性: OK
+
+**完整 MAS Pipeline 测试 (5 tests):**
+- 输出有效性 (无 NaN/Inf): OK
+- 下降方向 g^T z > 0: OK (6.83e-10)
+- Restriction 变体有效性: OK (both warp/no-warp produce g^T z > 0)
+- 多层贡献: OK (L0: 1.49e-06, L1: 1.45e-06)
+- 确定性: OK (3 runs 完全一致)
+
+**结果**: 26/26 测试通过
 
 ### 5.5 MatVec 性能基准
 

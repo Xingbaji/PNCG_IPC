@@ -104,7 +104,7 @@ class InversionMixin:
     @ti.kernel
     def _add_diagonal_regularization(self, epsilon: ti.f32):
         """
-        Add diagonal regularization to shift eigenvalues positive.
+        Add uniform diagonal regularization to shift eigenvalues positive.
         """
         total_nodes = self.total_nodes_all_levels
         n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
@@ -112,6 +112,73 @@ class InversionMixin:
         for block_id in range(n_blocks):
             for i in range(BLOCK_DOF):
                 self.full_block_matrix[block_id, i, i] += epsilon
+
+    @ti.kernel
+    def _add_adaptive_diagonal_regularization(self, relative_epsilon: ti.f32):
+        """
+        Add per-block adaptive diagonal regularization based on matrix norm.
+
+        For each block, computes:
+            epsilon_block = relative_epsilon * ||diag(A_block)||_inf
+
+        This ensures regularization scales with problem stiffness:
+        - Soft materials (small diagonal): small regularization
+        - Stiff materials (large diagonal): larger regularization
+        - Preserves preconditioning quality across problem scales
+
+        Args:
+            relative_epsilon: Regularization relative to max diagonal (typical: 0.01-0.1)
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        for block_id in range(n_blocks):
+            # Compute max absolute diagonal value for this block
+            max_diag = ti.f32(0.0)
+            for i in range(BLOCK_DOF):
+                diag_val = ti.abs(self.full_block_matrix[block_id, i, i])
+                ti.atomic_max(max_diag, diag_val)
+
+            # Add regularization proportional to max diagonal
+            # Use max(max_diag, 1.0) to handle near-zero diagonals
+            epsilon_block = relative_epsilon * ti.max(max_diag, ti.f32(1.0))
+            for i in range(BLOCK_DOF):
+                self.full_block_matrix[block_id, i, i] += epsilon_block
+
+    @ti.kernel
+    def _compute_block_statistics(self) -> ti.types.vector(3, ti.f32):
+        """
+        Compute statistics of block matrices for adaptive regularization.
+
+        Returns:
+            vec3: (max_diagonal, mean_diagonal, max_frobenius_norm)
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        max_diag = ti.f32(0.0)
+        sum_diag = ti.f32(0.0)
+        max_frob = ti.f32(0.0)
+        count = ti.f32(0.0)
+
+        for block_id in range(n_blocks):
+            # Diagonal statistics
+            for i in range(BLOCK_DOF):
+                diag_val = ti.abs(self.full_block_matrix[block_id, i, i])
+                ti.atomic_max(max_diag, diag_val)
+                ti.atomic_add(sum_diag, diag_val)
+                ti.atomic_add(count, 1.0)
+
+            # Frobenius norm
+            frob_sq = ti.f32(0.0)
+            for i in range(BLOCK_DOF):
+                for j in range(BLOCK_DOF):
+                    frob_sq += self.full_block_matrix[block_id, i, j] ** 2
+            frob = ti.sqrt(frob_sq)
+            ti.atomic_max(max_frob, frob)
+
+        mean_diag = sum_diag / ti.max(count, 1.0)
+        return ti.Vector([max_diag, mean_diag, max_frob])
 
     @ti.kernel
     def _gauss_jordan_invert_blocks(self):
@@ -501,7 +568,8 @@ class InversionMixin:
                               use_incomplete: bool = False,
                               use_oneway_gj: bool = False,
                               force_symmetry: bool = True,
-                              regularization_epsilon: float = 0.0):
+                              regularization_epsilon: float = 0.0,
+                              adaptive_regularization: float = 0.0):
         """
         Invert all block matrices on GPU.
 
@@ -512,7 +580,21 @@ class InversionMixin:
             use_incomplete: If True, use Incomplete Cholesky IC(0).
             use_oneway_gj: If True, use One-way Gauss-Jordan (P4 optimization).
             force_symmetry: If True, symmetrize matrices before inversion.
-            regularization_epsilon: If > 0, add diagonal regularization.
+            regularization_epsilon: If > 0, add uniform diagonal regularization.
+            adaptive_regularization: If > 0, add per-block adaptive regularization
+                                     (relative to block diagonal norm, typical: 0.01-0.1).
+                                     This is preferred over fixed epsilon for varying stiffness.
+
+        Regularization Strategy:
+            - adaptive_regularization > 0: Use per-block scaling (recommended)
+                epsilon_block = adaptive_regularization * ||diag(A_block)||_inf
+            - regularization_epsilon > 0: Use uniform epsilon (legacy)
+            - Both > 0: Apply both (adaptive first, then uniform)
+
+        Recommended values for adaptive_regularization:
+            - 0.01: Mild regularization, preserves most geometric info
+            - 0.05: Moderate regularization, good balance
+            - 0.1:  Strong regularization, for highly indefinite matrices
         """
         print("[MAS] Inverting block matrices...")
 
@@ -523,9 +605,15 @@ class InversionMixin:
             if force_symmetry:
                 self._symmetrize_full_block_matrices()
 
-            # Apply diagonal regularization if requested
+            # Apply adaptive regularization first (per-block scaling)
+            if adaptive_regularization > 0:
+                self._add_adaptive_diagonal_regularization(adaptive_regularization)
+                print(f"[MAS] Applied adaptive regularization (relative={adaptive_regularization:.3f})")
+
+            # Apply uniform diagonal regularization if requested (legacy/additional)
             if regularization_epsilon > 0:
                 self._add_diagonal_regularization(regularization_epsilon)
+                print(f"[MAS] Applied uniform regularization (epsilon={regularization_epsilon:.2e})")
 
             if use_incomplete:
                 self._incomplete_cholesky_invert_blocks()
