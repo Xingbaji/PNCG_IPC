@@ -459,8 +459,7 @@ class TestFullSolverMatVec(unittest.TestCase):
         cls.reg_epsilon = abs(min_eig) * 1.1 + 1e3 if min_eig < 0 else 1e3
 
         cls.solver.mas.invert_block_matrices(
-            use_full_inversion=True,
-            use_cholesky=False,
+            method='gauss_jordan',
             force_symmetry=True,
             regularization_epsilon=cls.reg_epsilon
         )
@@ -798,8 +797,7 @@ class TestFullMASPipeline(unittest.TestCase):
         cls.reg_epsilon = abs(min_eig) * 1.1 + 1e3 if min_eig < 0 else 1e3
 
         cls.solver.mas.invert_block_matrices(
-            use_full_inversion=True,
-            use_cholesky=False,
+            method='gauss_jordan',
             force_symmetry=True,
             regularization_epsilon=cls.reg_epsilon
         )
@@ -958,8 +956,7 @@ def run_performance_benchmark():
     reg_epsilon = abs(min_eig) * 1.1 + 1e3 if min_eig < 0 else 1e3
 
     solver.mas.invert_block_matrices(
-        use_full_inversion=True,
-        use_cholesky=False,
+        method='gauss_jordan',
         force_symmetry=True,
         regularization_epsilon=reg_epsilon
     )

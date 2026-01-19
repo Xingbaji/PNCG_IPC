@@ -285,7 +285,8 @@ class MASPreconditioner(
     # Public Interface
     # ========================================================================
 
-    def rebuild(self, solver, use_full_hessian: bool = True, use_full_inversion: bool = True):
+    def rebuild(self, solver, use_full_hessian: bool = True,
+                method: str = 'ic', adaptive_regularization: float = 0.05):
         """
         Full rebuild of preconditioner.
         Called on first iteration or when restart is needed.
@@ -293,7 +294,8 @@ class MASPreconditioner(
         Args:
             solver: The PNCG solver containing material parameters
             use_full_hessian: If True, compute full element Hessian with coupling.
-            use_full_inversion: If True, use full 48x48 Gauss-Jordan inversion.
+            method: Inversion method ('ic', 'cholesky', 'gauss_jordan', etc.)
+            adaptive_regularization: Per-block regularization (default: 0.05)
         """
         if not self.hierarchy_built:
             self.build_hierarchy()
@@ -303,7 +305,7 @@ class MASPreconditioner(
             self.elastic_type = solver.elastic_type
 
         self.assemble_block_matrices(solver, use_full_hessian)
-        self.invert_block_matrices(use_full_inversion)
+        self.invert_block_matrices(method=method, adaptive_regularization=adaptive_regularization)
 
     def get_stats(self) -> dict:
         """Return statistics about the preconditioner."""

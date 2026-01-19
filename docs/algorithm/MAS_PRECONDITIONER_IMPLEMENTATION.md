@@ -770,7 +770,7 @@ from algorithm.mas_preconditioner_pkg import MASPreconditioner
 mas = MASPreconditioner(n_verts, n_cells, mesh, use_metis=False)
 mas.build_hierarchy()
 mas.assemble_block_matrices(solver)
-mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+mas.invert_block_matrices(method='ic')  # Default: IC with adaptive regularization
 mas.apply()
 ```
 

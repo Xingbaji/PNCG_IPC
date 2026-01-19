@@ -343,16 +343,16 @@ class FreeFallMASValidator:
                         self.mas.build_hierarchy()
                     self.mas.assemble_block_matrices(self, use_full_hessian=True)
 
-                    use_cholesky = self.inversion_method in ['cholesky', 'incomplete']
-                    use_incomplete = self.inversion_method == 'incomplete'
-                    use_oneway_gj = self.inversion_method == 'oneway_gj'
+                    # Map old method names to new API
+                    method_map = {
+                        'gauss_jordan': 'gauss_jordan',
+                        'oneway_gj': 'oneway_gj',
+                        'cholesky': 'cholesky',
+                        'incomplete': 'ic',
+                    }
+                    method = method_map.get(self.inversion_method, 'ic')
 
-                    self.mas.invert_block_matrices(
-                        use_full_inversion=True,
-                        use_cholesky=use_cholesky,
-                        use_incomplete=use_incomplete,
-                        use_oneway_gj=use_oneway_gj
-                    )
+                    self.mas.invert_block_matrices(method=method)
 
                 # Apply MAS preconditioner: z = P * grad
                 self.mas.apply()

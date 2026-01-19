@@ -1223,18 +1223,19 @@ class METISMixin:
     # ========================================================================
 
     def rebuild_with_metis(self, solver, use_full_hessian: bool = True,
-                           use_full_inversion: bool = True):
+                           method: str = 'ic', adaptive_regularization: float = 0.05):
         """
         Full rebuild of preconditioner using METIS-based partitioning.
 
         Args:
             solver: The PNCG solver containing material parameters
             use_full_hessian: If True, compute full element Hessian with coupling
-            use_full_inversion: If True, use full 48x48 Gauss-Jordan inversion
+            method: Inversion method ('ic', 'cholesky', 'gauss_jordan', etc.)
+            adaptive_regularization: Per-block regularization (default: 0.05)
         """
         if not hasattr(self, 'use_metis_reorder') or not self.use_metis_reorder:
             print("[MAS] WARNING: METIS not initialized, using standard rebuild")
-            self.rebuild(solver, use_full_hessian, use_full_inversion)
+            self.rebuild(solver, use_full_hessian, method, adaptive_regularization)
             return
 
         if not self.hierarchy_built:
@@ -1244,7 +1245,7 @@ class METISMixin:
             self.elastic_type = solver.elastic_type
 
         self.assemble_block_matrices(solver, use_full_hessian)
-        self.invert_block_matrices(use_full_inversion)
+        self.invert_block_matrices(method=method, adaptive_regularization=adaptive_regularization)
 
     def apply_metis(self, use_full_solve: bool = True):
         """

@@ -34,50 +34,14 @@ from algorithm.mas_preconditioner_pkg.constants import BANKSIZE, BLOCK_DOF, SYM_
 
 
 # Available inversion methods
-# Format: (key, name, kwargs_dict)
+# Format: (method_key, display_name, method_arg)
 INVERSION_METHODS = [
-    ('gauss_jordan', 'Gauss-Jordan', {
-        'use_full_inversion': True,
-        'use_cholesky': False,
-        'use_incomplete': False,
-        'use_oneway_gj': False,
-        'use_blocked': False,
-    }),
-    ('oneway_gj', 'One-way GJ', {
-        'use_full_inversion': True,
-        'use_cholesky': False,
-        'use_incomplete': False,
-        'use_oneway_gj': True,
-        'use_blocked': False,
-    }),
-    ('cholesky', 'Cholesky', {
-        'use_full_inversion': True,
-        'use_cholesky': True,
-        'use_incomplete': False,
-        'use_oneway_gj': False,
-        'use_blocked': False,
-    }),
-    ('blocked_cholesky', 'Blocked Cholesky', {
-        'use_full_inversion': True,
-        'use_cholesky': True,
-        'use_incomplete': False,
-        'use_oneway_gj': False,
-        'use_blocked': True,
-    }),
-    ('incomplete', 'Incomplete Cholesky IC(0)', {
-        'use_full_inversion': True,
-        'use_cholesky': True,
-        'use_incomplete': True,
-        'use_oneway_gj': False,
-        'use_blocked': False,
-    }),
-    ('diagonal_only', 'Diagonal Only', {
-        'use_full_inversion': False,
-        'use_cholesky': False,
-        'use_incomplete': False,
-        'use_oneway_gj': False,
-        'use_blocked': False,
-    }),
+    ('gauss_jordan', 'Gauss-Jordan', 'gauss_jordan'),
+    ('oneway_gj', 'One-way GJ', 'oneway_gj'),
+    ('cholesky', 'Cholesky', 'cholesky'),
+    ('blocked_cholesky', 'Blocked Cholesky', 'blocked_cholesky'),
+    ('ic', 'Incomplete Cholesky IC(0)', 'ic'),
+    ('diagonal', 'Diagonal Only', 'diagonal'),
 ]
 
 
@@ -306,11 +270,11 @@ class TestInversionMethods(unittest.TestCase):
         method_info = next((m for m in INVERSION_METHODS if m[0] == 'oneway_gj'), None)
         self.assertIsNotNone(method_info)
 
-        _, method_name, kwargs = method_info
+        _, method_name, method_arg = method_info
 
         # Reassemble and invert (no regularization - test robustness)
         self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
-        self.solver.mas.invert_block_matrices(**kwargs, force_symmetry=True,
+        self.solver.mas.invert_block_matrices(method=method_arg, force_symmetry=True,
                                                regularization_epsilon=0.0)
 
         # Apply preconditioner
@@ -342,7 +306,7 @@ class TestInversionMethods(unittest.TestCase):
 
         reg_epsilon = abs(self.block0_eigen['min_eigenvalue']) * 1.1 + 1e3
 
-        self._run_inversion_accuracy_test('incomplete', 'Incomplete Cholesky',
+        self._run_inversion_accuracy_test('ic', 'Incomplete Cholesky',
                                           force_symmetry=True, regularization=reg_epsilon,
                                           expected_rel_error=0.1)  # IC(0) is approximate
 
@@ -359,7 +323,7 @@ class TestInversionMethods(unittest.TestCase):
         reg_epsilon = abs(self.block0_eigen['min_eigenvalue']) * 1.1 + 1e3
         methods_to_test.extend([
             ('cholesky', reg_epsilon),
-            ('incomplete', reg_epsilon),
+            ('ic', reg_epsilon),
         ])
 
         for method_key, reg in methods_to_test:
@@ -367,14 +331,14 @@ class TestInversionMethods(unittest.TestCase):
             if method_info is None:
                 continue
 
-            _, method_name, kwargs = method_info
+            _, method_name, method_arg = method_info
 
             # Reassemble matrices (inversion modifies them)
             self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
 
             # Invert
             self.solver.mas.invert_block_matrices(
-                **kwargs,
+                method=method_arg,
                 force_symmetry=True,
                 regularization_epsilon=reg
             )
@@ -398,7 +362,7 @@ class TestInversionMethods(unittest.TestCase):
         method_info = next((m for m in INVERSION_METHODS if m[0] == method_key), None)
         self.assertIsNotNone(method_info, f"Method {method_key} not found")
 
-        _, _, kwargs = method_info
+        _, _, method_arg = method_info
 
         # Reassemble matrices (inversion modifies them)
         self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
@@ -411,7 +375,7 @@ class TestInversionMethods(unittest.TestCase):
 
         # Invert
         self.solver.mas.invert_block_matrices(
-            **kwargs,
+            method=method_arg,
             force_symmetry=force_symmetry,
             regularization_epsilon=regularization
         )
@@ -471,18 +435,18 @@ def run_performance_benchmark():
     print("Running benchmarks (3 warmup + 10 timed iterations each)...")
     print("-" * 80)
 
-    for method_key, method_name, kwargs in INVERSION_METHODS:
+    for method_key, method_name, method_arg in INVERSION_METHODS:
         print(f"\n[{method_name}]")
 
         # Determine if method needs regularization
-        needs_reg = method_key in ['cholesky', 'blocked_cholesky', 'incomplete']
+        needs_reg = method_key in ['cholesky', 'blocked_cholesky', 'ic']
         reg = reg_epsilon if needs_reg else 0.0
 
         # Warmup
         for _ in range(3):
             solver.mas.assemble_block_matrices(solver, use_full_hessian=True)
             try:
-                solver.mas.invert_block_matrices(**kwargs, force_symmetry=True,
+                solver.mas.invert_block_matrices(method=method_arg, force_symmetry=True,
                                                   regularization_epsilon=reg)
             except Exception as e:
                 print(f"  [ERROR] {e}")
@@ -507,7 +471,7 @@ def run_performance_benchmark():
             ti.sync()
             t2 = time.perf_counter()
             try:
-                solver.mas.invert_block_matrices(**kwargs, force_symmetry=True,
+                solver.mas.invert_block_matrices(method=method_arg, force_symmetry=True,
                                                   regularization_epsilon=reg)
             except Exception as e:
                 print(f"  [ERROR] Inversion failed: {e}")

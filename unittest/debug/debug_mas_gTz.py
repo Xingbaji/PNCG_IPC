@@ -100,8 +100,7 @@ def main():
     if not solver.mas.hierarchy_built:
         solver.mas.build_hierarchy()
     solver.mas.assemble_block_matrices(solver, use_full_hessian=True)
-    solver.mas.invert_block_matrices(use_full_inversion=True, use_cholesky=False,
-                                      use_incomplete=False, use_oneway_gj=False)
+    solver.mas.invert_block_matrices(method='gauss_jordan')
 
     # Check some blocks
     print("\nChecking block matrices (Frame 0):")
@@ -161,8 +160,7 @@ def main():
 
     # Rebuild MAS
     solver.mas.assemble_block_matrices(solver, use_full_hessian=True)
-    solver.mas.invert_block_matrices(use_full_inversion=True, use_cholesky=False,
-                                      use_incomplete=False, use_oneway_gj=False)
+    solver.mas.invert_block_matrices(method='gauss_jordan')
 
     # Check blocks again
     print("\nChecking block matrices (Frame 1):")

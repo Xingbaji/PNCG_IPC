@@ -647,7 +647,7 @@ class TestMASPreconditionerIntegration(unittest.TestCase):
 
         self.assertTrue(mas.matrices_assembled)
 
-        mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+        mas.invert_block_matrices(method='oneway_gj')
 
         self.assertTrue(mas.matrices_inverted)
 
@@ -662,7 +662,7 @@ class TestMASPreconditionerIntegration(unittest.TestCase):
 
         mas.build_hierarchy()
         mas.assemble_block_matrices(self.solver, use_full_hessian=True)
-        mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+        mas.invert_block_matrices(method='oneway_gj')
 
         # Set gradient to non-zero using class-level static kernel
         TestMASPreconditionerIntegration._set_gradient_kernel(self.solver.mesh)
@@ -969,7 +969,7 @@ class ModuleSpeedTests(unittest.TestCase):
 
         def inversion_func():
             mas.matrices_inverted = False
-            mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=False)
+            mas.invert_block_matrices(method='gauss_jordan')
 
         stats = self._run_timed_test(inversion_func, n_runs=5, warmup=1)
 
@@ -988,7 +988,7 @@ class ModuleSpeedTests(unittest.TestCase):
 
         def inversion_func():
             mas.matrices_inverted = False
-            mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+            mas.invert_block_matrices(method='oneway_gj')
 
         stats = self._run_timed_test(inversion_func, n_runs=5, warmup=1)
 
@@ -1007,7 +1007,7 @@ class ModuleSpeedTests(unittest.TestCase):
 
         def inversion_func():
             mas.matrices_inverted = False
-            mas.invert_block_matrices(use_full_inversion=False)
+            mas.invert_block_matrices(method='diagonal')
 
         stats = self._run_timed_test(inversion_func, n_runs=10, warmup=2)
 
@@ -1023,7 +1023,7 @@ class ModuleSpeedTests(unittest.TestCase):
         )
         mas.build_hierarchy()
         mas.assemble_block_matrices(self.solver, use_full_hessian=True)
-        mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+        mas.invert_block_matrices(method='oneway_gj')
 
         # Set gradient
         @ti.kernel
@@ -1160,22 +1160,22 @@ class MASBenchmarks:
             self.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
 
         methods = [
-            ('Gauss-Jordan', {'use_full_inversion': True, 'use_cholesky': False, 'use_oneway_gj': False}),
-            ('One-way GJ', {'use_full_inversion': True, 'use_oneway_gj': True}),
-            ('Cholesky', {'use_full_inversion': True, 'use_cholesky': True}),
-            ('Incomplete Cholesky', {'use_full_inversion': True, 'use_incomplete': True}),
-            ('Diagonal Only', {'use_full_inversion': False}),
+            ('Gauss-Jordan', 'gauss_jordan'),
+            ('One-way GJ', 'oneway_gj'),
+            ('Cholesky', 'cholesky'),
+            ('Incomplete Cholesky', 'ic'),
+            ('Diagonal Only', 'diagonal'),
         ]
 
         results = {}
-        for name, kwargs in methods:
+        for name, method in methods:
             times = []
             for i in range(n_runs):
                 # Re-assemble to reset matrix state
                 self.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
 
                 with PerfTimer(f"{name} Run {i+1}", verbose=False) as timer:
-                    self.mas.invert_block_matrices(**kwargs)
+                    self.mas.invert_block_matrices(method=method)
                 times.append(timer.elapsed_ms)
 
             avg_time = np.mean(times[1:])
@@ -1199,7 +1199,7 @@ class MASBenchmarks:
             )
             self.mas.build_hierarchy()
             self.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
-            self.mas.invert_block_matrices(use_full_inversion=True, use_oneway_gj=True)
+            self.mas.invert_block_matrices(method='oneway_gj')
 
         # Set non-zero gradient
         @ti.kernel

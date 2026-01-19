@@ -566,13 +566,7 @@ class InversionMixin:
                               method: str = 'ic',
                               force_symmetry: bool = True,
                               regularization_epsilon: float = 0.0,
-                              adaptive_regularization: float = 0.0,
-                              # Legacy parameters for backward compatibility
-                              use_full_inversion: bool = None,
-                              use_cholesky: bool = None,
-                              use_blocked: bool = None,
-                              use_incomplete: bool = None,
-                              use_oneway_gj: bool = None):
+                              adaptive_regularization: float = 0.05):
         """
         Invert all block matrices on GPU.
 
@@ -585,19 +579,22 @@ class InversionMixin:
                 - 'oneway_gj': One-way Gauss-Jordan - P4 optimization for SPD
                 - 'diagonal': Diagonal blocks only - fastest but lowest quality
 
-            force_symmetry: If True, symmetrize matrices before inversion.
+            force_symmetry: If True (default), symmetrize matrices before inversion.
 
             regularization_epsilon: If > 0, add uniform diagonal regularization.
                 Required for Cholesky methods when matrices are not SPD.
 
-            adaptive_regularization: If > 0, add per-block adaptive regularization.
+            adaptive_regularization: Per-block adaptive regularization (default: 0.05).
                 epsilon_block = adaptive_regularization * ||diag(A_block)||_inf
-                Recommended: 0.05 (scales with problem stiffness)
+                - 0.01: Mild regularization, preserves most geometric info
+                - 0.05: Moderate regularization (default, good balance)
+                - 0.1:  Strong regularization, for highly indefinite matrices
+                - 0.0:  Disable adaptive regularization
 
         Method Selection Guide:
             | Method           | Speed | Accuracy | Requires SPD | Regularization |
             |------------------|-------|----------|--------------|----------------|
-            | ic (default)     | 7.6x  | 3e-04    | Yes*         | Recommended    |
+            | ic (default)     | 7.6x  | 3e-04    | Yes*         | Default 0.05   |
             | cholesky         | 3.5x  | 6e-06    | Yes*         | Required       |
             | blocked_cholesky | 3.2x  | 3e-06    | Yes*         | Required       |
             | gauss_jordan     | 1x    | 8e-07    | No           | Optional       |
@@ -608,22 +605,15 @@ class InversionMixin:
 
         Example:
             # Default: IC(0) with adaptive regularization (recommended)
-            mas.invert_block_matrices(adaptive_regularization=0.05)
+            mas.invert_block_matrices()
 
             # High accuracy with fixed regularization
-            mas.invert_block_matrices(method='cholesky', regularization_epsilon=5e5)
+            mas.invert_block_matrices(method='cholesky', regularization_epsilon=5e5,
+                                      adaptive_regularization=0.0)
 
             # Most robust (no regularization needed)
-            mas.invert_block_matrices(method='gauss_jordan')
+            mas.invert_block_matrices(method='gauss_jordan', adaptive_regularization=0.0)
         """
-        # Handle legacy parameters for backward compatibility
-        if any(p is not None for p in [use_full_inversion, use_cholesky, use_blocked,
-                                        use_incomplete, use_oneway_gj]):
-            method = self._legacy_params_to_method(
-                use_full_inversion, use_cholesky, use_blocked,
-                use_incomplete, use_oneway_gj
-            )
-
         # Normalize method name
         method = method.lower().strip()
         if method == 'gj':
@@ -680,30 +670,3 @@ class InversionMixin:
                            f"Valid options: ic, cholesky, blocked_cholesky, gauss_jordan, oneway_gj, diagonal")
 
         self.matrices_inverted = True
-
-    def _legacy_params_to_method(self, use_full_inversion, use_cholesky, use_blocked,
-                                  use_incomplete, use_oneway_gj) -> str:
-        """Convert legacy boolean parameters to method string."""
-        # Default values for None
-        if use_full_inversion is None:
-            use_full_inversion = True
-        if use_incomplete is None:
-            use_incomplete = True
-        if use_oneway_gj is None:
-            use_oneway_gj = False
-        if use_cholesky is None:
-            use_cholesky = True
-        if use_blocked is None:
-            use_blocked = False
-
-        if not use_full_inversion:
-            return 'diagonal'
-        if use_incomplete:
-            return 'ic'
-        if use_oneway_gj:
-            return 'oneway_gj'
-        if use_blocked and use_cholesky:
-            return 'blocked_cholesky'
-        if use_cholesky:
-            return 'cholesky'
-        return 'gauss_jordan'

@@ -128,9 +128,7 @@ class TestAdaptiveRegularization(unittest.TestCase):
         # Test fixed regularization
         self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
         self.solver.mas.invert_block_matrices(
-            use_full_inversion=True,
-            use_cholesky=True,
-            use_incomplete=True,
+            method='ic',
             force_symmetry=True,
             regularization_epsilon=fixed_epsilon,
             adaptive_regularization=0.0
@@ -162,9 +160,7 @@ class TestAdaptiveRegularization(unittest.TestCase):
         for rel_eps in adaptive_values:
             self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
             self.solver.mas.invert_block_matrices(
-                use_full_inversion=True,
-                use_cholesky=False,  # Use Gauss-Jordan for indefinite matrices
-                use_incomplete=False,
+                method='gauss_jordan',
                 force_symmetry=True,
                 regularization_epsilon=0.0,
                 adaptive_regularization=rel_eps

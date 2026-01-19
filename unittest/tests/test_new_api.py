@@ -43,7 +43,7 @@ def test_new_api():
     ]
 
     print("\n" + "=" * 60)
-    print("Testing New API: invert_block_matrices(method=...)")
+    print("Testing API: invert_block_matrices(method=...)")
     print("=" * 60)
 
     passed = 0
@@ -56,28 +56,7 @@ def test_new_api():
         except Exception as e:
             print(f"  [FAIL] {desc}: {e}")
 
-    # Test legacy API backward compatibility
-    print("\n" + "-" * 60)
-    print("Testing Legacy API Backward Compatibility")
-    print("-" * 60)
-
-    legacy_tests = [
-        ("IC (legacy)", {"use_incomplete": True, "regularization_epsilon": 5e5}),
-        ("Cholesky (legacy)", {"use_cholesky": True, "use_incomplete": False, "regularization_epsilon": 5e5}),
-        ("GJ (legacy)", {"use_cholesky": False, "use_incomplete": False}),
-        ("Diagonal (legacy)", {"use_full_inversion": False}),
-    ]
-
-    for desc, kwargs in legacy_tests:
-        try:
-            solver.mas.assemble_block_matrices(solver, use_full_hessian=True)
-            solver.mas.invert_block_matrices(**kwargs)
-            print(f"  [PASS] {desc}")
-            passed += 1
-        except Exception as e:
-            print(f"  [FAIL] {desc}: {e}")
-
-    total = len(tests) + len(legacy_tests)
+    total = len(tests)
     print("\n" + "=" * 60)
     print(f"RESULT: {passed}/{total} tests passed")
     print("=" * 60)
