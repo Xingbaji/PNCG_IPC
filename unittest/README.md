@@ -59,7 +59,7 @@ python test_mas_simple.py
 | `test_mas_pkg_unittest.py` | MAS 包完整单元测试框架，含常量验证和性能基准 | **高** |
 | `test_mas_ground_truth.py` | NumPy ground truth 对比测试，验证装配、求逆、SPMv | **高** |
 | `test_mas_multilevel.py` | 多层级 ground truth 测试，含限制/延拓操作验证 | **高** |
-| `test_inversion_methods.py` | 不同求逆方法的正确性和性能对比测试 | **高** |
+| `test_inversion_methods.py` | 不同求逆方法的正确性和性能对比测试（6种方法） | **高** |
 
 ### 功能验证测试
 

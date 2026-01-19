@@ -1,8 +1,28 @@
 # MAS 矩阵对称性问题分析报告
 
 **日期**: 2026-01-19
-**状态**: 调试进行中
+**状态**: 已修复 (2026-01-19)
 **相关文件**: `algorithm/mas_preconditioner_pkg/assembly.py`
+
+---
+
+## 修复摘要
+
+### 根因
+在跨 warp 装配逻辑中，当不同细网格顶点映射到同一粗网格顶点时，代码未同时添加 H[i,j] 和 H[i,j]^T（转置），导致对称性破坏。
+
+### 修复位置
+- `assembly.py:197-201` (`_add_elastic_contribution_full_optimized`)
+- `assembly.py:300-302` (`_add_elastic_contribution_full`)
+- `assembly.py:450-453` (`_add_ipc_contact_contribution`)
+- `assembly.py:543-546` (`_add_ipc_contact_contribution_compact_kernel`)
+
+### 修复后结果
+- **相对对称误差**: ~3% → ~5e-08 (float32 精度)
+- **绝对对称误差**: 1.65e+04 → 3.08e-02
+- **IC with regularization**: NaN count = 0, ||A * A^-1 - I|| = 2.99e-04
+
+详见 [TEST_REPORT.md](../unittest/TEST_REPORT.md)
 
 ---
 
