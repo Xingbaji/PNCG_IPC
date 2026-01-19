@@ -1082,10 +1082,10 @@ class MASPreconditioner:
             H_e = dFdx.transpose() @ temp
             H_e = para * H_e
 
-            # Process all 16 vertex pairs with optimized branching
+            # Process upper triangle of vertex pairs (i <= j) to avoid double-counting
             # Use static unrolling for better performance
             for i in ti.static(range(4)):
-                for j in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):  # j >= i: upper triangle only
                     warp_i = warp_ids[i]
                     warp_j = warp_ids[j]
                     lane_i = lane_ids[i]
@@ -1211,8 +1211,9 @@ class MASPreconditioner:
             # CUDA Reference: PrepareHessian_bcoo() (MASPreconditioner.cu lines 1816-2093)
             #
             # Key difference: Cross-block entries propagate to coarse levels via goingNext
+            # Only process upper triangle (i <= j) to avoid double-counting
             for i in ti.static(range(4)):
-                for j in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):  # j >= i: upper triangle only
                     vi = v_ids[i]
                     vj = v_ids[j]
                     warp_i = vi // BANKSIZE
@@ -1375,7 +1376,7 @@ class MASPreconditioner:
             # Compute barrier Hessian coefficient: b''(d) = 4 * kappa * (1 - d/dHat)
             barrier_H = 4.0 * kappa * (1.0 - dist / dHat)
 
-            # For each pair of vertices in the contact stencil
+            # Process upper triangle of vertex pairs (i <= jj) to avoid double-counting
             for i in ti.static(range(4)):
                 vi = ids[i]
                 ci = cord[i]
@@ -1384,7 +1385,7 @@ class MASPreconditioner:
                 if ti.abs(ci) < 1e-10:
                     continue
 
-                for jj in ti.static(range(4)):
+                for jj in ti.static(range(i, 4)):  # jj >= i: upper triangle only
                     vj = ids[jj]
                     cj = cord[jj]
 
@@ -1483,7 +1484,7 @@ class MASPreconditioner:
             # Compute barrier Hessian coefficient: b''(d) = 4 * kappa * (1 - d/dHat)
             barrier_H = 4.0 * kappa * (1.0 - dist / dHat)
 
-            # For each pair of vertices in the contact stencil
+            # Process upper triangle of vertex pairs (i <= jj) to avoid double-counting
             for i in ti.static(range(4)):
                 vi = ids[i]
                 ci = cord[i]
@@ -1492,7 +1493,7 @@ class MASPreconditioner:
                 if ti.abs(ci) < 1e-10:
                     continue
 
-                for jj in ti.static(range(4)):
+                for jj in ti.static(range(i, 4)):  # jj >= i: upper triangle only
                     vj = ids[jj]
                     cj = cord[jj]
 

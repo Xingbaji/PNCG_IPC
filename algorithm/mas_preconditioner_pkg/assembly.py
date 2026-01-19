@@ -237,9 +237,9 @@ class AssemblyMixin:
             H_e = dFdx.transpose() @ temp
             H_e = para * H_e
 
-            # Process all 16 vertex pairs
+            # Process upper triangle of vertex pairs (i <= j) to avoid double-counting
             for i in ti.static(range(4)):
-                for j in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):  # j >= i: upper triangle only
                     vi = v_ids[i]
                     vj = v_ids[j]
                     warp_i = vi // BANKSIZE
@@ -388,6 +388,7 @@ class AssemblyMixin:
 
             barrier_H = 4.0 * kappa * (1.0 - dist / dHat)
 
+            # Process upper triangle of vertex pairs (i <= jj) to avoid double-counting
             for i in ti.static(range(4)):
                 vi = ids[i]
                 ci = cord[i]
@@ -395,7 +396,7 @@ class AssemblyMixin:
                 if ti.abs(ci) < 1e-10:
                     continue
 
-                for jj in ti.static(range(4)):
+                for jj in ti.static(range(i, 4)):  # jj >= i: upper triangle only
                     vj = ids[jj]
                     cj = cord[jj]
 
@@ -480,6 +481,7 @@ class AssemblyMixin:
 
             barrier_H = 4.0 * kappa * (1.0 - dist / dHat)
 
+            # Process upper triangle of vertex pairs (i <= jj) to avoid double-counting
             for i in ti.static(range(4)):
                 vi = ids[i]
                 ci = cord[i]
@@ -487,7 +489,7 @@ class AssemblyMixin:
                 if ti.abs(ci) < 1e-10:
                     continue
 
-                for jj in ti.static(range(4)):
+                for jj in ti.static(range(i, 4)):  # jj >= i: upper triangle only
                     vj = ids[jj]
                     cj = cord[jj]
 
