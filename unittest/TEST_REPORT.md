@@ -13,8 +13,9 @@
 | 对称性修复后测试 | 6 | 0 | 6 |
 | Ground Truth 测试 | 22 | 0 | 22 |
 | 多层级测试 | 19 | 0 | 25 (6 skipped) |
-| **MatVec 准确性测试** | **26** | **0** | **26** |
-| **总计** | **73** | **0** | **79** |
+| MatVec 准确性测试 | 26 | 0 | 26 |
+| **METIS 集成测试** | **39** | **0** | **40** (1 skipped) |
+| **总计** | **112** | **0** | **119** |
 
 **成功率**: 100% (所有必要测试通过)
 
@@ -187,7 +188,72 @@ test_06_preconditioner_validity: OK
 
 **结果**: 26/26 测试通过
 
-### 5.5 MatVec 性能基准
+### 5.5 METIS 集成测试 (test_metis_integration.py)
+
+验证 METIS 图分区集成功能，包括 CPU 和 GPU 实现的正确性。
+
+**工具函数测试 (2 tests):**
+- check_pymetis_available 返回布尔值: OK
+- check_pymetis_available 一致性: OK
+
+**CPU 回退函数测试 (11 tests):**
+- build_adjacency_from_cells_cpu 有效输出: OK
+- 邻接对称性: OK
+- 无自环: OK
+- compute_sort_index_cpu 有效排列: OK
+- 排序稳定性: OK
+- compute_inverse_mapping_cpu 逆映射: OK
+- build_partition_mappings_cpu 覆盖: OK
+- 映射双射性: OK
+- reorder_cells_cpu: OK
+- _create_identity_result 结构: OK
+- identity 映射正确性: OK
+
+**MetisReorderGPU 测试 (7 tests):**
+- 初始化: OK
+- load_cells: OK
+- build_adjacency: OK
+- set_partition: OK
+- compute_sort_index_cpu: OK
+- build_mappings: OK
+- get_results: OK
+
+**METIS 分区测试 (9 tests):**
+- 单分区返回全零: OK
+- 有效分区 ID: OK
+- 所有分区被使用: OK
+- metis_reorder_mesh 结构: OK
+- 最大分区大小 ≤ BANKSIZE: OK
+- 映射一致性: OK
+- 分区映射一致性: OK
+- GPU/CPU 一致性: OK
+- 带顶点的重排序: OK
+
+**文件 I/O 测试 (2 tests):**
+- 保存和加载分区: OK
+- 大分区保存/加载: OK
+
+**METISMixin 集成测试 (6 tests):**
+- use_metis=True 初始化: OK
+- use_metis=False 初始化: OK
+- Mixin 方法存在性: OK
+- build_hierarchy_metis: OK (或 skipped for small mesh)
+- rebuild_with_metis: OK
+- apply_metis 有效输出: OK
+
+**分区质量测试 (2 tests):**
+- 跨块边减少: OK
+- 分区平衡: OK
+
+**边界情况测试 (4 tests):**
+- 单单元网格: OK
+- 小于 BANKSIZE 的网格: OK
+- 恰好 BANKSIZE 的网格: OK
+- 大网格 (216 顶点): OK
+
+**结果**: 39/40 测试通过 (1 skipped: build_hierarchy_metis for small mesh)
+
+### 5.6 MatVec 性能基准
 
 | 变体 | 平均时间 | 标准差 | 最小时间 | g^Tz > 0 |
 |------|----------|--------|----------|----------|
@@ -223,32 +289,38 @@ test_06_preconditioner_validity: OK
 
 ### 6.2 代码配置示例
 
+**新 API (推荐)**:
 ```python
-# 推荐配置 1: Gauss-Jordan + 自适应正则化 (最稳健)
-mas.invert_block_matrices(
-    use_full_inversion=True,
-    use_cholesky=False,       # Gauss-Jordan (处理非 SPD)
-    force_symmetry=True,
-    adaptive_regularization=0.05  # 相对正则化，自动缩放
-)
+# 默认配置: IC(0) + 自适应正则化 (推荐)
+mas.invert_block_matrices(adaptive_regularization=0.05)
 
-# 推荐配置 2: IC(0) + 固定正则化 (需要 SPD 保证)
-mas.invert_block_matrices(
-    use_full_inversion=True,
-    use_cholesky=True,
-    use_incomplete=True,      # IC(0) 提速
-    force_symmetry=True,
-    regularization_epsilon=5e5  # 需要 > |λ_min|
-)
+# 高精度配置: Cholesky + 固定正则化
+mas.invert_block_matrices(method='cholesky', regularization_epsilon=5e5)
 
-# 最稳健配置 (无正则化)
-mas.invert_block_matrices(
-    use_full_inversion=True,
-    use_cholesky=False,       # Gauss-Jordan
-    force_symmetry=True,
-    regularization_epsilon=0.0,
-    adaptive_regularization=0.0
-)
+# 最稳健配置: Gauss-Jordan (无需正则化)
+mas.invert_block_matrices(method='gauss_jordan')
+
+# 最快配置: 仅对角块 (精度最低)
+mas.invert_block_matrices(method='diagonal')
+```
+
+**方法选择表**:
+| method | 速度 | 精度 | 需要 SPD | 正则化 |
+|--------|------|------|----------|--------|
+| `ic` (默认) | 7.6x | 3e-04 | Yes* | 推荐 |
+| `cholesky` | 3.5x | 6e-06 | Yes* | 必需 |
+| `blocked_cholesky` | 3.2x | 3e-06 | Yes* | 必需 |
+| `gauss_jordan` / `gj` | 1x | 8e-07 | No | 可选 |
+| `oneway_gj` | 2x | varies | Yes | 否 |
+| `diagonal` | 330x | 2e+00 | No | 否 |
+
+*使用正则化确保 SPD: `regularization_epsilon > |λ_min|`
+
+**Legacy API (向后兼容)**:
+```python
+# 仍然支持旧的布尔参数形式
+mas.invert_block_matrices(use_cholesky=False, use_incomplete=False)  # Gauss-Jordan
+mas.invert_block_matrices(use_incomplete=True, regularization_epsilon=5e5)  # IC(0)
 ```
 
 ### 6.3 正则化参数选择
@@ -333,6 +405,13 @@ PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_matvec_accuracy.py -v
 
 # 仅运行 MatVec 性能基准
 python ../unittest/tests/test_matvec_accuracy.py --benchmark
+
+# 运行 METIS 集成测试
+PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_metis_integration.py -v
+
+# 运行特定 METIS 测试类
+PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_metis_integration.py TestCPUFallback
+PYTHONPATH=/root/PNCG_IPC python ../unittest/tests/test_metis_integration.py TestMETISPartitioning
 ```
 
 ---
