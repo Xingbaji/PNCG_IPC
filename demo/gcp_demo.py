@@ -57,7 +57,6 @@ class GCPDemoSolver(collision_detection_bvh_module):
         self.iter_max = model.iter_max
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
-        self.adj = 0  # GCP doesn't need adjacency matrix!
         self.ground_barrier = getattr(model, 'ground_barrier', 1)  # Default to 1 if not specified
         self.frame = 0
         self.SMALL_NUM = 1e-7

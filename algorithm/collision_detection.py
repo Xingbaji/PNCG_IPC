@@ -21,7 +21,6 @@ class collision_detection_module(pncg_base_deformer):
         self.iter_max = model.iter_max
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
-        self.adj = model.adj
         self.frame = 0
         self.SMALL_NUM = 1e-6
 
@@ -90,14 +89,8 @@ class collision_detection_module(pncg_base_deformer):
         self.pse_E = ti.algorithms.PrefixSumExecutor(self.table_size + 1)
         self.pse_P = ti.algorithms.PrefixSumExecutor(self.table_size + 1)
 
-        if self.adj == 1:
-            # when dHat is too large, there would be constraints at rest pose, so filter some constraints
-            self.define_adj_matrix()
-            self.attempt_PT = self.attempt_PT_adj
-            self.attempt_EE = self.attempt_EE_adj
-        else:
-            self.attempt_PT = self.attempt_PT_no_adj
-            self.attempt_EE = self.attempt_EE_no_adj
+        self.attempt_PT = self.attempt_PT_no_adj
+        self.attempt_EE = self.attempt_EE_no_adj
 
 
     @ti.func
@@ -471,20 +464,6 @@ class collision_detection_module(pncg_base_deformer):
                 cord = ti.Vector([1.0, -cord0, -cord1, -cord2], float)
                 hash_index = self.hash_coords_2(p, triangle_id)
                 self.cid[0, hash_index] = self.pair(ids, dist, cord, t_pt)
-
-    @ti.func
-    def attempt_PT_adj(self, triangle_id, p, t0, t1, t2, xp, x0, x1, x2):
-        hash_adj = self.hash_coords_2(p, triangle_id)
-        if p != t0 and p != t1 and p != t2 and self.adj_matrix[hash_adj] == 0 and point_triangle_ccd_broadphase(xp, x0, x1, x2, self.dHat):
-            cord0, cord1, cord2 = dist3D_Point_Triangle(xp, x0, x1, x2)
-            xt = cord0 * x0 + cord1 * x1 + cord2 * x2
-            t_pt = xp - xt
-            dist = t_pt.norm()
-            if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
-                ids = ti.Vector([p, t0, t1, t2], ti.i32)
-                cord = ti.Vector([1.0, -cord0, -cord1, -cord2], float)
-                hash_index = self.hash_coords_2(p, triangle_id)
-                self.cid[0,hash_index] = self.pair(ids, dist, cord, t_pt)
 
     @ti.kernel
     def find_constraints_EE(self):

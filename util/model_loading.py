@@ -110,7 +110,7 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
         elif demo == 'two_E_demo_collision_free':
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
-                         'epsilon': 1e-5, 'iter_max': 50,  'height': 0.1, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 0,
+                         'epsilon': 1e-5, 'iter_max': 50,  'height': 0.1, 'elastic_type': 'SNH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(2)],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 0.0]],
                          'scales': [[1.0, 1.0, 1.0],[1.0, 1.0, 1.0]],
@@ -123,7 +123,7 @@ class model_loading:
         elif demo == 'eight_E_drop_demo_contact':
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-4, 'iter_max': 50,  'height': 0.5,
-                         'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                         'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'NH', 'ground_barrier': 1,
                          'barrier_type': 'log',
                          'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                          'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
@@ -137,7 +137,7 @@ class model_loading:
         elif demo == 'twist_mat150':
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': 0.0, 'dt': 0.04,
                          'epsilon': 1e-3, 'iter_max': 150, 'height': 0.0,
-                         'dHat': 0.004, 'kappa': 0.5, 'elastic_type': 'FCR_filter', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.004, 'kappa': 0.5, 'elastic_type': 'FCR_filter', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/mat150x150t40_new/mat150x150t40_new.node'],
                          'dirichlet_path': '../model/mesh/mat150x150t40_new/is_dirichlet.npy',
                          'rotations': [[90.0, 0.0, 0]], 'scales': [[1.0, 1.0, 1.0]], 'translations': [[0.0, 0.0, 0.0]],
@@ -148,7 +148,7 @@ class model_loading:
         elif demo == 'twist_rods':
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': 0.0, 'dt': 0.04,
                          'epsilon': 1e-3, 'iter_max': 150, 'height': 0.0,
-                         'dHat': 0.001, 'kappa':  0.1, 'elastic_type': 'FCR_filter', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.001, 'kappa':  0.1, 'elastic_type': 'FCR_filter', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/rod300x33/rod300x33.node' for _ in range(4)],
                          'dirichlet_path': '../model/mesh/rod300x33/is_dirichlet.npy',
                          'rotations': [[0.0, 0.0, 0] for _ in range(4)], 'scales':  [[1.0, 1.0, 1.0] for _ in range(4)],
@@ -160,7 +160,7 @@ class model_loading:
         elif demo == 'squeeze_four_armadillo':
             demo_dict = {'E': 2e4, 'nu': 0.4, 'density': 16.0, 'gravity': 0.0, 'dt': 0.04,
                          'epsilon': 1e-4, 'iter_max': 30, 'height': 100.0,
-                         'dHat': 1.5, 'kappa': 16.0, 'elastic_type': 'ARAP', 'adj': 1, 'ground_barrier': 1,
+                         'dHat': 1.5, 'kappa': 16.0, 'elastic_type': 'ARAP', 'ground_barrier': 1,
                          'model_paths': ['../model/mesh/Armadillo13K/Armadillo13K.node' for _ in range(4)],
                          'rotations': [[0, 0, 0] for _ in range(4)],
                          'scales': [[1.0, 1.0, 1.0] for _ in range(4)],
@@ -173,7 +173,7 @@ class model_loading:
         elif demo == 'four_long_noodle':
             demo_dict = {'E': 5e3, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-4, 'iter_max': 30, 'height': 0,
-                         'dHat': 0.004, 'kappa': 1.0, 'elastic_type': 'ARAP_filter', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.004, 'kappa': 1.0, 'elastic_type': 'ARAP_filter', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/long_noodle_750/long_noodle_750.1.node' for _ in range(4)] + ['../model/mesh/Bowl/Bowl.2.node'],
                          'rotations': [[0.0, 0.0, 90] for _ in range(4)] + [[90.0, 0.0, 0.0]], 'scales': [[1.0, 1.0, 1.0] for _ in range(4)] + [[0.45, 0.45, 0.45]],
                          'translations': [[-0.25, 0.0, 0.0], [0.25, 0.0, 0.0], [0.0, 0.0, 0.25], [0.0, 0.0, -0.25],  [0.0, -15.1, 0.0]],
@@ -185,7 +185,7 @@ class model_loading:
         elif demo == 'four_long_noodle2':
             demo_dict = {'E': 1e4, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-4, 'iter_max': 60, 'height': 0.5,
-                         'dHat': 0.004, 'kappa': 5.0, 'elastic_type': 'ARAP_filter', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.004, 'kappa': 5.0, 'elastic_type': 'ARAP_filter', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/long_noodle_750/long_noodle_750.1.node' for _ in range(4)],
                          'rotations': [[0.0, 0.0, 90] for _ in range(4)], 'scales': [[1.0, 1.0, 1.0] for _ in range(4)],
                          'translations': [[-0.25, 0.0, 0.0], [0.25, 0.0, 0.0], [0.0, 0.0, 0.25], [0.0, 0.0, -0.25]],
@@ -197,7 +197,7 @@ class model_loading:
         elif demo == 'unittest_wedge_wedge':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/wedge/wedge.node'],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 180.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -209,7 +209,7 @@ class model_loading:
         elif demo == 'unittest_wedge_spike':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/spike/spike.node'],
                          'rotations': [[0.0, 0.0, 0.0],[180.0, 0.0, 0.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -222,7 +222,7 @@ class model_loading:
             # Same as unittest_wedge_spike but using cubic barrier instead of log barrier
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'barrier_type': 'cubic',
                          'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/spike/spike.node'],
                          'rotations': [[0.0, 0.0, 0.0],[180.0, 0.0, 0.0]],
@@ -236,7 +236,7 @@ class model_loading:
             # Cubic barrier with adaptive kappa (elasticity-inclusive dynamic stiffness)
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'barrier_type': 'cubic', 'adaptive_kappa': True,
                          'model_paths': ['../model/mesh/wedge/wedge.node','../model/mesh/spike/spike.node'],
                          'rotations': [[0.0, 0.0, 0.0],[180.0, 0.0, 0.0]],
@@ -249,7 +249,7 @@ class model_loading:
         elif demo == 'unittest_spike_spike':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/spike/spike.node', '../model/mesh/spike/spike.node'],
                          'rotations': [[0.0, 0.0, 0.0], [180, 0.0, 0.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -261,7 +261,7 @@ class model_loading:
         elif demo == 'unittest_crack_spike':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 10.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 10.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/crack/crack.node', '../model/mesh/spike/spike.node'],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 180.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -273,7 +273,7 @@ class model_loading:
         elif demo == 'unittest_crack_wedge':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 20.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 20.0, 'elastic_type': 'SNH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/crack/crack.node', '../model/mesh/wedge/wedge.node'],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 180.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -285,7 +285,7 @@ class model_loading:
         elif demo == 'unittest_edge_spike':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 20.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 20.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/internal_edges/internal_edges.node','../model/mesh/spike/spike.node',],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 180.0]],
                          'scales': [[4.0,4.0,4.0],[1.0,1.0,1.0]],
@@ -297,7 +297,7 @@ class model_loading:
         elif demo == 'unittest_cube_spike2': # use large cube for silding test
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/cube/cube.node','../model/mesh/spike/spike.node',],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 180.0]],
                          'scales': [[8.0,8.0,8.0],[0.5,0.5,0.5]],
@@ -309,7 +309,7 @@ class model_loading:
         elif demo == 'unittest_cube_wedge':  # use large cube for silding
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.2, 'kappa': 20.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.2, 'kappa': 20.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/cube/cube.node', '../model/mesh/wedge/wedge.node', ],
                          'rotations': [[0.0, 0.0, 0.0], [0.0, 0.0, 180.0]],
                          'scales': [[16.0, 16.0, 16.0], [1.0, 1.0, 1.0]],
@@ -321,7 +321,7 @@ class model_loading:
         elif demo == 'unittest_edge_cube':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-10, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.05, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.05, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/internal_edges/internal_edges.node', '../model/mesh/cube/cube.node'],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 0.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -333,7 +333,7 @@ class model_loading:
         elif demo == 'unittest_cliff_cube':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-8, 'iter_max': 100, 'height': 0.0,
-                         'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                         'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                          'model_paths': ['../model/mesh/cliff/cliff.node', '../model/mesh/cube/cube.node'],
                          'rotations': [[0.0, 0.0, 0.0],[0.0, 0.0, 0.0]],
                          'scales': [[1.0,1.0,1.0],[1.0,1.0,1.0]],
@@ -360,7 +360,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e6, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.1,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': meshes,
                 'rotations': rotations,
                 'scales': scales,
@@ -373,7 +373,7 @@ class model_loading:
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.1,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/bunny_stiff/bunny_stiff.node'],
                 'rotations': [[0.0, 0.0, 0.0]],
                 'scales': [[0.5, 0.5, 0.5]],
@@ -386,7 +386,7 @@ class model_loading:
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.1,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/bunny_stiff/bunny_stiff.node'] * 2,
                 'rotations': [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
                 'scales': [[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]],
@@ -399,7 +399,7 @@ class model_loading:
             demo_dict = {
                 'E': 2.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -49.0, 'dt': 0.01,  # 5x gravity
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.0,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                 'model_paths': ['../model/mesh/armadillo_stiff/armadillo_stiff.node'],
                 'rotations': [[0.0, 0.0, 0.0]],
                 'scales': [[1.0, 1.0, 1.0]],
@@ -412,7 +412,7 @@ class model_loading:
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': 0.0, 'dt': 0.01,
                 'epsilon': 1e-3, 'iter_max': 150, 'height': 0.0,
-                'dHat': 0.005, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 0,
+                'dHat': 0.005, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                 'model_paths': ['../model/mesh/mat/mat.node'],
                 'rotations': [[0.0, 0.0, 0.0]],
                 'scales': [[1.0, 1.0, 1.0]],
@@ -425,7 +425,7 @@ class model_loading:
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.005,
                 'epsilon': 1e-3, 'iter_max': 100, 'height': 0.1,
-                'dHat': 0.001, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.001, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/dragon_50k/dragon_50k.node'],
                 'rotations': [[0.0, 0.0, 0.0]],
                 'scales': [[0.1, 0.1, 0.1]],
@@ -455,7 +455,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.0,
-                'dHat': 0.02, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.02, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': meshes,
                 'rotations': rotations,
                 'scales': scales,
@@ -468,7 +468,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.0,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/cube_stiff/cube_stiff.node'] * 2,
                 'rotations': [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
                 'scales': [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
@@ -490,7 +490,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.005,
                 'epsilon': 1e-3, 'iter_max': 100, 'height': 0.0,
-                'dHat': 0.002, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.002, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': meshes,
                 'rotations': rotations,
                 'scales': scales,
@@ -520,7 +520,7 @@ class model_loading:
             demo_dict = {
                 'E': 3e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.005,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.0,
-                'dHat': 0.001, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.001, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': meshes,
                 'rotations': rotations,
                 'scales': scales,
@@ -533,7 +533,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.1,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/bunny_stiff/bunny_stiff.node'] * 2,
                 'rotations': [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
                 'scales': [[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]],
@@ -546,7 +546,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 50, 'height': 0.5,
-                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'ARAP_filter', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'ARAP_filter', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -561,7 +561,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 200, 'height': 0.5,
-                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'SNH', 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -575,7 +575,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'ground_barrier': 1,
                 'barrier_type': 'cubic',  # Use cubic barrier function
                 'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
                 'cache_kappa': False,      # Cache kappa at iter 0, reuse in subsequent iterations
@@ -593,7 +593,7 @@ class model_loading:
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
-                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
+                'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'ground_barrier': 1,
                 'barrier_type': 'cubic',  # Use cubic barrier function
                 'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
                 'cache_kappa': False,     # Update kappa every iteration (no caching)
@@ -701,7 +701,6 @@ class model_loading:
         if 'kappa' in demo_dict:
             self.kappa = demo_dict['kappa']
             self.dHat = demo_dict['dHat']
-            self.adj = int(demo_dict['adj'])
             self.ground_barrier = int(demo_dict['ground_barrier'])
             # Barrier type: 'log' (default) or 'cubic'
             if 'barrier_type' in demo_dict:

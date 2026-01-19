@@ -562,85 +562,148 @@ class InversionMixin:
                             self.full_block_inverse[block_id, row, col] = avg
                             self.full_block_inverse[block_id, row_t, col_t] = avg
 
-    def invert_block_matrices(self, use_full_inversion: bool = True,
-                              use_cholesky: bool = True,
-                              use_blocked: bool = False,
-                              use_incomplete: bool = True,
-                              use_oneway_gj: bool = False,
+    def invert_block_matrices(self,
+                              method: str = 'ic',
                               force_symmetry: bool = True,
                               regularization_epsilon: float = 0.0,
-                              adaptive_regularization: float = 0.0):
+                              adaptive_regularization: float = 0.0,
+                              # Legacy parameters for backward compatibility
+                              use_full_inversion: bool = None,
+                              use_cholesky: bool = None,
+                              use_blocked: bool = None,
+                              use_incomplete: bool = None,
+                              use_oneway_gj: bool = None):
         """
         Invert all block matrices on GPU.
 
         Args:
-            use_full_inversion: If True, use full 48x48 block inversion.
-            use_cholesky: If True, use Cholesky decomposition.
-            use_blocked: If True, use blocked Cholesky.
-            use_incomplete: If True (default), use Incomplete Cholesky IC(0).
-            use_oneway_gj: If True, use One-way Gauss-Jordan (P4 optimization).
+            method: Inversion method to use. Options:
+                - 'ic' (default): Incomplete Cholesky IC(0) - fastest, good accuracy
+                - 'cholesky': Standard Cholesky - high accuracy, requires SPD
+                - 'blocked_cholesky': Blocked Cholesky - better GPU parallelism
+                - 'gauss_jordan' or 'gj': Gauss-Jordan - most robust, handles indefinite
+                - 'oneway_gj': One-way Gauss-Jordan - P4 optimization for SPD
+                - 'diagonal': Diagonal blocks only - fastest but lowest quality
+
             force_symmetry: If True, symmetrize matrices before inversion.
+
             regularization_epsilon: If > 0, add uniform diagonal regularization.
-            adaptive_regularization: If > 0, add per-block adaptive regularization
-                                     (relative to block diagonal norm, typical: 0.01-0.1).
-                                     This is preferred over fixed epsilon for varying stiffness.
+                Required for Cholesky methods when matrices are not SPD.
 
-        Default Method: IC(0) (Incomplete Cholesky)
-            - 7.6x faster than Gauss-Jordan with acceptable accuracy (3e-04)
-            - Requires regularization for non-SPD matrices
-
-        Regularization Strategy:
-            - adaptive_regularization > 0: Use per-block scaling (recommended)
+            adaptive_regularization: If > 0, add per-block adaptive regularization.
                 epsilon_block = adaptive_regularization * ||diag(A_block)||_inf
-            - regularization_epsilon > 0: Use uniform epsilon (legacy)
-            - Both > 0: Apply both (adaptive first, then uniform)
+                Recommended: 0.05 (scales with problem stiffness)
 
-        Recommended values for adaptive_regularization:
-            - 0.01: Mild regularization, preserves most geometric info
-            - 0.05: Moderate regularization, good balance
-            - 0.1:  Strong regularization, for highly indefinite matrices
+        Method Selection Guide:
+            | Method           | Speed | Accuracy | Requires SPD | Regularization |
+            |------------------|-------|----------|--------------|----------------|
+            | ic (default)     | 7.6x  | 3e-04    | Yes*         | Recommended    |
+            | cholesky         | 3.5x  | 6e-06    | Yes*         | Required       |
+            | blocked_cholesky | 3.2x  | 3e-06    | Yes*         | Required       |
+            | gauss_jordan     | 1x    | 8e-07    | No           | Optional       |
+            | oneway_gj        | 2x    | varies   | Yes          | No             |
+            | diagonal         | 330x  | 2e+00    | No           | No             |
+
+            *Use regularization to ensure SPD: regularization_epsilon > |λ_min|
+
+        Example:
+            # Default: IC(0) with adaptive regularization (recommended)
+            mas.invert_block_matrices(adaptive_regularization=0.05)
+
+            # High accuracy with fixed regularization
+            mas.invert_block_matrices(method='cholesky', regularization_epsilon=5e5)
+
+            # Most robust (no regularization needed)
+            mas.invert_block_matrices(method='gauss_jordan')
         """
+        # Handle legacy parameters for backward compatibility
+        if any(p is not None for p in [use_full_inversion, use_cholesky, use_blocked,
+                                        use_incomplete, use_oneway_gj]):
+            method = self._legacy_params_to_method(
+                use_full_inversion, use_cholesky, use_blocked,
+                use_incomplete, use_oneway_gj
+            )
+
+        # Normalize method name
+        method = method.lower().strip()
+        if method == 'gj':
+            method = 'gauss_jordan'
+
         print("[MAS] Inverting block matrices...")
 
-        if use_full_inversion:
-            self._expand_sym_to_full()
-
-            # Apply symmetrization as safety net
-            if force_symmetry:
-                self._symmetrize_full_block_matrices()
-
-            # Apply adaptive regularization first (per-block scaling)
-            if adaptive_regularization > 0:
-                self._add_adaptive_diagonal_regularization(adaptive_regularization)
-                print(f"[MAS] Applied adaptive regularization (relative={adaptive_regularization:.3f})")
-
-            # Apply uniform diagonal regularization if requested (legacy/additional)
-            if regularization_epsilon > 0:
-                self._add_diagonal_regularization(regularization_epsilon)
-                print(f"[MAS] Applied uniform regularization (epsilon={regularization_epsilon:.2e})")
-
-            if use_incomplete:
-                self._incomplete_cholesky_invert_blocks()
-                self._copy_inverse_to_sym()
-                print("[MAS] Full block inversion complete (Incomplete Cholesky IC(0))")
-            elif use_oneway_gj:
-                self._oneway_gauss_jordan_invert_blocks()
-                self._copy_inverse_to_sym()
-                print("[MAS] Full block inversion complete (One-way Gauss-Jordan)")
-            elif use_blocked and use_cholesky:
-                self._blocked_cholesky_invert_blocks()
-                self._copy_inverse_to_sym()
-                print("[MAS] Full block inversion complete (Blocked Cholesky)")
-            elif use_cholesky:
-                self._cholesky_invert_blocks()
-                self._copy_inverse_to_sym()
-                print("[MAS] Full block inversion complete (Cholesky)")
-            else:
-                self._gauss_jordan_invert_blocks()
-                self._copy_inverse_to_sym()
-                print("[MAS] Full block inversion complete (Gauss-Jordan)")
-        else:
+        if method == 'diagonal':
             self._invert_diagonal_blocks()
             print("[MAS] Diagonal block inversion complete")
+            self.matrices_inverted = True
+            return
+
+        # Full 48x48 block inversion
+        self._expand_sym_to_full()
+
+        # Apply symmetrization as safety net
+        if force_symmetry:
+            self._symmetrize_full_block_matrices()
+
+        # Apply adaptive regularization first (per-block scaling)
+        if adaptive_regularization > 0:
+            self._add_adaptive_diagonal_regularization(adaptive_regularization)
+            print(f"[MAS] Applied adaptive regularization (relative={adaptive_regularization:.3f})")
+
+        # Apply uniform diagonal regularization if requested
+        if regularization_epsilon > 0:
+            self._add_diagonal_regularization(regularization_epsilon)
+            print(f"[MAS] Applied uniform regularization (epsilon={regularization_epsilon:.2e})")
+
+        # Execute inversion
+        if method == 'ic':
+            self._incomplete_cholesky_invert_blocks()
+            self._copy_inverse_to_sym()
+            print("[MAS] Full block inversion complete (Incomplete Cholesky IC(0))")
+        elif method == 'cholesky':
+            self._cholesky_invert_blocks()
+            self._copy_inverse_to_sym()
+            print("[MAS] Full block inversion complete (Cholesky)")
+        elif method == 'blocked_cholesky':
+            self._blocked_cholesky_invert_blocks()
+            self._copy_inverse_to_sym()
+            print("[MAS] Full block inversion complete (Blocked Cholesky)")
+        elif method == 'gauss_jordan':
+            self._gauss_jordan_invert_blocks()
+            self._copy_inverse_to_sym()
+            print("[MAS] Full block inversion complete (Gauss-Jordan)")
+        elif method == 'oneway_gj':
+            self._oneway_gauss_jordan_invert_blocks()
+            self._copy_inverse_to_sym()
+            print("[MAS] Full block inversion complete (One-way Gauss-Jordan)")
+        else:
+            raise ValueError(f"Unknown inversion method: {method}. "
+                           f"Valid options: ic, cholesky, blocked_cholesky, gauss_jordan, oneway_gj, diagonal")
 
         self.matrices_inverted = True
+
+    def _legacy_params_to_method(self, use_full_inversion, use_cholesky, use_blocked,
+                                  use_incomplete, use_oneway_gj) -> str:
+        """Convert legacy boolean parameters to method string."""
+        # Default values for None
+        if use_full_inversion is None:
+            use_full_inversion = True
+        if use_incomplete is None:
+            use_incomplete = True
+        if use_oneway_gj is None:
+            use_oneway_gj = False
+        if use_cholesky is None:
+            use_cholesky = True
+        if use_blocked is None:
+            use_blocked = False
+
+        if not use_full_inversion:
+            return 'diagonal'
+        if use_incomplete:
+            return 'ic'
+        if use_oneway_gj:
+            return 'oneway_gj'
+        if use_blocked and use_cholesky:
+            return 'blocked_cholesky'
+        if use_cholesky:
+            return 'cholesky'
+        return 'gauss_jordan'

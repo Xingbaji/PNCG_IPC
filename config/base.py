@@ -42,7 +42,6 @@ class IPCConfig:
     enabled: bool = False       # Whether IPC is active
     dHat: float = 0.01          # Distance threshold for contact detection
     kappa: float = 1.0          # Barrier stiffness
-    adj: int = 0                # Adjacency filtering flag
     ground_barrier: bool = False  # Enable ground plane barrier
     barrier_type: str = "log"   # Barrier function type: "log" or "cubic"
     adaptive_kappa: bool = False  # Enable adaptive barrier stiffness
@@ -148,7 +147,6 @@ class SimulationConfig:
             result.update({
                 'kappa': self.ipc.kappa,
                 'dHat': self.ipc.dHat,
-                'adj': self.ipc.adj,
                 'ground_barrier': int(self.ipc.ground_barrier),
                 'barrier_type': self.ipc.barrier_type,
                 'adaptive_kappa': self.ipc.adaptive_kappa,

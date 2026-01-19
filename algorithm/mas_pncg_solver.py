@@ -48,7 +48,6 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.iter_max = model.iter_max
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
-        self.adj = getattr(model, 'adj', 0)  # Default to 0 for collision-free demos
         self.ground_barrier = getattr(model, 'ground_barrier', 0)  # Default to 0 for collision-free demos
         self.frame = 0
         self.SMALL_NUM = 1e-7
