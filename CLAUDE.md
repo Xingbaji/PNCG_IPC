@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 PNCG_IPC implements the **MAS-PNCG** framework from the paper "An Efficient Multilevel Preconditioned Nonlinear Conjugate Gradient Framework for Incremental Potential Contact". The project features a GPU-accelerated **Multilevel Additive Schwarz (MAS) preconditioner** using Taichi.
 
 ### Reference Documents
-- `ref_doc/MAS_PNCG_clean.tex` - Main paper with algorithm overview
-- `ref_doc/supplementary.tex` - Detailed derivations
-- `ref_doc/MAS_PRECONDITIONER_IMPLEMENTATION.md` - Implementation details
-- `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md` - Testing framework
+- `docs/papers/MAS_PNCG_clean.tex` - Main paper with algorithm overview
+- `docs/papers/supplementary.tex` - Detailed derivations
+- `docs/algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md` - Implementation details
+- `docs/algorithm/MAS_PRECONDITIONER_PKG_TESTING.md` - Testing framework
 
 ### Reference Implementation
 - `/root/Stiff-GIPC_init/` - CUDA reference (C++/CUDA)
@@ -44,7 +44,16 @@ PNCG_IPC/
 ├── demo/                   # Main demos
 ├── n_E_demos/              # N-body demos and benchmarks
 ├── util/                   # Model loading utilities
-├── ref_doc/                # Documentation
+├── docs/                   # Documentation
+│   ├── algorithm/          # Algorithm implementation docs
+│   ├── design/             # Design & planning docs
+│   ├── reference/          # Reference implementation docs
+│   └── papers/             # Papers (PDF/tex)
+├── experiment_reports/     # Experiment reports
+├── unittest/               # Unit tests
+│   ├── tests/              # Test cases
+│   ├── debug/              # Debug utilities
+│   └── run_all_tests.py    # Test runner
 └── model/                  # 3D mesh models
 ```
 
@@ -53,7 +62,7 @@ PNCG_IPC/
 base_deformer → collision_detection_bvh → pncg_base_ipc → Demo classes
 
 MASPreconditioner (algorithm/mas_preconditioner_pkg/)
-  - Mixin-based: core, assembly, topology, inversion, schwarz, hierarchy, woodbury
+  - Mixin-based: core, assembly, topology, inversion, schwarz, hierarchy, woodbury, metis_integration
 ```
 
 ### Key Parameters
@@ -67,15 +76,49 @@ MASPreconditioner (algorithm/mas_preconditioner_pkg/)
 ## Testing
 
 ```bash
-# MAS package unit tests
-cd n_E_demos
-python test_mas_pkg_unittest.py -v
+# Run all unit tests
+cd unittest
+python run_all_tests.py
 
-# Other tests
+# Or run specific tests
 cd demo
 python test_mas_preconditioner.py
 python test_metis_reorder.py
 ```
+
+## Knowledge Base
+
+项目文档按以下结构组织：
+
+```
+docs/
+├── INDEX.md                 # 文档索引
+├── KNOWLEDGE_BASE_GUIDE.md  # 知识库维护指南
+├── algorithm/               # 算法实现文档
+├── design/                  # 设计与规划文档
+├── reference/               # 参考实现文档
+└── papers/                  # 论文PDF和tex源文件
+```
+
+| 目录 | 用途 | 更新时机 |
+|------|------|----------|
+| `docs/algorithm/` | 算法实现文档 | 代码重构时 |
+| `docs/design/` | 设计与规划文档 | 架构变更时 |
+| `docs/reference/` | 参考实现分析 | 研究新方法时 |
+| `docs/papers/` | 论文和tex源文件 | 较少更新 |
+| `experiment_reports/` | 实验报告 | 每次重要实验后 |
+
+**完成重要修改或实验后，必须创建实验报告或者更新知识库**
+
+**重要修改或实验结果，必须对应地更新知识库**
+
+
+```bash
+# 创建实验报告
+touch experiment_reports/$(date +%Y-%m-%d)_experiment_name.md
+```
+
+详细规范见 `docs/KNOWLEDGE_BASE_GUIDE.md`，文档索引见 `docs/INDEX.md`。
 
 ## Version Control
 

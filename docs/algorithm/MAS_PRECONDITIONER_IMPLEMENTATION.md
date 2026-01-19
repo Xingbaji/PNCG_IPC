@@ -744,20 +744,20 @@ def estimate_total_nodes():
 MAS Preconditioner已被重构为模块化包结构 (`algorithm/mas_preconditioner_pkg/`):
 
 ```
-mas_preconditioner_pkg/
-├── __init__.py          # 模块导出
-├── constants.py         # 核心常量 (BANKSIZE=16, MAX_LEVELS=6, SYM_BLOCK_COUNT=136)
-├── core.py              # 主MASPreconditioner类
-├── topology.py          # 网格拓扑和邻居构建
-├── assembly.py          # 矩阵组装 (弹性+接触Hessian)
-├── inversion.py         # 块矩阵求逆算法
-├── schwarz.py           # Schwarz局部求解器
-├── hierarchy.py         # 多级限制与延拓
-├── woodbury.py          # Woodbury低秩更新
-├── metis_integration.py # METIS重排序集成
-├── simple_api.py        # 简化API接口
-├── spmv.py              # 稀疏矩阵向量乘
-└── warp_utils.py        # Warp工具函数
+mas_preconditioner_pkg/  (6092 lines total)
+├── __init__.py          # 模块导出 (109 lines)
+├── constants.py         # 核心常量 (79 lines)
+├── core.py              # 主MASPreconditioner类 (360 lines)
+├── topology.py          # 网格拓扑和邻居构建 (718 lines)
+├── assembly.py          # 矩阵组装 (弹性+接触Hessian) (719 lines)
+├── inversion.py         # 块矩阵求逆算法 (554 lines)
+├── schwarz.py           # Schwarz局部求解器 (374 lines)
+├── hierarchy.py         # 多级限制与延拓 (433 lines)
+├── woodbury.py          # Woodbury低秩更新 (520 lines)
+├── metis_integration.py # METIS重排序集成 (1273 lines)
+├── simple_api.py        # 简化API接口 (349 lines)
+├── spmv.py              # 稀疏矩阵向量乘 (242 lines)
+└── warp_utils.py        # Warp工具函数 (362 lines)
 ```
 
 ### 使用方法
@@ -776,17 +776,43 @@ mas.apply()
 
 ### 测试框架
 
-完整的单元测试框架位于 `n_E_demos/test_mas_pkg_unittest.py`:
+完整的单元测试框架位于 `unittest/` 目录:
 
 ```bash
-# 运行所有测试 (37个)
-python test_mas_pkg_unittest.py
+# 运行所有单元测试
+cd unittest
+python run_all_tests.py
 
-# 性能基准测试
-python test_mas_pkg_unittest.py --benchmark
+# 运行特定测试
+python -m pytest tests/test_mas_ground_truth.py -v
+
+# 测试覆盖率: 20个测试文件, 44.4%通过率
+# 核心测试全部通过: ground_truth, multilevel, simple
 ```
 
-详见: `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md`
+详见: `docs/algorithm/MAS_PRECONDITIONER_PKG_TESTING.md`
+
+---
+
+## 12. Known Issues
+
+### Lane 0 对称性问题 (Critical, 调查中)
+- **现象**: Block(0,0) 对称性误差 ~1.65e+04，其他Lane误差 < 1e-06
+- **影响**: Incomplete Cholesky 分解失败
+- **临时方案**: 使用 Gauss-Jordan 或 One-way GJ 求逆
+- **详情**: `experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md`
+
+### Taichi 编译器兼容性
+- 部分 mesh kernel 触发 `codegen_llvm.cpp` 断言失败
+- 影响测试: test_He_symmetry, test_level0_only, test_diagonal_contrib
+
+### 推荐求逆方法
+| 方法 | 推荐 | 说明 |
+|------|------|------|
+| One-way GJ | ✅ 推荐 | 快速且稳定 |
+| Gauss-Jordan | ✅ 备选 | 更稳定但较慢 |
+| Cholesky | ❌ 不推荐 | 块矩阵非SPD |
+| Incomplete Cholesky | ❌ 不推荐 | 产生NaN |
 
 ---
 
@@ -795,4 +821,5 @@ python test_mas_pkg_unittest.py --benchmark
 1. **StiffGIPC Paper**: "StiffGIPC: Advancing GPU IPC for Stiff Affine-Deformable Simulation"
 2. **CUDA Reference**: `/root/Stiff-GIPC_init/StiffGIPC/MASPreconditioner.cu`
 3. **MAS Original Paper**: Wu et al. 2022, "A GPU-based multilevel additive schwarz preconditioner"
-4. **Testing Documentation**: `ref_doc/MAS_PRECONDITIONER_PKG_TESTING.md`
+4. **Testing Documentation**: `docs/algorithm/MAS_PRECONDITIONER_PKG_TESTING.md`
+5. **Bug Analysis**: `experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md`

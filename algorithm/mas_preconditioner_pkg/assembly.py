@@ -194,6 +194,11 @@ class AssemblyMixin:
                                         for dj in ti.static(range(3)):
                                             ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj],
                                                           sub_block[di, dj])
+                                            # FIX: When mapping to diagonal block (two different fine vertices
+                                            # map to same coarse vertex), add transpose for symmetry
+                                            if coarse_lane_i == coarse_lane_j:
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj],
+                                                              sub_block[dj, di])
                                 else:
                                     # Transpose for lower triangle
                                     sym_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
@@ -297,6 +302,9 @@ class AssemblyMixin:
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
                                             ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], sub_block[di, dj])
+                                            # FIX: When mapping to diagonal block, add transpose for symmetry
+                                            if coarse_lane_i == coarse_lane_j:
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], sub_block[dj, di])
                                 else:
                                     # Transpose for lower triangle
                                     sym_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
@@ -447,6 +455,10 @@ class AssemblyMixin:
                                         for dj in ti.static(range(3)):
                                             val = scale * normal[di] * normal[dj]
                                             ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val)
+                                            # FIX: When mapping to diagonal block, add transpose for symmetry
+                                            if lane_i == lane_j:
+                                                val_t = scale * normal[dj] * normal[di]
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val_t)
                                 else:
                                     sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                                     for di in ti.static(range(3)):
@@ -540,6 +552,10 @@ class AssemblyMixin:
                                         for dj in ti.static(range(3)):
                                             val = scale * normal[di] * normal[dj]
                                             ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val)
+                                            # FIX: When mapping to diagonal block, add transpose for symmetry
+                                            if lane_i == lane_j:
+                                                val_t = scale * normal[dj] * normal[di]
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val_t)
                                 else:
                                     sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                                     for di in ti.static(range(3)):

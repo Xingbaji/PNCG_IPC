@@ -2,16 +2,30 @@
 
 本文档描述了重构后的MAS Preconditioner模块化包(`algorithm/mas_preconditioner_pkg/`)的单元测试框架。
 
+> **最后更新**: 2026-01-19
+
 ## 概述
 
-MAS Preconditioner Package是将原始的`mas_preconditioner.py`(约5000行)重构为模块化目录结构的结果。测试框架用于验证每个模块的正确性和性能。
+MAS Preconditioner Package是将原始的`mas_preconditioner.py`(约5000行)重构为模块化目录结构(6092行)的结果。测试框架用于验证每个模块的正确性和性能。
 
 > **Note:** 原始的单体版本 `mas_preconditioner.py` 已被弃用并移动到 `tmp/` 文件夹。请使用模块化版本 `mas_preconditioner_pkg/`。
 
 ### 测试文件位置
 
+测试框架已迁移到统一的 `unittest/` 目录:
+
 ```
-n_E_demos/test_mas_pkg_unittest.py   # 主测试文件 (974行)
+unittest/
+├── README.md              # 测试说明
+├── TEST_REPORT.md         # 最新测试报告 (44.4% 通过率)
+├── run_all_tests.py       # 主测试运行器
+├── tests/                 # 20个测试文件
+│   ├── test_mas_ground_truth.py   # 核心Ground Truth测试 (22 tests) ✅
+│   ├── test_mas_multilevel.py     # 多层级测试 (25 tests) ✅
+│   ├── test_mas_simple.py         # 简单模拟测试 ✅
+│   ├── test_mas_pkg_unittest.py   # 模块化包单元测试
+│   └── ...
+└── debug/                 # 调试脚本
 ```
 
 ## 模块化包结构
@@ -143,30 +157,33 @@ algorithm/mas_preconditioner_pkg/
 ### 运行所有测试
 
 ```bash
-cd /root/PNCG_IPC/n_E_demos
-python test_mas_pkg_unittest.py
+cd /root/PNCG_IPC/unittest
+python run_all_tests.py
 ```
 
 ### 详细输出
 
 ```bash
-python test_mas_pkg_unittest.py -v
+python run_all_tests.py -v
 ```
 
-### 运行特定测试类
+### 运行特定测试
 
 ```bash
-python -m unittest test_mas_pkg_unittest.TestConstants -v
-python -m unittest test_mas_pkg_unittest.TestWarpUtils -v
-python -m unittest test_mas_pkg_unittest.TestSRBKSpMV -v
+# 运行核心测试套件
+python -m pytest tests/test_mas_ground_truth.py -v
+python -m pytest tests/test_mas_multilevel.py -v
+
+# 运行单元测试
+python -m pytest tests/test_mas_pkg_unittest.py -v
 ```
 
-### 运行性能基准测试
+### 运行调试脚本
 
 ```bash
-python test_mas_pkg_unittest.py --benchmark
-python test_mas_pkg_unittest.py --benchmark --demo cube
-python test_mas_pkg_unittest.py --benchmark --demo eight_E_stiffness_test
+cd /root/PNCG_IPC/unittest/debug
+python debug_sym_expand.py
+python debug_assembly_logic.py
 ```
 
 ## 测试框架设计
@@ -275,24 +292,39 @@ from math_utils.elastic_util import (
 )
 ```
 
-## 测试结果示例
+## 测试结果概要
 
-```
-$ python test_mas_pkg_unittest.py
-.....................................
-----------------------------------------------------------------------
-Ran 37 tests in 9.874s
+### 当前状态 (2026-01-19)
 
-OK
-```
+| 类别 | 通过 | 失败 | 错误 | 总计 |
+|------|------|------|------|------|
+| Core Test Suites | 2 | 0 | 0 | 2 |
+| Functional Validation | 1 | 1 | 1 | 3 |
+| Assembly Tests | 1 | 1 | 1 | 3 |
+| Symmetry Tests | 1 | 0 | 1 | 2 |
+| Hierarchy Tests | 2 | 0 | 1 | 3 |
+| Specific Issue Tests | 1 | 0 | 4 | 5 |
+| **总计** | **8** | **2** | **8** | **18** |
+
+**成功率**: 44.4% (8/18 通过)
+
+### 核心测试全部通过:
+- `test_mas_ground_truth.py`: 22 tests ✅
+- `test_mas_multilevel.py`: 25 tests (6 skipped) ✅
+- `test_mas_simple.py`: 4 frames ✅
+- `test_assembly_logic.py`: 装配逻辑 ✅
+
+### 已知问题
+详见: `unittest/TEST_REPORT.md` 和 `experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md`
 
 ## 相关文档
 
 - [MAS_PRECONDITIONER_IMPLEMENTATION.md](MAS_PRECONDITIONER_IMPLEMENTATION.md) - MAS实现详细文档
-- [CLAUDE.md](../CLAUDE.md) - 项目主文档
-- [MAS_PNCG_clean.tex](MAS_PNCG_clean.tex) - 算法论文
+- [unittest/TEST_REPORT.md](../../unittest/TEST_REPORT.md) - 完整测试报告
+- [experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md](../../experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md) - 对称性问题分析
 
 ## 版本历史
 
-- **2026-01-19**: 创建初始测试框架，37个测试全部通过
-- 修复了3个模块化过程中的遗留问题
+- **2026-01-19**: 测试框架迁移到 `unittest/` 目录，20个测试文件
+- **2026-01-19**: 添加 Ground Truth 测试套件
+- **2026-01-19**: 创建初始测试框架，修复3个模块化遗留问题

@@ -13,7 +13,7 @@ The implementation is split into several modules for better organization:
 - schwarz.py: Schwarz local solvers
 - hierarchy.py: Multi-level restriction/prolongation
 - woodbury.py: Sparse-Input Woodbury updates
-- metis_integration.py: METIS-based reordering
+- metis_integration.py: METIS-based reordering (includes GPU-accelerated pipeline)
 - simple_api.py: Simplified API without meshtaichi
 - spmv.py: SRBK SpMV implementation
 - warp_utils.py: Bit manipulation and warp reduction utilities
@@ -25,7 +25,15 @@ Usage:
     from algorithm.mas_preconditioner_pkg.spmv import SRBKSpMV
     from algorithm.mas_preconditioner_pkg.constants import BANKSIZE
 
+    # METIS reordering functions:
+    from algorithm.mas_preconditioner_pkg.metis_integration import (
+        metis_reorder_mesh,
+        check_pymetis_available,
+        MetisReorderGPU
+    )
+
 Note: The monolithic mas_preconditioner.py has been deprecated and moved to tmp/.
+Note: The standalone metis_reorder.py has been integrated into metis_integration.py.
 """
 
 # Main class export
@@ -48,8 +56,25 @@ from .spmv import SRBKSpMV
 # Warp utilities
 from .warp_utils import WarpReductionHelper
 
+# METIS integration
+from .metis_integration import (
+    metis_reorder_mesh,
+    check_pymetis_available,
+    MetisReorderGPU,
+    METISMixin,
+    apply_metis_reordering_to_mas,
+    # CPU fallback functions
+    build_adjacency_from_cells_cpu,
+    compute_sort_index_cpu,
+    compute_inverse_mapping_cpu,
+    build_partition_mappings_cpu,
+    # File I/O
+    save_partition_file,
+    load_partition_file,
+)
+
 # Module version
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # All public exports
 __all__ = [
@@ -68,4 +93,17 @@ __all__ = [
     # Utilities
     "SRBKSpMV",
     "WarpReductionHelper",
+
+    # METIS integration
+    "metis_reorder_mesh",
+    "check_pymetis_available",
+    "MetisReorderGPU",
+    "METISMixin",
+    "apply_metis_reordering_to_mas",
+    "build_adjacency_from_cells_cpu",
+    "compute_sort_index_cpu",
+    "compute_inverse_mapping_cpu",
+    "build_partition_mappings_cpu",
+    "save_partition_file",
+    "load_partition_file",
 ]

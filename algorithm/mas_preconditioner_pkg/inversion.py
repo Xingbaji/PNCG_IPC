@@ -85,6 +85,35 @@ class InversionMixin:
                                 self.full_block_matrix[block_id, col * 3 + di, row * 3 + dj] = block_3x3[dj, di]
 
     @ti.kernel
+    def _symmetrize_full_block_matrices(self):
+        """
+        Enforce symmetry on full block matrices: A = (A + A^T) / 2.
+        This is a safety net to ensure matrices are symmetric before IC/Cholesky.
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        for block_id in range(n_blocks):
+            for i in range(BLOCK_DOF):
+                for j in range(i + 1, BLOCK_DOF):
+                    avg = 0.5 * (self.full_block_matrix[block_id, i, j] +
+                                 self.full_block_matrix[block_id, j, i])
+                    self.full_block_matrix[block_id, i, j] = avg
+                    self.full_block_matrix[block_id, j, i] = avg
+
+    @ti.kernel
+    def _add_diagonal_regularization(self, epsilon: ti.f32):
+        """
+        Add diagonal regularization to shift eigenvalues positive.
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        for block_id in range(n_blocks):
+            for i in range(BLOCK_DOF):
+                self.full_block_matrix[block_id, i, i] += epsilon
+
+    @ti.kernel
     def _gauss_jordan_invert_blocks(self):
         """
         Invert full 48x48 block matrices using Gauss-Jordan elimination.
@@ -470,7 +499,9 @@ class InversionMixin:
                               use_cholesky: bool = True,
                               use_blocked: bool = False,
                               use_incomplete: bool = False,
-                              use_oneway_gj: bool = False):
+                              use_oneway_gj: bool = False,
+                              force_symmetry: bool = True,
+                              regularization_epsilon: float = 0.0):
         """
         Invert all block matrices on GPU.
 
@@ -480,11 +511,21 @@ class InversionMixin:
             use_blocked: If True, use blocked Cholesky.
             use_incomplete: If True, use Incomplete Cholesky IC(0).
             use_oneway_gj: If True, use One-way Gauss-Jordan (P4 optimization).
+            force_symmetry: If True, symmetrize matrices before inversion.
+            regularization_epsilon: If > 0, add diagonal regularization.
         """
         print("[MAS] Inverting block matrices...")
 
         if use_full_inversion:
             self._expand_sym_to_full()
+
+            # Apply symmetrization as safety net
+            if force_symmetry:
+                self._symmetrize_full_block_matrices()
+
+            # Apply diagonal regularization if requested
+            if regularization_epsilon > 0:
+                self._add_diagonal_regularization(regularization_epsilon)
 
             if use_incomplete:
                 self._incomplete_cholesky_invert_blocks()

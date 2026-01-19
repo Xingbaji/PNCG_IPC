@@ -24,9 +24,9 @@ def test_metis_module():
     print("Test 1: METIS Reordering Module")
     print("="*60)
 
-    from algorithm.metis_reorder import (
+    from algorithm.mas_preconditioner_pkg import (
         check_pymetis_available,
-        build_adjacency_from_cells,
+        build_adjacency_from_cells_cpu as build_adjacency_from_cells,
         metis_reorder_mesh,
         BANKSIZE
     )
@@ -138,9 +138,9 @@ def test_metis_partition_quality():
     print("Test 3: METIS Partition Quality Comparison")
     print("="*60)
 
-    from algorithm.metis_reorder import (
+    from algorithm.mas_preconditioner_pkg import (
         check_pymetis_available,
-        build_adjacency_from_cells,
+        build_adjacency_from_cells_cpu as build_adjacency_from_cells,
         metis_reorder_mesh,
         BANKSIZE
     )
