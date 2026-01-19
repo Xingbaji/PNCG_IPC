@@ -182,15 +182,21 @@ class GCPIndexSolver(pncg_ipc_deformer):
     def __init__(self, demo='eight_E_drop_demo_contact'):
         super().__init__(demo)
 
-        # Standard IPC dHat from model
+        # Standard IPC dHat from model (used for step size clamping)
         self.standard_dHat = self.dHat
 
-        # GCP uses 10x larger epsilon
-        self.gcp_epsilon = self.dHat * 2
+        # GCP epsilon can be larger than dHat for detection range
+        # But step size should still be limited by standard_dHat for safety
+        self.gcp_epsilon = self.dHat * 2.0  # 2x larger detection range
+
+        # Step size limit - CRITICAL for preventing penetration
+        # This should be based on the SMALLER value (standard_dHat) not epsilon
+        self.step_limit = self.standard_dHat
 
         print(f"\n>>> GCP Configuration:")
         print(f"    Standard IPC dHat: {self.standard_dHat}")
-        print(f"    GCP epsilon_target: {self.gcp_epsilon} ({self.gcp_epsilon/self.standard_dHat:.1f}x larger!)")
+        print(f"    GCP epsilon_target: {self.gcp_epsilon} ({self.gcp_epsilon/self.standard_dHat:.1f}x detection range)")
+        print(f"    Step size limit: {self.step_limit} (based on standard dHat)")
         print(f"    Adjacency matrix: NOT NEEDED")
 
         # Initialize GCP module

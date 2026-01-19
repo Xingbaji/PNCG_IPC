@@ -7,7 +7,6 @@ import time
 from algorithm.pncg_base_collision_free import *
 from algorithm.lbvh import LBVH_Triangles, LBVH_Edges
 from math_utils.graphic_util import *
-from math_utils.matrix_util import compute_dtdx_t, compute_d_dtdx
 from util.model_loading import *
 
 
@@ -100,8 +99,8 @@ class collision_detection_bvh_module(pncg_base_deformer):
         self.contact_pairs = self.pair.field(shape=self.MAX_C)
         self.n_contacts = ti.field(dtype=ti.i32, shape=())
 
-        # Stack for BVH traversal (per-thread)
-        self.BVH_STACK_SIZE = 64
+        # Pre-computed BVH AABB gap for broad-phase filtering
+        self.bvh_gap = ti.sqrt(self.dHat)
 
         if self.adj == 1:
             self.define_adj_matrix()
@@ -155,7 +154,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
     def find_constraints_PT_bvh(self):
         """Find Point-Triangle constraints using BVH traversal."""
         INVALID = ti.u32(0xFFFFFFFF)
-        gap = ti.sqrt(self.dHat)
+        gap = self.bvh_gap
 
         # For each boundary point, traverse the triangle BVH
         for pi in range(self.n_boundary_points):
@@ -217,7 +216,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
     def find_constraints_EE_bvh(self):
         """Find Edge-Edge constraints using BVH traversal."""
         INVALID = ti.u32(0xFFFFFFFF)
-        gap = ti.sqrt(self.dHat)
+        gap = self.bvh_gap
         n_edges = self.n_boundary_edges
 
         # For each edge, traverse the edge BVH
@@ -460,17 +459,33 @@ class collision_detection_bvh_module(pncg_base_deformer):
     # ===================== Penetration Detection API =====================
     # Based on GIPC.cu implementation for intersection checking
 
+    @ti.func
+    def _check_edge_tri_leaf(self, edge_idx: ti.i32, t0: ti.i32, t1: ti.i32, t2: ti.i32,
+                              x0: ti.template(), x1: ti.template(), x2: ti.template()) -> ti.i32:
+        """Check if edge intersects triangle (leaf node processing)."""
+        result = 0
+        a0 = self.boundary_edges[edge_idx, 0]
+        a1 = self.boundary_edges[edge_idx, 1]
+        # Skip if edge shares vertex with triangle (adjacent)
+        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
+            x_a0 = self.mesh.verts.x[a0]
+            x_a1 = self.mesh.verts.x[a1]
+            if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
+                result = 1
+        return result
+
     @ti.kernel
-    def check_edge_triangle_intersection_bvh(self) -> ti.i32:
+    def _edge_triangle_intersection_impl(self, count_mode: ti.template()) -> ti.i32:
         """
-        Check if any edge intersects any triangle using BVH traversal.
+        Unified edge-triangle intersection detection using BVH traversal.
         Based on GIPC.cu _edgeTriIntersectionQuery implementation.
 
-        Uses Cramer's rule for exact intersection testing with early exit
-        when segment endpoints are on the same side of the triangle plane.
+        Args:
+            count_mode: If True, count all intersections; if False, early exit on first
 
         Returns:
-            1 if any intersection found, 0 otherwise
+            count_mode=False: 1 if any intersection found, 0 otherwise
+            count_mode=True: total number of intersections
         """
         INVALID = ti.u32(0xFFFFFFFF)
         result = 0
@@ -478,7 +493,12 @@ class collision_detection_bvh_module(pncg_base_deformer):
 
         # For each triangle, traverse the edge BVH to find potential intersections
         for ti_idx in range(self.n_boundary_triangles):
-            if result == 0:  # Early exit if intersection already found
+            # Early exit check (only for check mode)
+            should_process = True
+            if ti.static(not count_mode):
+                should_process = (result == 0)
+
+            if should_process:
                 t0 = self.boundary_triangles[ti_idx, 0]
                 t1 = self.boundary_triangles[ti_idx, 1]
                 t2 = self.boundary_triangles[ti_idx, 2]
@@ -496,7 +516,12 @@ class collision_detection_bvh_module(pncg_base_deformer):
                 stack[stack_ptr] = 0  # Start from root
                 stack_ptr += 1
 
-                while stack_ptr > 0 and result == 0:
+                while stack_ptr > 0:
+                    # Early exit in check mode
+                    if ti.static(not count_mode):
+                        if result != 0:
+                            break
+
                     stack_ptr -= 1
                     node_id = stack[stack_ptr]
 
@@ -508,15 +533,8 @@ class collision_detection_bvh_module(pncg_base_deformer):
                         element_idx = self.bvh_edges.element_idx[L_idx]
                         if element_idx != INVALID:
                             # Leaf node - check edge-triangle intersection
-                            edge_idx = element_idx
-                            a0 = self.boundary_edges[edge_idx, 0]
-                            a1 = self.boundary_edges[edge_idx, 1]
-                            # Skip if edge shares vertex with triangle (adjacent)
-                            if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                                x_a0 = self.mesh.verts.x[a0]
-                                x_a1 = self.mesh.verts.x[a1]
-                                if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                    result = 1
+                            if self._check_edge_tri_leaf(element_idx, t0, t1, t2, x0, x1, x2):
+                                ti.atomic_add(result, 1)
                         else:
                             # Internal node - push to stack
                             if stack_ptr < 63:
@@ -524,19 +542,12 @@ class collision_detection_bvh_module(pncg_base_deformer):
                                 stack_ptr += 1
 
                     # Check right child
-                    if result == 0 and self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
+                    if self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
                         element_idx = self.bvh_edges.element_idx[R_idx]
                         if element_idx != INVALID:
                             # Leaf node - check edge-triangle intersection
-                            edge_idx = element_idx
-                            a0 = self.boundary_edges[edge_idx, 0]
-                            a1 = self.boundary_edges[edge_idx, 1]
-                            # Skip if edge shares vertex with triangle (adjacent)
-                            if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                                x_a0 = self.mesh.verts.x[a0]
-                                x_a1 = self.mesh.verts.x[a1]
-                                if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                    result = 1
+                            if self._check_edge_tri_leaf(element_idx, t0, t1, t2, x0, x1, x2):
+                                ti.atomic_add(result, 1)
                         else:
                             # Internal node - push to stack
                             if stack_ptr < 63:
@@ -544,6 +555,13 @@ class collision_detection_bvh_module(pncg_base_deformer):
                                 stack_ptr += 1
 
         return result
+
+    def check_edge_triangle_intersection_bvh(self) -> int:
+        """
+        Check if any edge intersects any triangle using BVH traversal.
+        Returns 1 if any intersection found, 0 otherwise.
+        """
+        return self._edge_triangle_intersection_impl(count_mode=False)
 
     @ti.kernel
     def check_ground_intersection(self, ground_normal: ti.template(), ground_offset: ti.f32) -> ti.i32:
@@ -612,8 +630,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
                 print("[Penetration Check] PASSED - No penetration detected.")
         return result
 
-    @ti.kernel
-    def count_edge_triangle_intersections(self) -> ti.i32:
+    def count_edge_triangle_intersections(self) -> int:
         """
         Count the total number of edge-triangle intersections.
         Useful for debugging and analysis.
@@ -621,66 +638,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
         Returns:
             Number of edge-triangle intersections
         """
-        INVALID = ti.u32(0xFFFFFFFF)
-        count = 0
-        gap = 0.0
-
-        for ti_idx in range(self.n_boundary_triangles):
-            t0 = self.boundary_triangles[ti_idx, 0]
-            t1 = self.boundary_triangles[ti_idx, 1]
-            t2 = self.boundary_triangles[ti_idx, 2]
-            x0 = self.mesh.verts.x[t0]
-            x1 = self.mesh.verts.x[t1]
-            x2 = self.mesh.verts.x[t2]
-
-            tri_lower = ti.min(ti.min(x0, x1), x2)
-            tri_upper = ti.max(ti.max(x0, x1), x2)
-
-            stack = ti.Vector.zero(ti.u32, 64)
-            stack_ptr = 0
-            stack[stack_ptr] = 0
-            stack_ptr += 1
-
-            while stack_ptr > 0:
-                stack_ptr -= 1
-                node_id = stack[stack_ptr]
-
-                L_idx = self.bvh_edges.left_idx[node_id]
-                R_idx = self.bvh_edges.right_idx[node_id]
-
-                if self._aabb_overlap_with_tri(tri_lower, tri_upper, L_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[L_idx]
-                    if element_idx != INVALID:
-                        edge_idx = element_idx
-                        a0 = self.boundary_edges[edge_idx, 0]
-                        a1 = self.boundary_edges[edge_idx, 1]
-                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                            x_a0 = self.mesh.verts.x[a0]
-                            x_a1 = self.mesh.verts.x[a1]
-                            if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                ti.atomic_add(count, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = L_idx
-                            stack_ptr += 1
-
-                if self._aabb_overlap_with_tri(tri_lower, tri_upper, R_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[R_idx]
-                    if element_idx != INVALID:
-                        edge_idx = element_idx
-                        a0 = self.boundary_edges[edge_idx, 0]
-                        a1 = self.boundary_edges[edge_idx, 1]
-                        if a0 != t0 and a0 != t1 and a0 != t2 and a1 != t0 and a1 != t1 and a1 != t2:
-                            x_a0 = self.mesh.verts.x[a0]
-                            x_a1 = self.mesh.verts.x[a1]
-                            if segment_triangle_intersect_cramer(x_a0, x_a1, x0, x1, x2):
-                                ti.atomic_add(count, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = R_idx
-                            stack_ptr += 1
-
-        return count
+        return self._edge_triangle_intersection_impl(count_mode=True)
 
     @ti.kernel
     def count_ground_penetrations(self, ground_normal: ti.template(), ground_offset: ti.f32) -> ti.i32:
@@ -749,7 +707,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
         """Assign adjacency matrix for PT pairs using BVH."""
         INVALID = ti.u32(0xFFFFFFFF)
         n_PT = 0
-        gap = ti.sqrt(self.dHat)
+        gap = self.bvh_gap
 
         for pi in range(self.n_boundary_points):
             p = self.boundary_points[pi]
@@ -765,46 +723,31 @@ class collision_detection_bvh_module(pncg_base_deformer):
                 stack_ptr -= 1
                 node_id = stack[stack_ptr]
 
-                L_idx = self.bvh_triangles.left_idx[node_id]
-                R_idx = self.bvh_triangles.right_idx[node_id]
-
-                if self.bvh_triangles.aabb_overlap_point(xp, L_idx, gap):
-                    element_idx = self.bvh_triangles.element_idx[L_idx]
-                    if element_idx != INVALID:
-                        i = element_idx
-                        t0 = self.boundary_triangles[i, 0]
-                        t1 = self.boundary_triangles[i, 1]
-                        t2 = self.boundary_triangles[i, 2]
-                        x0 = self.mesh.verts.x[t0]
-                        x1 = self.mesh.verts.x[t1]
-                        x2 = self.mesh.verts.x[t2]
-                        if point_triangle_ccd_broadphase(xp, x0, x1, x2, 1.0 * self.dHat) and p != t0 and p != t1 and p != t2:
-                            hash_index = self._hash_for_adj(p, i)
-                            self.adj_matrix[hash_index] = 1
-                            ti.atomic_add(n_PT, 1)
+                # Process both children in a loop
+                for child_idx in ti.static(range(2)):
+                    if child_idx == 0:
+                        idx = self.bvh_triangles.left_idx[node_id]
                     else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = L_idx
-                            stack_ptr += 1
+                        idx = self.bvh_triangles.right_idx[node_id]
 
-                if self.bvh_triangles.aabb_overlap_point(xp, R_idx, gap):
-                    element_idx = self.bvh_triangles.element_idx[R_idx]
-                    if element_idx != INVALID:
-                        i = element_idx
-                        t0 = self.boundary_triangles[i, 0]
-                        t1 = self.boundary_triangles[i, 1]
-                        t2 = self.boundary_triangles[i, 2]
-                        x0 = self.mesh.verts.x[t0]
-                        x1 = self.mesh.verts.x[t1]
-                        x2 = self.mesh.verts.x[t2]
-                        if point_triangle_ccd_broadphase(xp, x0, x1, x2, 1.0 * self.dHat) and p != t0 and p != t1 and p != t2:
-                            hash_index = self._hash_for_adj(p, i)
-                            self.adj_matrix[hash_index] = 1
-                            ti.atomic_add(n_PT, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = R_idx
-                            stack_ptr += 1
+                    if self.bvh_triangles.aabb_overlap_point(xp, idx, gap):
+                        element_idx = self.bvh_triangles.element_idx[idx]
+                        if element_idx != INVALID:
+                            i = element_idx
+                            t0 = self.boundary_triangles[i, 0]
+                            t1 = self.boundary_triangles[i, 1]
+                            t2 = self.boundary_triangles[i, 2]
+                            x0 = self.mesh.verts.x[t0]
+                            x1 = self.mesh.verts.x[t1]
+                            x2 = self.mesh.verts.x[t2]
+                            if point_triangle_ccd_broadphase(xp, x0, x1, x2, 1.0 * self.dHat) and p != t0 and p != t1 and p != t2:
+                                hash_index = self._hash_for_adj(p, i)
+                                self.adj_matrix[hash_index] = 1
+                                ti.atomic_add(n_PT, 1)
+                        else:
+                            if stack_ptr < 63:
+                                stack[stack_ptr] = idx
+                                stack_ptr += 1
 
         print('n_PT', n_PT)
 
@@ -813,7 +756,7 @@ class collision_detection_bvh_module(pncg_base_deformer):
         """Assign adjacency matrix for EE pairs using BVH."""
         INVALID = ti.u32(0xFFFFFFFF)
         n_EE = 0
-        gap = ti.sqrt(self.dHat)
+        gap = self.bvh_gap
         n_edges = self.n_boundary_edges
 
         for ei in range(n_edges):
@@ -835,43 +778,29 @@ class collision_detection_bvh_module(pncg_base_deformer):
                 stack_ptr -= 1
                 node_id = stack[stack_ptr]
 
-                L_idx = self.bvh_edges.left_idx[node_id]
-                R_idx = self.bvh_edges.right_idx[node_id]
-
-                if self._aabb_overlap_with_edge(edge_lower, edge_upper, L_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[L_idx]
-                    if element_idx != INVALID:
-                        ej = element_idx
-                        if ei < ej:
-                            b0 = self.boundary_edges[ej, 0]
-                            b1 = self.boundary_edges[ej, 1]
-                            x_b0 = self.mesh.verts.x[b0]
-                            x_b1 = self.mesh.verts.x[b1]
-                            if edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, 1.0 * self.dHat) and a0 != b0 and a1 != b1 and a0 != b1 and a1 != b0:
-                                hash_index = self._hash_for_adj(self.n_verts + ei, ej)
-                                self.adj_matrix[hash_index] = 1
-                                ti.atomic_add(n_EE, 1)
+                # Process both children in a loop
+                for child_idx in ti.static(range(2)):
+                    if child_idx == 0:
+                        idx = self.bvh_edges.left_idx[node_id]
                     else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = L_idx
-                            stack_ptr += 1
+                        idx = self.bvh_edges.right_idx[node_id]
 
-                if self._aabb_overlap_with_edge(edge_lower, edge_upper, R_idx, gap):
-                    element_idx = self.bvh_edges.element_idx[R_idx]
-                    if element_idx != INVALID:
-                        ej = element_idx
-                        if ei < ej:
-                            b0 = self.boundary_edges[ej, 0]
-                            b1 = self.boundary_edges[ej, 1]
-                            x_b0 = self.mesh.verts.x[b0]
-                            x_b1 = self.mesh.verts.x[b1]
-                            if edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, 1.0 * self.dHat) and a0 != b0 and a1 != b1 and a0 != b1 and a1 != b0:
-                                hash_index = self._hash_for_adj(self.n_verts + ei, ej)
-                                self.adj_matrix[hash_index] = 1
-                                ti.atomic_add(n_EE, 1)
-                    else:
-                        if stack_ptr < 63:
-                            stack[stack_ptr] = R_idx
-                            stack_ptr += 1
+                    if self._aabb_overlap_with_edge(edge_lower, edge_upper, idx, gap):
+                        element_idx = self.bvh_edges.element_idx[idx]
+                        if element_idx != INVALID:
+                            ej = element_idx
+                            if ei < ej:
+                                b0 = self.boundary_edges[ej, 0]
+                                b1 = self.boundary_edges[ej, 1]
+                                x_b0 = self.mesh.verts.x[b0]
+                                x_b1 = self.mesh.verts.x[b1]
+                                if edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, 1.0 * self.dHat) and a0 != b0 and a1 != b1 and a0 != b1 and a1 != b0:
+                                    hash_index = self._hash_for_adj(self.n_verts + ei, ej)
+                                    self.adj_matrix[hash_index] = 1
+                                    ti.atomic_add(n_EE, 1)
+                        else:
+                            if stack_ptr < 63:
+                                stack[stack_ptr] = idx
+                                stack_ptr += 1
 
         print('n_EE', n_EE)

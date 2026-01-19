@@ -545,7 +545,7 @@ class model_loading:
         elif demo == 'eight_E_stiffness_test':
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
-                'epsilon': 1e-4, 'iter_max': 200, 'height': 0.5,
+                'epsilon': 1e-4, 'iter_max': 50, 'height': 0.5,
                 'dHat': 0.025, 'kappa': 0.5, 'elastic_type': 'SNH', 'adj': 0, 'ground_barrier': 1,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],

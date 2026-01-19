@@ -16,10 +16,10 @@ ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False,
 from util.model_loading import model_loading
 
 
-def benchmark_mas(demo_name='cube_10', n_iterations=5, use_optimized=True, use_cholesky=True):
+def benchmark_mas(demo_name='cube_10', n_iterations=5, use_optimized=True, use_cholesky=True, use_parallel_solve=False):
     """Benchmark MAS preconditioner on a given demo."""
     print(f"\n{'='*70}")
-    print(f"MAS Benchmark: {demo_name} (optimized={use_optimized}, cholesky={use_cholesky})")
+    print(f"MAS Benchmark: {demo_name} (optimized={use_optimized}, cholesky={use_cholesky}, parallel_solve={use_parallel_solve})")
     print(f"{'='*70}")
 
     # Load model
@@ -122,7 +122,7 @@ def benchmark_mas(demo_name='cube_10', n_iterations=5, use_optimized=True, use_c
 
     ti.sync()
     t0 = time.perf_counter()
-    mas.apply(use_full_solve=True)
+    mas.apply(use_full_solve=True, use_parallel_solve=use_parallel_solve)
     ti.sync()
     first_apply = (time.perf_counter() - t0) * 1000
     print(f"    Apply: {first_apply:.2f} ms")
@@ -157,7 +157,7 @@ def benchmark_mas(demo_name='cube_10', n_iterations=5, use_optimized=True, use_c
 
         ti.sync()
         t0 = time.perf_counter()
-        mas.apply(use_full_solve=True)
+        mas.apply(use_full_solve=True, use_parallel_solve=use_parallel_solve)
         ti.sync()
         apply_times.append((time.perf_counter() - t0) * 1000)
 
@@ -193,6 +193,7 @@ def benchmark_mas(demo_name='cube_10', n_iterations=5, use_optimized=True, use_c
         'levels': mas.actual_levels,
         'optimized': use_optimized,
         'cholesky': use_cholesky,
+        'parallel_solve': use_parallel_solve,
         'hierarchy_ms': hierarchy_time,
         'assemble_ms': assemble_avg,
         'invert_ms': invert_avg,
@@ -208,7 +209,9 @@ if __name__ == '__main__':
     parser.add_argument('--demo', type=str, default='cube_10', help='Demo name')
     parser.add_argument('--iterations', type=int, default=5, help='Number of benchmark iterations')
     parser.add_argument('--compare', action='store_true', help='Compare Cholesky vs Gauss-Jordan')
+    parser.add_argument('--compare-solve', action='store_true', help='Compare Sequential vs Parallel solve')
     parser.add_argument('--gauss-jordan', action='store_true', help='Use Gauss-Jordan instead of Cholesky')
+    parser.add_argument('--parallel-solve', action='store_true', help='Use parallel local solve with atomics')
     args = parser.parse_args()
 
     if args.compare:
@@ -237,10 +240,39 @@ if __name__ == '__main__':
 
         print(f"\nSPD check: Cholesky={'PASS' if result_cholesky['spd_pass'] else 'FAIL'}, "
               f"GJ={'PASS' if result_gj['spd_pass'] else 'FAIL'}")
+
+    elif args.compare_solve:
+        # Compare Sequential vs Parallel solve
+        print("\n" + "="*70)
+        print("COMPARISON: Sequential vs Parallel Local Solve")
+        print("="*70)
+
+        result_seq = benchmark_mas(args.demo, args.iterations, use_optimized=True, use_cholesky=True, use_parallel_solve=False)
+
+        print("\n\n--- Running Parallel solve comparison ---\n")
+
+        result_par = benchmark_mas(args.demo, args.iterations, use_optimized=True, use_cholesky=True, use_parallel_solve=True)
+
+        print(f"\n{'='*70}")
+        print("COMPARISON SUMMARY")
+        print(f"{'='*70}")
+        print(f"{'Kernel':<15} {'Sequential':<15} {'Parallel':<15} {'Speedup':<10}")
+        print("-" * 55)
+        for key in ['assemble_ms', 'invert_ms', 'apply_ms', 'total_ms']:
+            seq_val = result_seq[key]
+            par_val = result_par[key]
+            speedup = seq_val / par_val if par_val > 0 else 0
+            name = key.replace('_ms', '')
+            print(f"{name:<15} {seq_val:<15.2f} {par_val:<15.2f} {speedup:<10.2f}x")
+
+        print(f"\nSPD check: Sequential={'PASS' if result_seq['spd_pass'] else 'FAIL'}, "
+              f"Parallel={'PASS' if result_par['spd_pass'] else 'FAIL'}")
+
     else:
         # Single benchmark
         use_cholesky = not args.gauss_jordan
-        result = benchmark_mas(args.demo, args.iterations, use_optimized=True, use_cholesky=use_cholesky)
+        result = benchmark_mas(args.demo, args.iterations, use_optimized=True,
+                              use_cholesky=use_cholesky, use_parallel_solve=args.parallel_solve)
 
         print(f"\n{'='*70}")
         print("BENCHMARK SUMMARY")
@@ -249,6 +281,7 @@ if __name__ == '__main__':
         print(f"Vertices: {result['n_verts']}, Cells: {result['n_cells']}")
         print(f"Levels: {result['levels']}")
         print(f"Inversion method: {'Cholesky' if use_cholesky else 'Gauss-Jordan'}")
+        print(f"Solve method: {'Parallel' if args.parallel_solve else 'Sequential'}")
         print(f"Total time: {result['total_ms']:.2f} ms")
         print(f"  - Assemble: {result['assemble_ms']:.2f} ms")
         print(f"  - Invert: {result['invert_ms']:.2f} ms")

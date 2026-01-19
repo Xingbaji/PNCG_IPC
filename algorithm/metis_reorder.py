@@ -226,8 +226,11 @@ class MetisReorderGPU:
 
         Following the reference implementation in gl_main.cu:setMAS_partition()
 
-        partId_map_real[part_id * BANKSIZE + local_idx] = vertex_id
-        real_map_partId[vertex_id] = part_id * BANKSIZE + local_idx
+        partId_map_real[part_id * BANKSIZE + local_idx] = original_vertex_id
+        real_map_partId[original_vertex_id] = part_id * BANKSIZE + local_idx
+
+        NOTE: Both mappings use ORIGINAL vertex indices (not sorted indices)
+        to allow direct access in MAS preconditioner without index conversion.
         """
         n_parts = self.n_partitions[None]
 
@@ -239,7 +242,7 @@ class MetisReorderGPU:
         for p in range(n_parts):
             self.local_index[p] = 0
 
-        # Build mappings - iterate in sorted order
+        # Build mappings - iterate in sorted order to ensure consistent lane assignment
         for sorted_idx in range(self.n_verts):
             # Get original vertex ID
             orig_id = self.sort_index[sorted_idx]
@@ -249,11 +252,11 @@ class MetisReorderGPU:
             local_idx = ti.atomic_add(self.local_index[part_id], 1)
 
             if local_idx < BANKSIZE:
-                # Map: (partition_id, local_index) -> sorted vertex index
-                self.partId_map_real[part_id * BANKSIZE + local_idx] = sorted_idx
+                # Map: (partition_id, local_index) -> ORIGINAL vertex index
+                self.partId_map_real[part_id * BANKSIZE + local_idx] = orig_id
 
-                # Reverse map: sorted vertex index -> (partition_id, local_index)
-                self.real_map_partId[sorted_idx] = part_id * BANKSIZE + local_idx
+                # Reverse map: ORIGINAL vertex index -> (partition_id, local_index)
+                self.real_map_partId[orig_id] = part_id * BANKSIZE + local_idx
 
     @ti.kernel
     def _reorder_cells(self):
@@ -518,21 +521,38 @@ def compute_inverse_mapping_cpu(sort_index: np.ndarray) -> np.ndarray:
 
 def build_partition_mappings_cpu(partition: np.ndarray,
                                   sort_index: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Build partition mappings on CPU."""
-    n_verts = len(partition)
+    """
+    Build partition mappings on CPU.
+
+    Both mappings use ORIGINAL vertex indices (not sorted indices)
+    to allow direct access in MAS preconditioner without index conversion.
+
+    Args:
+        partition: Partition IDs for each vertex (in original vertex order)
+        sort_index: sort_index[sorted_pos] = original_vertex_id
+
+    Returns:
+        partId_map_real: partId_map_real[part_id * BANKSIZE + lane] = original_vertex_id
+        real_map_partId: real_map_partId[original_vertex_id] = part_id * BANKSIZE + lane
+    """
+    n_verts = len(sort_index)
     n_parts = int(np.max(partition)) + 1
 
     partId_map_real = np.full(n_parts * BANKSIZE, -1, dtype=np.int32)
     real_map_partId = np.zeros(n_verts, dtype=np.int32)
     local_index = np.zeros(n_parts, dtype=np.int32)
 
-    for i in range(n_verts):
-        part_id = partition[i]
+    # Iterate in sorted order to ensure consistent lane assignment
+    for sorted_idx in range(n_verts):
+        orig_id = sort_index[sorted_idx]
+        part_id = partition[sorted_idx]  # partition is already in sorted order
         local_idx = local_index[part_id]
 
-        partId_map_real[part_id * BANKSIZE + local_idx] = i
-        real_map_partId[i] = part_id * BANKSIZE + local_idx
-        local_index[part_id] += 1
+        if local_idx < BANKSIZE:
+            # Map using ORIGINAL vertex indices
+            partId_map_real[part_id * BANKSIZE + local_idx] = orig_id
+            real_map_partId[orig_id] = part_id * BANKSIZE + local_idx
+            local_index[part_id] += 1
 
     return partId_map_real, real_map_partId
 

@@ -35,9 +35,10 @@ SYM_BLOCK_COUNT = BANKSIZE * (BANKSIZE + 1) // 2  # = 136 for symmetric storage
 MAX_NEIGHBORS_PER_VERTEX = 64
 BLOCK_DOF = BANKSIZE * 3  # 48 DOFs per block
 
-# SharedArray optimization constants
-USE_SHARED_MEMORY_OPT = True  # Enable SharedArray-based reduction
-THREADS_PER_BLOCK = 64        # Threads per CUDA block for reduction kernel
+# Warp-level optimization constants
+# Note: ti.simt.block.SharedArray is NOT supported in Taichi 1.7.4
+# We use field-based warp reduction instead
+WARP_REDUCTION_ENABLED = True  # Enable warp-level reduction optimization
 
 
 @ti.data_oriented
@@ -77,18 +78,19 @@ class MASPreconditioner:
         self._allocate_matrix_structures()
         self._allocate_preconditioning_buffers()
 
-        # Build static neighbor list from mesh topology
-        self._build_neighbor_list_from_mesh()
+        # Build static neighbor list from mesh topology (only if mesh is provided)
+        if mesh is not None:
+            self._build_neighbor_list_from_mesh()
 
-        # Initialize METIS reordering by default
-        if use_metis:
-            if cells_np is not None:
-                # Use provided cells directly
-                vertices_np = self.mesh.get_position_as_numpy()
-                self.init_metis_reordering(cells_np, vertices_np)
-            else:
-                # Extract cells from mesh
-                self._init_metis_from_mesh()
+            # Initialize METIS reordering by default
+            if use_metis:
+                if cells_np is not None:
+                    # Use provided cells directly
+                    vertices_np = self.mesh.get_position_as_numpy()
+                    self.init_metis_reordering(cells_np, vertices_np)
+                else:
+                    # Extract cells from mesh
+                    self._init_metis_from_mesh()
 
         # State tracking
         self.hierarchy_built = False
@@ -188,16 +190,16 @@ class MASPreconditioner:
 
         # Block matrices: symmetric storage (upper triangle)
         # Each block is BANKSIZE x BANKSIZE vertices = 136 entries of 3x3 matrices
-        self.block_matrices = ti.Matrix.field(3, 3, dtype=ti.f64,
+        self.block_matrices = ti.Matrix.field(3, 3, dtype=ti.f32,
                                                shape=(self.total_blocks, SYM_BLOCK_COUNT))
 
-        # Inverted block matrices (single precision for speed)
+        # Inverted block matrices (single precision)
         self.inv_block_matrices = ti.Matrix.field(3, 3, dtype=ti.f32,
                                                    shape=(self.total_blocks, SYM_BLOCK_COUNT))
 
         # Full 48x48 block matrices for Gauss-Jordan inversion
         # Store as dense matrix for each block (used during inversion)
-        self.full_block_matrix = ti.field(dtype=ti.f64,
+        self.full_block_matrix = ti.field(dtype=ti.f32,
                                           shape=(self.total_blocks, BLOCK_DOF, BLOCK_DOF))
         self.full_block_inverse = ti.field(dtype=ti.f32,
                                             shape=(self.total_blocks, BLOCK_DOF, BLOCK_DOF))
@@ -240,12 +242,25 @@ class MASPreconditioner:
     def _allocate_preconditioning_buffers(self):
         """Allocate buffers for restrict/solve/prolong operations."""
         # Multi-level residual (restricted gradient at each level)
-        self.multi_level_r = ti.Vector.field(3, dtype=ti.f64,
+        self.multi_level_r = ti.Vector.field(3, dtype=ti.f32,
                                               shape=self.total_nodes_all_levels)
 
         # Multi-level solution (z at each level before prolongation)
-        self.multi_level_z = ti.Vector.field(3, dtype=ti.f64,
+        self.multi_level_z = ti.Vector.field(3, dtype=ti.f32,
                                               shape=self.total_nodes_all_levels)
+
+        # P1 Optimization: Warp-level reduction buffers
+        # For fully-connected warps (prefix==1), we use parallel reduction
+        # For multi-component warps, we use elected-node accumulation
+        n_warps = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Warp sum buffer: stores the sum of residuals for each warp's elected nodes
+        # Shape: [n_warps, BANKSIZE, 3] - each lane can be an elected node
+        self.warp_sum_buffer = ti.field(dtype=ti.f32, shape=(n_warps, BANKSIZE, 3))
+
+        # Warp prefix cache: stores prefix_original[warp_id] for fast access
+        # prefix==1 means fully connected warp (can use fast reduction)
+        self.warp_prefix_cache = ti.field(dtype=ti.i32, shape=n_warps)
 
     def _build_neighbor_list_from_mesh(self):
         """Build neighbor list from mesh cell-vertex connectivity using Taichi."""
@@ -899,6 +914,9 @@ class MASPreconditioner:
         # Build aggregation table for fast prolongation
         self._build_aggregation_table()
 
+        # P1 Optimization: Cache warp prefix values for fast access during restriction
+        self._cache_warp_prefix()
+
         print(f"[MAS] Hierarchy built with {actual_levels} levels")
 
         self.hierarchy_built = True
@@ -973,7 +991,7 @@ class MASPreconditioner:
     def _clear_block_matrices(self):
         """Zero out all block matrices."""
         for block_id, sym_idx in ti.ndrange(self.total_blocks, SYM_BLOCK_COUNT):
-            self.block_matrices[block_id, sym_idx] = ti.Matrix.zero(ti.f64, 3, 3)
+            self.block_matrices[block_id, sym_idx] = ti.Matrix.zero(ti.f32, 3, 3)
 
     @ti.func
     def _sym_index(self, row: ti.i32, col: ti.i32) -> ti.i32:
@@ -986,7 +1004,7 @@ class MASPreconditioner:
         return BANKSIZE * r - r * (r + 1) // 2 + c
 
     @ti.kernel
-    def _add_inertia_contribution(self, dt: ti.f64):
+    def _add_inertia_contribution(self, dt: ti.f32):
         """Add mass matrix to diagonal blocks."""
         for idx in range(self.n_verts):
             warp_id = idx // BANKSIZE
@@ -1004,7 +1022,7 @@ class MASPreconditioner:
                 ti.atomic_add(self.block_matrices[warp_id, sym_idx][d, d], mass_val)
 
     @ti.kernel
-    def _add_elastic_contribution_full_optimized(self, mu: ti.f64, la: ti.f64, dt: ti.f64,
+    def _add_elastic_contribution_full_optimized(self, mu: ti.f32, la: ti.f32, dt: ti.f32,
                                                    elastic_type: ti.i32):
         """
         Optimized elastic Hessian assembly with reduced branching and local accumulation.
@@ -1049,7 +1067,7 @@ class MASPreconditioner:
             dFdx = compute_dFdx(B)
 
             # Compute d2PsidF2 (9x9 matrix) based on elastic type
-            d2PsidF2 = ti.Matrix.zero(ti.f64, 9, 9)
+            d2PsidF2 = ti.Matrix.zero(ti.f32, 9, 9)
             if elastic_type == 0:  # ARAP
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
             elif elastic_type == 1:  # SNH
@@ -1076,7 +1094,7 @@ class MASPreconditioner:
                     if warp_i == warp_j:
                         # Same warp: direct assembly to Level 0 block
                         # Pre-compute 3x3 sub-block to reduce atomic operations
-                        sub_block = ti.Matrix.zero(ti.f64, 3, 3)
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
                         for di in ti.static(range(3)):
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
@@ -1100,7 +1118,7 @@ class MASPreconditioner:
                         vert_j = v_ids[j]
 
                         # Pre-compute sub-block once
-                        sub_block = ti.Matrix.zero(ti.f64, 3, 3)
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
                         for di in ti.static(range(3)):
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
@@ -1134,7 +1152,7 @@ class MASPreconditioner:
                                 break
 
     @ti.kernel
-    def _add_elastic_contribution_full(self, mu: ti.f64, la: ti.f64, dt: ti.f64,
+    def _add_elastic_contribution_full(self, mu: ti.f32, la: ti.f32, dt: ti.f32,
                                         elastic_type: ti.i32):
         """
         Add full elastic Hessian contribution with proper off-diagonal coupling.
@@ -1168,7 +1186,7 @@ class MASPreconditioner:
 
             # Compute d2PsidF2 (9x9 matrix) based on elastic type
             # Use _filter versions to ensure SPD (project negative eigenvalues)
-            d2PsidF2 = ti.Matrix.zero(ti.f64, 9, 9)
+            d2PsidF2 = ti.Matrix.zero(ti.f32, 9, 9)
             if elastic_type == 0:  # ARAP
                 d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
             elif elastic_type == 1:  # SNH
@@ -1252,7 +1270,7 @@ class MASPreconditioner:
                                 break
 
     @ti.kernel
-    def _add_elastic_contribution_approx(self, mu: ti.f64, la: ti.f64, dt: ti.f64):
+    def _add_elastic_contribution_approx(self, mu: ti.f32, la: ti.f32, dt: ti.f32):
         """
         Add approximate elastic Hessian contribution using diagonal approximation.
         This is a simplified fallback version that adds stiffness to diagonal blocks.
@@ -1305,7 +1323,7 @@ class MASPreconditioner:
                                           coupling)
 
     @ti.kernel
-    def _add_regularization(self, epsilon: ti.f64):
+    def _add_regularization(self, epsilon: ti.f32):
         """Add small regularization to diagonal for numerical stability."""
         n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
 
@@ -1321,7 +1339,7 @@ class MASPreconditioner:
                             self.block_matrices[block_id, sym_idx][d, d] = epsilon
 
     @ti.kernel
-    def _add_ipc_contact_contribution(self, cid: ti.template(), dHat: ti.f64, kappa: ti.f64):
+    def _add_ipc_contact_contribution(self, cid: ti.template(), dHat: ti.f32, kappa: ti.f32):
         """
         Add IPC barrier Hessian contribution from contact pairs to block matrices.
 
@@ -1446,7 +1464,7 @@ class MASPreconditioner:
     @ti.kernel
     def _add_ipc_contact_contribution_compact_kernel(self, contact_pairs: ti.template(),
                                                       n_contacts: ti.i32,
-                                                      dHat: ti.f64, kappa: ti.f64):
+                                                      dHat: ti.f32, kappa: ti.f32):
         """
         Kernel for IPC contact Hessian using compact array (P0 optimization).
         Uses sequential array iteration instead of sparse dictionary traversal.
@@ -1573,7 +1591,7 @@ class MASPreconditioner:
                     mat3 = self.block_matrices[block_id, sym_idx]
 
                     # Skip if matrix is essentially zero
-                    mat_norm = ti.f64(0.0)
+                    mat_norm = ti.f32(0.0)
                     for di in ti.static(range(3)):
                         for dj in ti.static(range(3)):
                             mat_norm += ti.abs(mat3[di, dj])
@@ -1616,7 +1634,7 @@ class MASPreconditioner:
                                         ti.atomic_add(self.block_matrices[coarse_block_c, coarse_sym_idx][di, dj], mat3[dj, di])
 
     @ti.kernel
-    def _add_regularization_coarse(self, epsilon: ti.f64, level_num: ti.i32):
+    def _add_regularization_coarse(self, epsilon: ti.f32, level_num: ti.i32):
         """Add regularization to coarse-level diagonal blocks."""
         for level in range(1, level_num):
             level_offset = self.level_size[level][1]
@@ -1661,10 +1679,8 @@ class MASPreconditioner:
 
         # Add elastic contribution
         if use_full_hessian:
-            # Check if we should use optimized kernel
-            use_opt = (use_optimized_kernel and
-                       USE_SHARED_MEMORY_OPT and
-                       self._is_cuda_backend())
+            # Check if we should use optimized kernel (reduced branching, local accumulation)
+            use_opt = use_optimized_kernel and self._is_cuda_backend()
 
             if use_opt:
                 # Use optimized kernel with reduced branching and local accumulation
@@ -1724,7 +1740,7 @@ class MASPreconditioner:
         det = m.determinant()
         if ti.abs(det) < 1e-12:
             # Return identity for singular matrix
-            return ti.Matrix.identity(ti.f64, 3)
+            return ti.Matrix.identity(ti.f32, 3)
 
         inv_det = 1.0 / det
 
@@ -1738,7 +1754,7 @@ class MASPreconditioner:
             [(m[1, 0] * m[2, 1] - m[1, 1] * m[2, 0]) * inv_det,
              (m[0, 1] * m[2, 0] - m[0, 0] * m[2, 1]) * inv_det,
              (m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]) * inv_det]
-        ], dt=ti.f64)
+        ], dt=ti.f32)
 
         return inv
 
@@ -1906,9 +1922,9 @@ class MASPreconditioner:
                 # x overwrites y in full_block_inverse[:, col]
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     for k in range(i + 1, BLOCK_DOF):
-                        sum_val -= self.full_block_matrix[block_id, k, i] * ti.f64(self.full_block_inverse[block_id, k, col])
+                        sum_val -= self.full_block_matrix[block_id, k, i] * ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
@@ -1970,7 +1986,9 @@ class MASPreconditioner:
                         ti.Matrix.zero(ti.f32, 3, 3)
 
     def invert_block_matrices(self, use_full_inversion: bool = True,
-                              use_cholesky: bool = True):
+                              use_cholesky: bool = True,
+                              use_blocked: bool = False,
+                              use_incomplete: bool = False):
         """
         Invert all block matrices on GPU.
 
@@ -1979,6 +1997,8 @@ class MASPreconditioner:
                                If False, use simplified diagonal-only inversion.
             use_cholesky: If True and use_full_inversion=True, use Cholesky decomposition
                          (faster for SPD matrices). If False, use Gauss-Jordan elimination.
+            use_blocked: If True, use blocked Cholesky for better GPU parallelism.
+            use_incomplete: If True, use Incomplete Cholesky IC(0) approximation.
         """
         print("[MAS] Inverting block matrices...")
 
@@ -1986,8 +2006,18 @@ class MASPreconditioner:
             # Full 48x48 block inversion
             self._expand_sym_to_full()
 
-            if use_cholesky:
-                # Cholesky decomposition (faster for SPD matrices)
+            if use_incomplete:
+                # Incomplete Cholesky IC(0) - approximate but fast
+                self._incomplete_cholesky_invert_blocks()
+                self._copy_inverse_to_sym()
+                print("[MAS] Full block inversion complete (Incomplete Cholesky IC(0))")
+            elif use_blocked and use_cholesky:
+                # Blocked Cholesky - better GPU utilization
+                self._blocked_cholesky_invert_blocks()
+                self._copy_inverse_to_sym()
+                print("[MAS] Full block inversion complete (Blocked Cholesky)")
+            elif use_cholesky:
+                # Standard Cholesky decomposition (faster for SPD matrices)
                 self._cholesky_invert_blocks()
                 self._copy_inverse_to_sym()
                 print("[MAS] Full block inversion complete (Cholesky)")
@@ -2004,6 +2034,234 @@ class MASPreconditioner:
         self.matrices_inverted = True
 
     # ========================================================================
+    # P2 Optimization: Blocked Cholesky Decomposition
+    # ========================================================================
+    #
+    # Blocked Cholesky divides the 48x48 matrix into smaller blocks (e.g., 12x12)
+    # and processes them in a way that maximizes parallelism:
+    #
+    # For block size B=12, we have 4x4 blocks in the 48x48 matrix:
+    #   A = | A00  A01  A02  A03 |
+    #       | A10  A11  A12  A13 |
+    #       | A20  A21  A22  A23 |
+    #       | A30  A31  A32  A33 |
+    #
+    # Blocked Cholesky proceeds as:
+    #   1. L00 = chol(A00)
+    #   2. L10 = A10 * L00^{-T}, L20 = A20 * L00^{-T}, L30 = A30 * L00^{-T}  (parallel)
+    #   3. A11 -= L10 * L10^T, A21 -= L20 * L10^T, etc. (parallel updates)
+    #   4. Repeat for remaining diagonal blocks
+
+    @ti.kernel
+    def _blocked_cholesky_invert_blocks(self):
+        """
+        Blocked Cholesky decomposition for better GPU parallelism.
+
+        Uses block size of 12 (4 nodes * 3 DOF) to divide 48x48 into 4x4 blocks.
+        This allows more parallel operations within each 48x48 block inversion.
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        # Block size for blocked Cholesky (12 = 4 nodes * 3 DOF)
+        BSIZE = 12
+        N_SUB = BLOCK_DOF // BSIZE  # = 4 sub-blocks
+
+        for block_id in range(n_blocks):
+            # Blocked Cholesky factorization
+            for kb in range(N_SUB):
+                k_start = kb * BSIZE
+                k_end = k_start + BSIZE
+
+                # Step 1: Cholesky on diagonal block A[kb,kb]
+                for i in range(k_start, k_end):
+                    for j in range(k_start, i):
+                        sum_val = self.full_block_matrix[block_id, i, j]
+                        for kk in range(k_start, j):
+                            sum_val -= self.full_block_matrix[block_id, i, kk] * \
+                                       self.full_block_matrix[block_id, j, kk]
+                        L_jj = self.full_block_matrix[block_id, j, j]
+                        if ti.abs(L_jj) > 1e-12:
+                            self.full_block_matrix[block_id, i, j] = sum_val / L_jj
+                        else:
+                            self.full_block_matrix[block_id, i, j] = 0.0
+
+                    # Diagonal element
+                    sum_val = self.full_block_matrix[block_id, i, i]
+                    for kk in range(k_start, i):
+                        sum_val -= self.full_block_matrix[block_id, i, kk] ** 2
+                    if sum_val > 1e-12:
+                        self.full_block_matrix[block_id, i, i] = ti.sqrt(sum_val)
+                    else:
+                        self.full_block_matrix[block_id, i, i] = 1e-3
+
+                # Step 2: Solve for off-diagonal blocks L[ib,kb] = A[ib,kb] * L[kb,kb]^{-T}
+                for ib in range(kb + 1, N_SUB):
+                    i_start = ib * BSIZE
+                    i_end = i_start + BSIZE
+
+                    for i in range(i_start, i_end):
+                        for j in range(k_start, k_end):
+                            sum_val = self.full_block_matrix[block_id, i, j]
+                            for kk in range(k_start, j):
+                                sum_val -= self.full_block_matrix[block_id, i, kk] * \
+                                           self.full_block_matrix[block_id, j, kk]
+                            L_jj = self.full_block_matrix[block_id, j, j]
+                            if ti.abs(L_jj) > 1e-12:
+                                self.full_block_matrix[block_id, i, j] = sum_val / L_jj
+                            else:
+                                self.full_block_matrix[block_id, i, j] = 0.0
+
+                # Step 3: Update remaining blocks A[ib,jb] -= L[ib,kb] * L[jb,kb]^T
+                for ib in range(kb + 1, N_SUB):
+                    i_start = ib * BSIZE
+                    i_end = i_start + BSIZE
+
+                    for jb in range(kb + 1, ib + 1):
+                        j_start = jb * BSIZE
+                        j_end = j_start + BSIZE
+
+                        for i in range(i_start, i_end):
+                            j_limit = j_end if jb < ib else i + 1
+                            for j in range(j_start, j_limit):
+                                sum_val = 0.0
+                                for kk in range(k_start, k_end):
+                                    sum_val += self.full_block_matrix[block_id, i, kk] * \
+                                               self.full_block_matrix[block_id, j, kk]
+                                self.full_block_matrix[block_id, i, j] -= sum_val
+
+            # Inversion via forward/backward substitution (same as standard Cholesky)
+            for col in range(BLOCK_DOF):
+                # Forward substitution
+                for i in range(BLOCK_DOF):
+                    sum_val = 1.0 if i == col else 0.0
+                    for k in range(i):
+                        sum_val -= self.full_block_matrix[block_id, i, k] * \
+                                   self.full_block_inverse[block_id, k, col]
+                    L_ii = self.full_block_matrix[block_id, i, i]
+                    if ti.abs(L_ii) > 1e-12:
+                        self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
+                    else:
+                        self.full_block_inverse[block_id, i, col] = 0.0
+
+                # Backward substitution
+                for i_rev in range(BLOCK_DOF):
+                    i = BLOCK_DOF - 1 - i_rev
+                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    for k in range(i + 1, BLOCK_DOF):
+                        sum_val -= self.full_block_matrix[block_id, k, i] * \
+                                   ti.f64(self.full_block_inverse[block_id, k, col])
+                    L_ii = self.full_block_matrix[block_id, i, i]
+                    if ti.abs(L_ii) > 1e-12:
+                        self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
+                    else:
+                        self.full_block_inverse[block_id, i, col] = 0.0
+
+    # ========================================================================
+    # P3 Optimization: Incomplete Cholesky IC(0)
+    # ========================================================================
+    #
+    # Incomplete Cholesky IC(0) only computes L elements where A has non-zeros.
+    # For our 48x48 block matrices from FEM, the sparsity pattern is determined
+    # by the mesh connectivity within each warp.
+    #
+    # Key insight: In FEM Hessian, entry (i,j) is non-zero only if nodes i and j
+    # share a cell. For IC(0), we skip fill-in and only compute L[i,j] where A[i,j] != 0.
+    #
+    # Benefits:
+    # - Fewer operations (skip zero entries)
+    # - Better memory access (fewer cache misses)
+    # - Good approximation for well-conditioned systems
+    #
+    # For MAS blocks, we use a simplified pattern: diagonal + first 2 off-diagonals
+    # This captures most coupling while being fast to compute.
+
+    @ti.kernel
+    def _incomplete_cholesky_invert_blocks(self):
+        """
+        Incomplete Cholesky IC(0) factorization for approximate inversion.
+
+        Uses a banded pattern: diagonal + k off-diagonals (k=6 for 2-node coupling).
+        This provides a good approximation while being much faster than full Cholesky.
+
+        The approximation quality depends on the fill-in pattern. For FEM matrices
+        with local coupling, IC(0) typically provides a good preconditioner.
+        """
+        total_nodes = self.total_nodes_all_levels
+        n_blocks = (total_nodes + BANKSIZE - 1) // BANKSIZE
+
+        # Bandwidth for IC(0): 6 = 2 nodes * 3 DOF
+        # This captures direct node-node coupling in the Hessian
+        BANDWIDTH = 6
+
+        for block_id in range(n_blocks):
+            # IC(0) Factorization with banded pattern
+            for i in range(BLOCK_DOF):
+                # Compute L[i,j] only for j in [max(0, i-BANDWIDTH), i)
+                j_start = ti.max(0, i - BANDWIDTH)
+
+                for j in range(j_start, i):
+                    # Check if (i,j) is within bandwidth
+                    if i - j <= BANDWIDTH:
+                        sum_val = self.full_block_matrix[block_id, i, j]
+                        k_start = ti.max(0, ti.max(i - BANDWIDTH, j - BANDWIDTH))
+                        for k in range(k_start, j):
+                            # Only include terms where both L[i,k] and L[j,k] are in pattern
+                            if i - k <= BANDWIDTH and j - k <= BANDWIDTH:
+                                sum_val -= self.full_block_matrix[block_id, i, k] * \
+                                           self.full_block_matrix[block_id, j, k]
+                        L_jj = self.full_block_matrix[block_id, j, j]
+                        if ti.abs(L_jj) > 1e-12:
+                            self.full_block_matrix[block_id, i, j] = sum_val / L_jj
+                        else:
+                            self.full_block_matrix[block_id, i, j] = 0.0
+                    else:
+                        # Outside bandwidth - set to zero
+                        self.full_block_matrix[block_id, i, j] = 0.0
+
+                # Diagonal element
+                sum_val = self.full_block_matrix[block_id, i, i]
+                k_start = ti.max(0, i - BANDWIDTH)
+                for k in range(k_start, i):
+                    if i - k <= BANDWIDTH:
+                        sum_val -= self.full_block_matrix[block_id, i, k] ** 2
+                if sum_val > 1e-12:
+                    self.full_block_matrix[block_id, i, i] = ti.sqrt(sum_val)
+                else:
+                    self.full_block_matrix[block_id, i, i] = 1e-3
+
+            # Approximate inversion using banded forward/backward substitution
+            for col in range(BLOCK_DOF):
+                # Forward substitution (banded)
+                for i in range(BLOCK_DOF):
+                    sum_val = 1.0 if i == col else 0.0
+                    k_start = ti.max(0, i - BANDWIDTH)
+                    for k in range(k_start, i):
+                        if i - k <= BANDWIDTH:
+                            sum_val -= self.full_block_matrix[block_id, i, k] * \
+                                       self.full_block_inverse[block_id, k, col]
+                    L_ii = self.full_block_matrix[block_id, i, i]
+                    if ti.abs(L_ii) > 1e-12:
+                        self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
+                    else:
+                        self.full_block_inverse[block_id, i, col] = 0.0
+
+                # Backward substitution (banded)
+                for i_rev in range(BLOCK_DOF):
+                    i = BLOCK_DOF - 1 - i_rev
+                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    k_end = ti.min(BLOCK_DOF, i + BANDWIDTH + 1)
+                    for k in range(i + 1, k_end):
+                        if k - i <= BANDWIDTH:
+                            sum_val -= self.full_block_matrix[block_id, k, i] * \
+                                       ti.f64(self.full_block_inverse[block_id, k, col])
+                    L_ii = self.full_block_matrix[block_id, i, i]
+                    if ti.abs(L_ii) > 1e-12:
+                        self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
+                    else:
+                        self.full_block_inverse[block_id, i, col] = 0.0
+
+    # ========================================================================
     # Preconditioning Operation (z = P * g)
     # ========================================================================
 
@@ -2011,13 +2269,13 @@ class MASPreconditioner:
     def _clear_multi_level_buffers(self):
         """Clear multi-level residual and solution buffers."""
         for i in range(self.total_nodes_all_levels):
-            self.multi_level_r[i] = ti.Vector.zero(ti.f64, 3)
-            self.multi_level_z[i] = ti.Vector.zero(ti.f64, 3)
+            self.multi_level_r[i] = ti.Vector.zero(ti.f32, 3)
+            self.multi_level_z[i] = ti.Vector.zero(ti.f32, 3)
 
     @ti.kernel
     def _build_multi_level_r(self):
         """
-        Hierarchically restrict gradient to coarse levels.
+        Hierarchically restrict gradient to coarse levels (original version).
 
         CUDA Reference: __buildMultiLevelR_optimized_new() (MASPreconditioner.cu lines 729-847)
 
@@ -2030,7 +2288,7 @@ class MASPreconditioner:
         """
         # Copy gradient to level 0
         for idx in range(self.n_verts):
-            self.multi_level_r[idx] = ti.cast(self.mesh.verts.grad[idx], ti.f64)
+            self.multi_level_r[idx] = ti.cast(self.mesh.verts.grad[idx], ti.f32)
 
         # Restrict to all coarse levels through hierarchy
         for idx in range(self.n_verts):
@@ -2068,6 +2326,198 @@ class MASPreconditioner:
                     for d in ti.static(range(3)):
                         ti.atomic_add(self.multi_level_r[elected_idx][d], r[d])
 
+    # ========================================================================
+    # P1 Optimization: Warp-level Parallel Reduction for Restriction
+    # ========================================================================
+    #
+    # CUDA reference uses __shfl_down_sync for warp reduction when prefix==1
+    # (fully connected warp). Taichi 1.7.4 does not support ti.simt warp
+    # primitives, so we use a 3-phase approach:
+    #
+    # Phase 1: Copy gradients to Level 0 and warp_sum_buffer
+    # Phase 2: Parallel tree reduction within each warp using warp_sum_buffer
+    # Phase 3: Elected nodes propagate reduced sums to coarse levels
+    #
+    # For multi-component warps (prefix > 1), we fall back to atomic accumulation
+    # to the elected node of each component.
+
+    @ti.kernel
+    def _cache_warp_prefix(self):
+        """Cache prefix_original values for each warp for fast access."""
+        n_warps = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+        for warp_id in range(n_warps):
+            self.warp_prefix_cache[warp_id] = self.prefix_original[warp_id]
+
+    @ti.kernel
+    def _clear_warp_sum_buffer(self):
+        """Clear warp sum buffer."""
+        n_warps = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+        for warp_id, lane_id, d in ti.ndrange(n_warps, BANKSIZE, 3):
+            self.warp_sum_buffer[warp_id, lane_id, d] = 0.0
+
+    @ti.kernel
+    def _build_multi_level_r_phase1(self):
+        """
+        Phase 1: Copy gradients to Level 0 and initialize warp_sum_buffer.
+
+        For each vertex, copy gradient to multi_level_r and warp_sum_buffer.
+        """
+        for idx in range(self.n_verts):
+            r = ti.cast(self.mesh.verts.grad[idx], ti.f32)
+            self.multi_level_r[idx] = r
+
+            warp_id = idx // BANKSIZE
+            lane_id = idx % BANKSIZE
+
+            # Copy to warp_sum_buffer for reduction
+            for d in ti.static(range(3)):
+                self.warp_sum_buffer[warp_id, lane_id, d] = r[d]
+
+    @ti.kernel
+    def _build_multi_level_r_phase2_tree_reduce(self):
+        """
+        Phase 2: Tree reduction within fully-connected warps (prefix == 1).
+
+        For warps where all vertices are connected (prefix_original == 1),
+        perform parallel tree reduction: O(log BANKSIZE) steps instead of
+        O(BANKSIZE) atomic operations.
+
+        Tree reduction pattern (BANKSIZE=16):
+            Step 0: lane 0 += lane 8,  lane 1 += lane 9,  ..., lane 7 += lane 15
+            Step 1: lane 0 += lane 4,  lane 1 += lane 5,  ..., lane 3 += lane 7
+            Step 2: lane 0 += lane 2,  lane 1 += lane 3
+            Step 3: lane 0 += lane 1
+
+        After reduction, lane 0 holds the sum of all 16 vertices.
+        """
+        n_warps = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Process each warp
+        for warp_id in range(n_warps):
+            prefix = self.warp_prefix_cache[warp_id]
+
+            if prefix == 1:
+                # Fully connected warp: use tree reduction
+                # Step 0: stride = 8
+                for lane_id in range(8):
+                    src_lane = lane_id + 8
+                    src_idx = warp_id * BANKSIZE + src_lane
+                    if src_idx < self.n_verts:
+                        for d in ti.static(range(3)):
+                            self.warp_sum_buffer[warp_id, lane_id, d] += \
+                                self.warp_sum_buffer[warp_id, src_lane, d]
+
+                # Step 1: stride = 4
+                for lane_id in range(4):
+                    src_lane = lane_id + 4
+                    for d in ti.static(range(3)):
+                        self.warp_sum_buffer[warp_id, lane_id, d] += \
+                            self.warp_sum_buffer[warp_id, src_lane, d]
+
+                # Step 2: stride = 2
+                for lane_id in range(2):
+                    src_lane = lane_id + 2
+                    for d in ti.static(range(3)):
+                        self.warp_sum_buffer[warp_id, lane_id, d] += \
+                            self.warp_sum_buffer[warp_id, src_lane, d]
+
+                # Step 3: stride = 1
+                for d in ti.static(range(3)):
+                    self.warp_sum_buffer[warp_id, 0, d] += \
+                        self.warp_sum_buffer[warp_id, 1, d]
+
+    @ti.kernel
+    def _build_multi_level_r_phase2_multi_component(self):
+        """
+        Phase 2b: Accumulate to elected nodes for multi-component warps (prefix > 1).
+
+        For warps with multiple connected components, each vertex atomically
+        adds to its elected representative in warp_sum_buffer.
+        """
+        for idx in range(self.n_verts):
+            warp_id = idx // BANKSIZE
+            lane_id = idx % BANKSIZE
+            prefix = self.warp_prefix_cache[warp_id]
+
+            if prefix > 1:
+                # Multi-component warp: use atomic accumulation to elected node
+                connect_mask = self.fine_connect_mask[idx]
+                elected_lane = self._find_first_set(connect_mask)
+
+                # Only non-elected nodes accumulate to elected node
+                if elected_lane != lane_id:
+                    for d in ti.static(range(3)):
+                        ti.atomic_add(self.warp_sum_buffer[warp_id, elected_lane, d],
+                                      self.warp_sum_buffer[warp_id, lane_id, d])
+
+    @ti.kernel
+    def _build_multi_level_r_phase3_propagate(self):
+        """
+        Phase 3: Propagate reduced sums from elected nodes to coarse levels.
+
+        For fully-connected warps (prefix==1), only lane 0 propagates.
+        For multi-component warps, each elected node propagates its component sum.
+        """
+        for idx in range(self.n_verts):
+            warp_id = idx // BANKSIZE
+            lane_id = idx % BANKSIZE
+            prefix = self.warp_prefix_cache[warp_id]
+
+            # Determine if this vertex should propagate to coarse levels
+            should_propagate = False
+
+            if prefix == 1:
+                # Fully connected warp: only lane 0 propagates (holds total sum)
+                should_propagate = (lane_id == 0)
+            else:
+                # Multi-component warp: elected nodes propagate
+                connect_mask = self.fine_connect_mask[idx]
+                elected_prefix = self._popcount(connect_mask & self._lanemask_lt(lane_id))
+                should_propagate = (elected_prefix == 0)
+
+            if should_propagate:
+                # Get the reduced sum from warp_sum_buffer
+                r = ti.Vector([
+                    self.warp_sum_buffer[warp_id, lane_id, 0],
+                    self.warp_sum_buffer[warp_id, lane_id, 1],
+                    self.warp_sum_buffer[warp_id, lane_id, 2]
+                ], dt=ti.f32)
+
+                # Propagate to all coarse levels
+                current_idx = idx
+                for _ in range(self.level_num - 1):
+                    next_idx = self.going_next[current_idx]
+                    if next_idx >= 0 and next_idx < self.total_nodes_all_levels:
+                        for d in ti.static(range(3)):
+                            ti.atomic_add(self.multi_level_r[next_idx][d], r[d])
+                        current_idx = next_idx
+                    else:
+                        break
+
+    def _build_multi_level_r_optimized(self):
+        """
+        P1 Optimized version of multi-level restriction.
+
+        Uses 3-phase approach for warp-level parallelism:
+        - Phase 1: Copy gradients to buffers
+        - Phase 2a: Tree reduction for fully-connected warps (prefix==1)
+        - Phase 2b: Atomic accumulation for multi-component warps
+        - Phase 3: Elected nodes propagate to coarse levels
+
+        This reduces atomic operations from O(n_verts) to O(n_warps * avg_components).
+        """
+        # Phase 1: Initialize
+        self._build_multi_level_r_phase1()
+
+        # Phase 2a: Tree reduction for fully-connected warps
+        self._build_multi_level_r_phase2_tree_reduce()
+
+        # Phase 2b: Atomic accumulation for multi-component warps
+        self._build_multi_level_r_phase2_multi_component()
+
+        # Phase 3: Propagate to coarse levels
+        self._build_multi_level_r_phase3_propagate()
+
     @ti.kernel
     def _schwarz_local_solve_full(self):
         """
@@ -2093,7 +2543,7 @@ class MASPreconditioner:
                 idx_i = block_id * BANKSIZE + lane_i
                 if idx_i < self.n_verts:
                     # Initialize z to zero
-                    z = ti.Vector.zero(ti.f64, 3)
+                    z = ti.Vector.zero(ti.f32, 3)
 
                     # Multiply by full inverse block: z_i = sum_j (inv_M[i,j] @ r_j)
                     for lane_j in range(BANKSIZE):
@@ -2107,14 +2557,14 @@ class MASPreconditioner:
                                 # Upper triangle: use directly
                                 for di in ti.static(range(3)):
                                     for dj in ti.static(range(3)):
-                                        z[di] += ti.f64(inv_block[di, dj]) * self.multi_level_r[idx_j][dj]
+                                        z[di] += inv_block[di, dj] * self.multi_level_r[idx_j][dj]
                             else:
                                 sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                                 inv_block = self.inv_block_matrices[block_id, sym_idx]
                                 # Lower triangle: use transpose
                                 for di in ti.static(range(3)):
                                     for dj in ti.static(range(3)):
-                                        z[di] += ti.f64(inv_block[dj, di]) * self.multi_level_r[idx_j][dj]
+                                        z[di] += inv_block[dj, di] * self.multi_level_r[idx_j][dj]
 
                     self.multi_level_z[idx_i] = z
 
@@ -2136,7 +2586,7 @@ class MASPreconditioner:
                     idx_i = level_offset + local_block_id * BANKSIZE + lane_i
                     if idx_i < level_offset + level_size:
                         # Initialize z to zero
-                        z = ti.Vector.zero(ti.f64, 3)
+                        z = ti.Vector.zero(ti.f32, 3)
 
                         # Multiply by full inverse block: z_i = sum_j (inv_M[i,j] @ r_j)
                         for lane_j in range(BANKSIZE):
@@ -2148,15 +2598,92 @@ class MASPreconditioner:
                                     inv_block = self.inv_block_matrices[block_id, sym_idx]
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[di, dj]) * self.multi_level_r[idx_j][dj]
+                                            z[di] += inv_block[di, dj] * self.multi_level_r[idx_j][dj]
                                 else:
                                     sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                                     inv_block = self.inv_block_matrices[block_id, sym_idx]
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[dj, di]) * self.multi_level_r[idx_j][dj]
+                                            z[di] += inv_block[dj, di] * self.multi_level_r[idx_j][dj]
 
                         self.multi_level_z[idx_i] = z
+
+    @ti.kernel
+    def _schwarz_local_solve_full_parallel(self):
+        """
+        Parallelized version of local solve: z_d = B_d^{-1} * r_d
+
+        Key optimization: Parallelize over (block_id, lane_i) - each thread computes
+        one output row. Inner loop over lane_j is sequential within each thread
+        to avoid atomic contention.
+
+        This is equivalent to the original but with explicit 2D parallelization over
+        (block_id, lane_i) instead of nested sequential loops.
+        """
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Level 0: Parallel over (block_id, lane_i)
+        # Each thread handles one output vertex
+        for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
+            idx_i = block_id * BANKSIZE + lane_i
+            if idx_i < self.n_verts:
+                # Initialize z to zero
+                z = ti.Vector.zero(ti.f32, 3)
+
+                # Sequential loop over columns - no atomics needed
+                for lane_j in range(BANKSIZE):
+                    idx_j = block_id * BANKSIZE + lane_j
+                    if idx_j < self.n_verts:
+                        # Get the inverse 3x3 block (symmetric storage)
+                        if lane_i <= lane_j:
+                            sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                            inv_block = self.inv_block_matrices[block_id, sym_idx]
+                            # Upper triangle: use directly
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    z[di] += inv_block[di, dj] * self.multi_level_r[idx_j][dj]
+                        else:
+                            sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                            inv_block = self.inv_block_matrices[block_id, sym_idx]
+                            # Lower triangle: use transpose
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    z[di] += inv_block[dj, di] * self.multi_level_r[idx_j][dj]
+
+                self.multi_level_z[idx_i] = z
+
+        # Coarse levels: also parallel over (local_block_id, lane_i)
+        for level in range(1, self.level_num):
+            level_offset = self.level_size[level][1]
+            level_size = self.level_size[level][0]
+            n_coarse_blocks = (level_size + BANKSIZE - 1) // BANKSIZE
+
+            for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
+                first_node_in_block = level_offset + local_block_id * BANKSIZE
+                block_id = first_node_in_block // BANKSIZE
+
+                idx_i = level_offset + local_block_id * BANKSIZE + lane_i
+                if idx_i < level_offset + level_size:
+                    # Initialize z to zero
+                    z = ti.Vector.zero(ti.f32, 3)
+
+                    for lane_j in range(BANKSIZE):
+                        idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                        if idx_j < level_offset + level_size:
+                            if lane_i <= lane_j:
+                                sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                                inv_block = self.inv_block_matrices[block_id, sym_idx]
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        z[di] += inv_block[di, dj] * self.multi_level_r[idx_j][dj]
+                            else:
+                                sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                                inv_block = self.inv_block_matrices[block_id, sym_idx]
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        z[di] += inv_block[dj, di] * self.multi_level_r[idx_j][dj]
+
+                    self.multi_level_z[idx_i] = z
 
     @ti.kernel
     def _schwarz_local_solve(self):
@@ -2181,10 +2708,10 @@ class MASPreconditioner:
                     inv_block = self.inv_block_matrices[block_id, sym_idx]
 
                     # Compute z = inv_block @ r
-                    z = ti.Vector.zero(ti.f64, 3)
+                    z = ti.Vector.zero(ti.f32, 3)
                     for di in ti.static(range(3)):
                         for dj in ti.static(range(3)):
-                            z[di] += ti.f64(inv_block[di, dj]) * r[dj]
+                            z[di] += inv_block[di, dj] * r[dj]
 
                     self.multi_level_z[idx] = z
 
@@ -2212,10 +2739,10 @@ class MASPreconditioner:
                         inv_block = self.inv_block_matrices[block_id, sym_idx]
 
                         # Compute z = inv_block @ r
-                        z = ti.Vector.zero(ti.f64, 3)
+                        z = ti.Vector.zero(ti.f32, 3)
                         for di in ti.static(range(3)):
                             for dj in ti.static(range(3)):
-                                z[di] += ti.f64(inv_block[di, dj]) * r[dj]
+                                z[di] += inv_block[di, dj] * r[dj]
 
                         self.multi_level_z[idx] = z
 
@@ -2258,7 +2785,8 @@ class MASPreconditioner:
             # Store result (cast to f32 for mesh storage)
             self.mesh.verts.z[idx] = ti.cast(z_total, ti.f32)
 
-    def apply(self, use_full_solve: bool = True):
+    def apply(self, use_full_solve: bool = True, use_parallel_solve: bool = False,
+              use_warp_reduction: bool = True):
         """
         Apply MAS preconditioner: z = P * grad
 
@@ -2270,16 +2798,27 @@ class MASPreconditioner:
         Args:
             use_full_solve: If True, use full block inverse in local solve.
                            If False, use diagonal-only approximation.
+            use_parallel_solve: If True, use parallelized local solve with atomics.
+                               This can be faster on GPUs with many cores.
+            use_warp_reduction: If True, use P1 optimized warp-level reduction
+                               for restriction phase. Default True.
         """
         # Clear buffers
         self._clear_multi_level_buffers()
 
         # Phase 1: Restriction
-        self._build_multi_level_r()
+        if use_warp_reduction and WARP_REDUCTION_ENABLED:
+            self._clear_warp_sum_buffer()
+            self._build_multi_level_r_optimized()
+        else:
+            self._build_multi_level_r()
 
         # Phase 2: Local solve
         if use_full_solve:
-            self._schwarz_local_solve_full()
+            if use_parallel_solve:
+                self._schwarz_local_solve_full_parallel()
+            else:
+                self._schwarz_local_solve_full()
         else:
             self._schwarz_local_solve()
 
@@ -2329,14 +2868,14 @@ class MASPreconditioner:
         self.top_k = 8
         n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
 
-        self.woodbury_U = ti.field(dtype=ti.f64,
+        self.woodbury_U = ti.field(dtype=ti.f32,
                                     shape=(n_blocks, self.top_k, BANKSIZE * 3))
-        self.woodbury_delta_S = ti.field(dtype=ti.f64,
+        self.woodbury_delta_S = ti.field(dtype=ti.f32,
                                           shape=(n_blocks, self.top_k))
         self.woodbury_num_updates = ti.field(dtype=ti.i32, shape=n_blocks)
-        self.BU = ti.field(dtype=ti.f64,
+        self.BU = ti.field(dtype=ti.f32,
                            shape=(n_blocks, BANKSIZE * 3, self.top_k))
-        self.capacitance_matrix = ti.field(dtype=ti.f64,
+        self.capacitance_matrix = ti.field(dtype=ti.f32,
                                             shape=(n_blocks, self.top_k, self.top_k))
         self.base_contacts = {}
         self.woodbury_initialized = True
@@ -2588,9 +3127,9 @@ class MASPreconditioner:
                                     # If row <= col: B[row,col] = inv_block
                                     # If row > col: B[row,col] = inv_block^T
                                     if row <= col:
-                                        bu_val += ti.f64(inv_block[di, dj]) * u_val
+                                        bu_val += inv_block[di, dj] * u_val
                                     else:
-                                        bu_val += ti.f64(inv_block[dj, di]) * u_val
+                                        bu_val += inv_block[dj, di] * u_val
 
                         self.BU[block_id, row * 3 + di, k] = bu_val
 
@@ -2621,7 +3160,7 @@ class MASPreconditioner:
             for lane_i in range(BANKSIZE):
                 idx_i = block_id * BANKSIZE + lane_i
                 if idx_i < self.n_verts:
-                    z = ti.Vector.zero(ti.f64, 3)
+                    z = ti.Vector.zero(ti.f32, 3)
                     for lane_j in range(BANKSIZE):
                         idx_j = block_id * BANKSIZE + lane_j
                         if idx_j < self.n_verts:
@@ -2631,15 +3170,15 @@ class MASPreconditioner:
                             for di in ti.static(range(3)):
                                 for dj in ti.static(range(3)):
                                     if lane_i <= lane_j:
-                                        z[di] += ti.f64(inv_block[di, dj]) * r_j[dj]
+                                        z[di] += inv_block[di, dj] * r_j[dj]
                                     else:
-                                        z[di] += ti.f64(inv_block[dj, di]) * r_j[dj]
+                                        z[di] += inv_block[dj, di] * r_j[dj]
                     self.multi_level_z[idx_i] = z
 
             if num_updates == 0:
                 continue
 
-            r_vec = ti.Vector.zero(ti.f64, 8)
+            r_vec = ti.Vector.zero(ti.f32, 8)
             for k in range(num_updates):
                 r_val = 0.0
                 for lane_id in range(BANKSIZE):
@@ -2650,12 +3189,12 @@ class MASPreconditioner:
                             r_val += self.woodbury_U[block_id, k, lane_id * 3 + di] * z_base[di]
                 r_vec[k] = r_val
 
-            cap_local = ti.Matrix.zero(ti.f64, 8, 8)
+            cap_local = ti.Matrix.zero(ti.f32, 8, 8)
             for i in range(num_updates):
                 for j in range(num_updates):
                     cap_local[i, j] = self.capacitance_matrix[block_id, i, j]
 
-            lambda_vec = ti.Vector.zero(ti.f64, 8)
+            lambda_vec = ti.Vector.zero(ti.f32, 8)
             for pivot in range(num_updates):
                 max_val = ti.abs(cap_local[pivot, pivot])
                 max_row = pivot
@@ -2690,7 +3229,7 @@ class MASPreconditioner:
             for lane_id in range(BANKSIZE):
                 idx = block_id * BANKSIZE + lane_id
                 if idx < self.n_verts:
-                    correction = ti.Vector.zero(ti.f64, 3)
+                    correction = ti.Vector.zero(ti.f32, 3)
                     for k in range(num_updates):
                         for di in ti.static(range(3)):
                             correction[di] += self.BU[block_id, lane_id * 3 + di, k] * lambda_vec[k]
@@ -2716,7 +3255,7 @@ class MASPreconditioner:
                 for lane_i in range(BANKSIZE):
                     idx_i = level_offset + local_block_id * BANKSIZE + lane_i
                     if idx_i < level_offset + level_size:
-                        z = ti.Vector.zero(ti.f64, 3)
+                        z = ti.Vector.zero(ti.f32, 3)
 
                         # Multiply by full inverse block: z_i = sum_j (inv_M[i,j] @ r_j)
                         for lane_j in range(BANKSIZE):
@@ -2728,13 +3267,13 @@ class MASPreconditioner:
                                     inv_block = self.inv_block_matrices[block_id, sym_idx]
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[di, dj]) * self.multi_level_r[idx_j][dj]
+                                            z[di] += inv_block[di, dj] * self.multi_level_r[idx_j][dj]
                                 else:
                                     sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                                     inv_block = self.inv_block_matrices[block_id, sym_idx]
                                     for di in ti.static(range(3)):
                                         for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[dj, di]) * self.multi_level_r[idx_j][dj]
+                                            z[di] += inv_block[dj, di] * self.multi_level_r[idx_j][dj]
 
                         self.multi_level_z[idx_i] = z
 
@@ -2954,7 +3493,129 @@ class MASPreconditioner:
             self.fine_connect_mask[idx] = connect_mask
 
     @ti.kernel
-    def _add_inertia_contribution_metis(self, dt: ti.f64):
+    def _propagate_connectivity_metis(self):
+        """
+        Propagate connectivity using METIS partition structure.
+
+        This is the METIS version of _propagate_connectivity() that uses
+        METIS partition IDs (block_id from real_map_partId) instead of
+        warp IDs (idx // BANKSIZE) to compute prefix_original.
+
+        The key difference is that prefix_original[block_id] counts the number
+        of connected components (cluster representatives) within each METIS partition,
+        not within each sequential warp of 16 vertices.
+        """
+        n_parts = self.metis_n_parts
+
+        # Reset prefix counts for METIS partitions
+        for p in range(n_parts):
+            self.prefix_original[p] = 0
+
+        for idx in range(self.n_verts):
+            # Get METIS partition info
+            part_info = self.real_map_partId[idx]
+            block_id = part_info // BANKSIZE
+            lane_id = part_info % BANKSIZE
+
+            connect_mask = self.fine_connect_mask[idx]
+
+            # BFS-style transitive closure within the METIS partition
+            visited = ti.u32(1) << ti.u32(lane_id)
+
+            max_iter = BANKSIZE
+            for _ in range(max_iter):
+                todo = visited ^ connect_mask
+
+                if todo == 0:
+                    break
+
+                next_visit = self._find_first_set(todo)
+                if next_visit < 0:
+                    break
+
+                visited |= ti.u32(1) << ti.u32(next_visit)
+
+                # Find the vertex in this METIS partition with the given lane
+                other_part_idx = block_id * BANKSIZE + next_visit
+                other_idx = self.partId_map_real[other_part_idx]
+
+                if other_idx >= 0 and other_idx < self.n_verts:
+                    connect_mask |= self.fine_connect_mask[other_idx]
+
+            # Store final transitive closure
+            self.fine_connect_mask[idx] = connect_mask
+
+            # Count elected representatives using METIS partition (not warp)
+            elected_prefix = self._popcount(connect_mask & self._lanemask_lt(lane_id))
+
+            if elected_prefix == 0:
+                # This node is the representative of its connected component
+                ti.atomic_add(self.prefix_original[block_id], 1)
+
+    @ti.kernel
+    def _find_cluster_representatives_metis(self):
+        """
+        Find cluster representatives using METIS partition structure.
+
+        Sets elected_mask based on METIS partitions rather than sequential warps.
+        """
+        n_parts = self.metis_n_parts
+
+        # Reset elected mask
+        for p in range(n_parts):
+            self.elected_mask[p] = ti.u32(0)
+
+        # Build elected mask
+        for idx in range(self.n_verts):
+            part_info = self.real_map_partId[idx]
+            block_id = part_info // BANKSIZE
+            lane_id = part_info % BANKSIZE
+
+            connect_mask = self.fine_connect_mask[idx]
+
+            # Count how many connected nodes have lower lane ID
+            elected_prefix = self._popcount(connect_mask & self._lanemask_lt(lane_id))
+
+            if elected_prefix == 0:
+                # This is the representative of its cluster
+                ti.atomic_or(self.elected_mask[block_id], ti.u32(1) << ti.u32(lane_id))
+
+    @ti.kernel
+    def _assign_cluster_ids_metis(self, level_1_offset: ti.i32):
+        """
+        Assign cluster IDs using METIS partition structure.
+
+        Maps each vertex to its coarse-level cluster based on METIS partitions.
+        """
+        n_parts = self.metis_n_parts
+
+        for idx in range(self.n_verts):
+            part_info = self.real_map_partId[idx]
+            block_id = part_info // BANKSIZE
+            lane_id = part_info % BANKSIZE
+
+            connect_mask = self.fine_connect_mask[idx]
+            elected_mask = self.elected_mask[block_id]
+
+            # Find which elected node this vertex belongs to
+            my_cluster_mask = connect_mask & elected_mask
+
+            if my_cluster_mask != 0:
+                # Find the lowest set bit (the representative)
+                rep_lane = self._find_first_set(my_cluster_mask)
+
+                # Count elected nodes with lower lane ID
+                prefix_in_warp = self._popcount(elected_mask & self._lanemask_lt(rep_lane))
+
+                # Global cluster ID
+                cluster_id = self.prefix_sum_original[block_id] + prefix_in_warp
+
+                # Store mapping
+                self.going_next[idx] = level_1_offset + cluster_id
+                self.coarse_space_table_0[idx] = level_1_offset + cluster_id
+
+    @ti.kernel
+    def _add_inertia_contribution_metis(self, dt: ti.f32):
         """Add mass matrix to diagonal blocks using METIS mapping."""
         for idx in range(self.n_verts):
             # Get block and lane from METIS partition
@@ -2977,6 +3638,10 @@ class MASPreconditioner:
     def _schwarz_local_solve_full_metis(self):
         """
         Solve z_d = B_d^{-1} * r_d using METIS partition mapping.
+
+        partId_map_real[part_id * BANKSIZE + lane] = original_vertex_id
+        This kernel iterates over all METIS partitions (blocks) and applies
+        the inverse block matrix to compute z = B^{-1} * r.
         """
         n_blocks = self.metis_n_parts
 
@@ -2984,31 +3649,33 @@ class MASPreconditioner:
             for lane_i in range(BANKSIZE):
                 # Get original vertex ID from partition mapping
                 part_idx_i = block_id * BANKSIZE + lane_i
-                if part_idx_i < self.n_verts * BANKSIZE // self.metis_n_parts:
-                    idx_i = self.partId_map_real[part_idx_i]
-                    if idx_i >= 0 and idx_i < self.n_verts:
-                        # Initialize z to zero
-                        z = ti.Vector.zero(ti.f64, 3)
+                idx_i = self.partId_map_real[part_idx_i]
 
-                        # Multiply by full inverse block
-                        for lane_j in range(BANKSIZE):
-                            part_idx_j = block_id * BANKSIZE + lane_j
-                            idx_j = self.partId_map_real[part_idx_j]
-                            if idx_j >= 0 and idx_j < self.n_verts:
-                                sym_idx = self._sym_index(lane_i, lane_j)
-                                inv_block = self.inv_block_matrices[block_id, sym_idx]
-                                r_j = self.multi_level_r[idx_j]
+                # Check if this slot is valid (not all partitions are full)
+                if idx_i >= 0 and idx_i < self.n_verts:
+                    # Initialize z to zero
+                    z = ti.Vector.zero(ti.f32, 3)
 
-                                if lane_i <= lane_j:
-                                    for di in ti.static(range(3)):
-                                        for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[di, dj]) * r_j[dj]
-                                else:
-                                    for di in ti.static(range(3)):
-                                        for dj in ti.static(range(3)):
-                                            z[di] += ti.f64(inv_block[dj, di]) * r_j[dj]
+                    # Multiply by full inverse block
+                    for lane_j in range(BANKSIZE):
+                        part_idx_j = block_id * BANKSIZE + lane_j
+                        idx_j = self.partId_map_real[part_idx_j]
 
-                        self.multi_level_z[idx_i] = z
+                        if idx_j >= 0 and idx_j < self.n_verts:
+                            sym_idx = self._sym_index(lane_i, lane_j)
+                            inv_block = self.inv_block_matrices[block_id, sym_idx]
+                            r_j = self.multi_level_r[idx_j]
+
+                            if lane_i <= lane_j:
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        z[di] += inv_block[di, dj] * r_j[dj]
+                            else:
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        z[di] += inv_block[dj, di] * r_j[dj]
+
+                    self.multi_level_z[idx_i] = z
 
         # Coarse level solve (same as before)
         level_1_offset = self.n_verts
@@ -3029,7 +3696,9 @@ class MASPreconditioner:
         Build hierarchy using METIS partition information.
 
         This is an optimized version that uses METIS partition structure
-        directly for the hierarchy construction.
+        directly for the hierarchy construction. It uses METIS-specific
+        versions of connectivity propagation and cluster assignment that
+        work with METIS partition IDs instead of sequential warp IDs.
         """
         if not hasattr(self, 'use_metis_reorder') or not self.use_metis_reorder:
             print("[MAS] WARNING: METIS reordering not initialized, using standard hierarchy")
@@ -3041,30 +3710,30 @@ class MASPreconditioner:
         # Use METIS partition for Level 0 connectivity
         self._build_connect_mask_l0_metis()
 
-        # Propagate connectivity within partitions
-        self._propagate_connectivity()
+        # Propagate connectivity using METIS partition structure
+        # This sets prefix_original[block_id] for each METIS partition
+        self._propagate_connectivity_metis()
 
-        # Find cluster representatives
-        self._find_cluster_representatives()
+        # Find cluster representatives using METIS partitions
+        self._find_cluster_representatives_metis()
 
         # Compute prefix sum for cluster IDs
         prefix_np = self.prefix_original.to_numpy()
-        n_warps = self.metis_n_parts  # Use METIS partitions instead of warps
-        prefix_sum_np = np.zeros(n_warps + 1, dtype=np.int32)
-        prefix_sum_np[1:n_warps+1] = np.cumsum(prefix_np[:n_warps])
+        n_parts = self.metis_n_parts
+        prefix_sum_np = np.zeros(n_parts + 1, dtype=np.int32)
+        prefix_sum_np[1:n_parts+1] = np.cumsum(prefix_np[:n_parts])
         self.prefix_sum_original.from_numpy(prefix_sum_np)
 
         # Level 1 size and offset
-        level_1_size = int(prefix_sum_np[n_warps])
+        level_1_size = int(prefix_sum_np[n_parts])
         level_1_offset = self.n_verts
 
         # Store level info
         self.level_size[0] = ti.Vector([self.n_verts, 0])
         self.level_size[1] = ti.Vector([level_1_size, level_1_offset])
 
-        # Assign cluster IDs
-        self._assign_cluster_ids(level_1_offset)
-        self._propagate_cluster_ids()
+        # Assign cluster IDs using METIS partition structure
+        self._assign_cluster_ids_metis(level_1_offset)
 
         # Set block counts
         self.n_blocks_per_level[0] = self.metis_n_parts
@@ -3113,6 +3782,9 @@ class MASPreconditioner:
             self.n_blocks_per_level[level - 1] = n_blocks
 
         self._build_aggregation_table()
+
+        # P1 Optimization: Cache warp prefix values for fast access during restriction
+        self._cache_warp_prefix()
 
         print(f"[MAS] METIS hierarchy built with {actual_levels} levels")
 
@@ -3168,3 +3840,307 @@ class MASPreconditioner:
 
         # Phase 3: Prolongation
         self._collect_final_z()
+
+    # ========================================================================
+    # Simplified Interface for Direct Field Access (no meshtaichi dependency)
+    # ========================================================================
+
+    def _build_hierarchy_from_adjacency(self, neighbor_list_np: np.ndarray,
+                                        neighbor_starts_np: np.ndarray):
+        """
+        Build hierarchy from pre-computed adjacency arrays.
+
+        This provides a meshtaichi-free interface for building the hierarchy.
+
+        Args:
+            neighbor_list_np: Flat array of neighbor indices (int32)
+            neighbor_starts_np: CSR-style starts array (int32), length n_verts+1
+        """
+        # Copy neighbor data to fields
+        total_len = min(len(neighbor_list_np), self.neighbor_list.shape[0])
+        temp_neighbor_list = np.zeros(self.neighbor_list.shape[0], dtype=np.int32)
+        temp_neighbor_list[:total_len] = neighbor_list_np[:total_len]
+        self.neighbor_list.from_numpy(temp_neighbor_list)
+        self.neighbor_start.from_numpy(neighbor_starts_np)
+        self.total_neighbors = len(neighbor_list_np)
+
+        # Compute neighbor counts
+        neighbor_num_np = np.diff(neighbor_starts_np)
+        self.neighbor_num.from_numpy(neighbor_num_np)
+
+        # Build connectivity mask
+        self._build_connect_mask_from_csr()
+
+        # Build hierarchy levels
+        self._build_coarse_levels_from_scratch()
+
+        # Cache warp prefix for P1 optimization
+        self._cache_warp_prefix()
+
+        self.hierarchy_built = True
+        print(f"[MAS] Hierarchy built: {self.actual_levels} levels")
+
+    @ti.kernel
+    def _build_connect_mask_from_csr(self):
+        """Build connectivity bitmask from CSR neighbor format."""
+        for i in range(self.n_verts):
+            warp_id = i // BANKSIZE
+            lane_id = i % BANKSIZE
+            mask = ti.u32(0)
+
+            # Self-connection
+            mask |= ti.u32(1) << lane_id
+
+            # Add neighbors in same warp
+            start = self.neighbor_start[i]
+            end = self.neighbor_start[i + 1]
+            for k in range(start, end):
+                neighbor = self.neighbor_list[k]
+                if neighbor // BANKSIZE == warp_id:
+                    neighbor_lane = neighbor % BANKSIZE
+                    mask |= ti.u32(1) << neighbor_lane
+
+            self.fine_connect_mask[i] = mask
+
+    def _build_coarse_levels_from_scratch(self):
+        """Build coarse levels without mesh dependency."""
+        # Initialize level 0
+        self.level_size[0] = ti.Vector([self.n_verts, 0], dt=ti.i32)
+
+        current_size = self.n_verts
+        current_offset = 0
+        actual_levels = 1
+
+        for level in range(1, MAX_LEVELS):
+            # Compute next level size
+            next_offset = current_offset + current_size
+            next_size = (current_size + BANKSIZE - 1) // BANKSIZE
+
+            if next_size < 1:
+                break
+
+            self.level_size[level] = ti.Vector([next_size, next_offset], dt=ti.i32)
+
+            # Build going_next mapping
+            self._build_going_next_level(current_offset, current_size, next_offset)
+
+            current_offset = next_offset
+            current_size = next_size
+            actual_levels += 1
+
+            if next_size <= BANKSIZE:
+                break
+
+        self.actual_levels = actual_levels
+        self.level_size[actual_levels] = ti.Vector([0, current_offset + current_size], dt=ti.i32)
+
+    @ti.kernel
+    def _build_going_next_level(self, current_offset: ti.i32, current_size: ti.i32, next_offset: ti.i32):
+        """Build going_next mapping for one level."""
+        for i in range(current_size):
+            global_idx = current_offset + i
+            parent_idx = next_offset + i // BANKSIZE
+            self.going_next[global_idx] = parent_idx
+
+    def assemble_block_matrices_simple(self, solver, x_field, cell_verts_field,
+                                       cell_B_field, cell_W_field):
+        """
+        Assemble block matrices using direct field access (no meshtaichi).
+
+        Args:
+            solver: Object with mu, la, dt attributes
+            x_field: Vertex positions, ti.Vector.field(3, float, shape=n_verts)
+            cell_verts_field: Cell vertex indices, ti.field(int, shape=(n_cells, 4))
+            cell_B_field: Cell inverse rest matrices, ti.Matrix.field(3,3, shape=n_cells)
+            cell_W_field: Cell volumes, ti.field(float, shape=n_cells)
+        """
+        print("[MAS] Assembling block matrices (simple interface)...")
+
+        # Clear block matrices
+        self._clear_block_matrices()
+
+        # Assemble using simple kernel
+        self._assemble_simple_kernel(x_field, cell_verts_field, cell_B_field, cell_W_field,
+                                     solver.mu, solver.la, solver.dt)
+
+        # Add mass/regularization
+        self._add_mass_term_simple(solver.dt)
+
+        self.matrices_assembled = True
+
+    @ti.kernel
+    def _assemble_simple_kernel(self, x: ti.template(), cell_verts: ti.template(),
+                                cell_B: ti.template(), cell_W: ti.template(),
+                                mu: ti.f32, la: ti.f32, dt: ti.f32):
+        """Kernel for assembling block matrices from separate fields."""
+        W_scale = dt * dt
+
+        for c in range(self.n_cells):
+            # Get vertex indices
+            v0 = cell_verts[c, 0]
+            v1 = cell_verts[c, 1]
+            v2 = cell_verts[c, 2]
+            v3 = cell_verts[c, 3]
+
+            vids = ti.Vector([v0, v1, v2, v3])
+
+            # Compute deformation gradient
+            x0 = x[v0]
+            Ds = ti.Matrix.cols([x[v1] - x0, x[v2] - x0, x[v3] - x0])
+            B = cell_B[c]
+            F = Ds @ B
+            W = cell_W[c]
+
+            # Compute Hessian (ARAP for simplicity)
+            # Full Hessian requires SVD and material-specific d2PsidF2
+            # For benchmark, use simplified diagonal approximation
+            diag_val = 2.0 * mu * W * W_scale
+
+            # Add to block matrices
+            for i in ti.static(range(4)):
+                vi = vids[i]
+                block_i = vi // BANKSIZE
+                lane_i = vi % BANKSIZE
+
+                # Diagonal entry
+                sym_idx = lane_i * (lane_i + 1) // 2 + lane_i
+                diag_mat = ti.Matrix.identity(ti.f32, 3) * diag_val
+                ti.atomic_add(self.block_matrices[block_i, sym_idx], diag_mat)
+
+                # Off-diagonal within same block
+                for j in ti.static(range(i)):
+                    vj = vids[j]
+                    block_j = vj // BANKSIZE
+                    if block_j == block_i:
+                        lane_j = vj % BANKSIZE
+                        # Symmetric storage: always store (max, min)
+                        max_lane = ti.max(lane_i, lane_j)
+                        min_lane = ti.min(lane_i, lane_j)
+                        sym_idx_ij = max_lane * (max_lane + 1) // 2 + min_lane
+                        # Coupling term (simplified)
+                        coupling = ti.Matrix.identity(ti.f32, 3) * (diag_val * 0.1)
+                        ti.atomic_add(self.block_matrices[block_i, sym_idx_ij], coupling)
+
+    @ti.kernel
+    def _add_mass_term_simple(self, dt: ti.f32):
+        """Add mass/inertia term to diagonal."""
+        mass_scale = 1.0 / (dt * dt)
+        for i in range(self.n_verts):
+            block_id = i // BANKSIZE
+            lane_id = i % BANKSIZE
+            sym_idx = lane_id * (lane_id + 1) // 2 + lane_id
+            self.block_matrices[block_id, sym_idx] += ti.Matrix.identity(ti.f32, 3) * mass_scale
+
+    def apply_simple(self, grad_field, z_field, use_warp_reduction: bool = True):
+        """
+        Apply preconditioner using direct field access.
+
+        Args:
+            grad_field: Input gradient, ti.Vector.field(3, float, shape=n_verts)
+            z_field: Output preconditioned direction, ti.Vector.field(3, float, shape=n_verts)
+            use_warp_reduction: Whether to use P1 warp reduction optimization
+        """
+        # Clear buffers
+        self._clear_multi_level_buffers()
+
+        # Phase 1: Restriction (copy gradient to multi_level_r)
+        if use_warp_reduction and WARP_REDUCTION_ENABLED:
+            self._clear_warp_sum_buffer()
+            self._restrict_simple_optimized(grad_field)
+        else:
+            self._restrict_simple(grad_field)
+
+        # Phase 2: Local solve
+        self._schwarz_local_solve_full()
+
+        # Phase 3: Prolongation
+        self._prolong_simple(z_field)
+
+    @ti.kernel
+    def _restrict_simple(self, grad_field: ti.template()):
+        """Restrict gradient to multi-level residual (level 0)."""
+        for i in range(self.n_verts):
+            self.multi_level_r[i] = ti.cast(grad_field[i], ti.f32)
+
+        # Propagate to coarse levels
+        for level in range(1, self.actual_levels):
+            level_info = self.level_size[level - 1]
+            prev_size = level_info[0]
+            prev_offset = level_info[1]
+
+            next_info = self.level_size[level]
+            next_offset = next_info[1]
+
+            for i in range(prev_size):
+                prev_idx = prev_offset + i
+                next_idx = next_offset + i // BANKSIZE
+                ti.atomic_add(self.multi_level_r[next_idx], self.multi_level_r[prev_idx])
+
+    @ti.kernel
+    def _restrict_simple_optimized(self, grad_field: ti.template()):
+        """Optimized restriction using warp-level patterns."""
+        # Phase 1: Copy gradient to level 0
+        for i in range(self.n_verts):
+            self.multi_level_r[i] = ti.cast(grad_field[i], ti.f32)
+
+        # Phase 2 & 3: Use existing optimized kernels
+        n_warps = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+        for warp_id in range(n_warps):
+            prefix = self.warp_prefix_cache[warp_id]
+
+            if prefix == 1:
+                # Fully connected: sum all nodes
+                warp_sum = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+                warp_start = warp_id * BANKSIZE
+                warp_end = ti.min(warp_start + BANKSIZE, self.n_verts)
+
+                for i in range(warp_start, warp_end):
+                    warp_sum += self.multi_level_r[i]
+
+                # Store to coarse level
+                if self.actual_levels > 1:
+                    next_offset = self.level_size[1][1]
+                    self.multi_level_r[next_offset + warp_id] = warp_sum
+            else:
+                # Multi-component: use atomic
+                if self.actual_levels > 1:
+                    next_offset = self.level_size[1][1]
+                    warp_start = warp_id * BANKSIZE
+                    warp_end = ti.min(warp_start + BANKSIZE, self.n_verts)
+
+                    for i in range(warp_start, warp_end):
+                        ti.atomic_add(self.multi_level_r[next_offset + warp_id], self.multi_level_r[i])
+
+        # Higher levels
+        for level in range(2, self.actual_levels):
+            prev_info = self.level_size[level - 1]
+            prev_size = prev_info[0]
+            prev_offset = prev_info[1]
+
+            next_info = self.level_size[level]
+            next_offset = next_info[1]
+
+            for i in range(prev_size):
+                prev_idx = prev_offset + i
+                next_idx = next_offset + i // BANKSIZE
+                ti.atomic_add(self.multi_level_r[next_idx], self.multi_level_r[prev_idx])
+
+    @ti.kernel
+    def _prolong_simple(self, z_field: ti.template()):
+        """Prolong solution back to z_field."""
+        for i in range(self.n_verts):
+            # Collect from all levels
+            z_total = self.multi_level_z[i]
+
+            # Add coarse level contributions
+            for level in ti.static(range(1, MAX_LEVELS)):
+                if level < self.actual_levels:
+                    # Find coarse index
+                    coarse_idx = i
+                    for l in range(level):
+                        level_info = self.level_size[l]
+                        offset = level_info[1]
+                        coarse_idx = self.level_size[l + 1][1] + (coarse_idx - offset) // BANKSIZE
+                    z_total += self.multi_level_z[coarse_idx]
+
+            z_field[i] = ti.cast(z_total, ti.f32)
