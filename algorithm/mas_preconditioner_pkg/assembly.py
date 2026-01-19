@@ -400,95 +400,6 @@ class AssemblyMixin:
     # IPC Contact Contribution
     # ========================================================================
 
-    @ti.kernel
-    def _add_ipc_contact_contribution(self, cid: ti.template(), dHat: ti.f32, kappa: ti.f32):
-        """
-        Add IPC barrier Hessian contribution from contact pairs to block matrices.
-        (Legacy bitmasked cid version)
-        """
-        for k, j in cid:
-            pair = cid[k, j]
-            ids = pair.a
-            dist = pair.b
-            cord = pair.c
-            normal = pair.d
-
-            if dist >= dHat:
-                continue
-
-            barrier_H = 4.0 * kappa * (1.0 - dist / dHat)
-
-            # Process upper triangle of vertex pairs (i <= jj) to avoid double-counting
-            for i in ti.static(range(4)):
-                vi = ids[i]
-                ci = cord[i]
-
-                if ti.abs(ci) < 1e-10:
-                    continue
-
-                for jj in ti.static(range(i, 4)):  # jj >= i: upper triangle only
-                    vj = ids[jj]
-                    cj = cord[jj]
-
-                    if ti.abs(cj) < 1e-10:
-                        continue
-
-                    warp_i = vi // BANKSIZE
-                    warp_j = vj // BANKSIZE
-                    scale = barrier_H * ci * cj
-
-                    if warp_i == warp_j:
-                        lane_i = vi % BANKSIZE
-                        lane_j = vj % BANKSIZE
-
-                        if lane_i <= lane_j:
-                            sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
-                            for di in ti.static(range(3)):
-                                for dj in ti.static(range(3)):
-                                    val = scale * normal[di] * normal[dj]
-                                    ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj], val)
-                        else:
-                            sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
-                            for di in ti.static(range(3)):
-                                for dj in ti.static(range(3)):
-                                    val = scale * normal[dj] * normal[di]
-                                    ti.atomic_add(self.block_matrices[warp_j, sym_idx][di, dj], val)
-                    else:
-                        vert_i = vi
-                        vert_j = vj
-
-                        for _ in range(self.level_num - 1):
-                            vert_i = self.going_next[vert_i]
-                            vert_j = self.going_next[vert_j]
-
-                            if vert_i < 0 or vert_j < 0:
-                                break
-
-                            coarse_warp_i = vert_i // BANKSIZE
-                            coarse_warp_j = vert_j // BANKSIZE
-
-                            if coarse_warp_i == coarse_warp_j:
-                                lane_i = vert_i % BANKSIZE
-                                lane_j = vert_j % BANKSIZE
-
-                                if lane_i <= lane_j:
-                                    sym_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
-                                    for di in ti.static(range(3)):
-                                        for dj in ti.static(range(3)):
-                                            val = scale * normal[di] * normal[dj]
-                                            ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val)
-                                            # FIX: When mapping to diagonal block, add transpose for symmetry
-                                            if lane_i == lane_j:
-                                                val_t = scale * normal[dj] * normal[di]
-                                                ti.atomic_add(self.block_matrices[coarse_warp_i, sym_idx][di, dj], val_t)
-                                else:
-                                    sym_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
-                                    for di in ti.static(range(3)):
-                                        for dj in ti.static(range(3)):
-                                            val = scale * normal[dj] * normal[di]
-                                            ti.atomic_add(self.block_matrices[coarse_warp_j, sym_idx][di, dj], val)
-                                break
-
     def _add_ipc_contact_contribution_compact(self, solver, n_contacts: int):
         """
         Add IPC barrier Hessian contribution using compact array storage (P0 optimization).
@@ -712,20 +623,12 @@ class AssemblyMixin:
             self._add_elastic_contribution_approx(solver.mu, solver.la, solver.dt)
             print("[MAS] Approximate elastic Hessian assembled")
 
-        # Add IPC barrier Hessian from contact pairs
+        # Add IPC barrier Hessian from contact pairs (compact array format)
         if hasattr(solver, 'n_contacts') and hasattr(solver, 'contact_pairs'):
             n_contacts = solver.n_contacts[None]
             if n_contacts > 0:
                 self._add_ipc_contact_contribution_compact(solver, n_contacts)
-                print(f"[MAS] IPC contact Hessian assembled ({n_contacts} contacts, compact)")
-        elif hasattr(solver, 'cid') and solver.cid is not None:
-            try:
-                n_contacts = len(solver.cid)
-                if n_contacts > 0:
-                    self._add_ipc_contact_contribution(solver.cid, solver.dHat, solver.kappa)
-                    print(f"[MAS] IPC contact Hessian assembled ({n_contacts} contacts)")
-            except Exception:
-                pass
+                print(f"[MAS] IPC contact Hessian assembled ({n_contacts} contacts)")
 
         # Note: regularization disabled for debugging - enable if needed
         # self._add_regularization(1e-3)
