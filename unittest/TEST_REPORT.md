@@ -224,35 +224,56 @@ test_06_preconditioner_validity: OK
 ### 6.2 代码配置示例
 
 ```python
-# 推荐默认配置
+# 推荐配置 1: Gauss-Jordan + 自适应正则化 (最稳健)
+mas.invert_block_matrices(
+    use_full_inversion=True,
+    use_cholesky=False,       # Gauss-Jordan (处理非 SPD)
+    force_symmetry=True,
+    adaptive_regularization=0.05  # 相对正则化，自动缩放
+)
+
+# 推荐配置 2: IC(0) + 固定正则化 (需要 SPD 保证)
 mas.invert_block_matrices(
     use_full_inversion=True,
     use_cholesky=True,
     use_incomplete=True,      # IC(0) 提速
-    force_symmetry=True,      # 安全保障
-    regularization_epsilon=5e5  # 根据网格调整
+    force_symmetry=True,
+    regularization_epsilon=5e5  # 需要 > |λ_min|
 )
 
-# 稳健配置
+# 最稳健配置 (无正则化)
 mas.invert_block_matrices(
     use_full_inversion=True,
     use_cholesky=False,       # Gauss-Jordan
     force_symmetry=True,
-    regularization_epsilon=0.0
+    regularization_epsilon=0.0,
+    adaptive_regularization=0.0
 )
 ```
 
 ### 6.3 正则化参数选择
 
-正则化 ε 应满足:
+**固定正则化** (legacy):
 ```
 ε > |λ_min| × 1.1 + margin
 ```
+本网格: ε ≈ 4.5e5。**问题**: 对于刚度较小的问题，此值可能过大，使预条件器退化为单位矩阵。
 
-本网格: ε ≈ 4.5e5。实践中可通过以下方式估计 |λ_min|:
-- 前一帧的特征值
-- 对角占优检查
-- 保守过估计 (1e6)
+**自适应正则化** (推荐):
+```python
+adaptive_regularization = 0.05  # 相对于 ||diag(A)||_inf
+```
+
+| 参数值 | 效果 | 信息保留比 | 适用场景 |
+|--------|------|-----------|----------|
+| 0.01 | 轻度正则化 | ~20x | 接近 SPD 的矩阵 |
+| 0.05 | 中度正则化 | ~4x | 通用推荐 |
+| 0.1 | 强正则化 | ~2x | 强不定矩阵 |
+
+**自适应 vs 固定对比** (本网格):
+- 固定 ε=4.5e5: ε/||A|| = 0.76, info_ratio = 0.19 (正则化主导)
+- 自适应 rel=0.05: ε/||A|| = 0.03, info_ratio = 4.17 (保留结构)
+- **改进**: 22x 更好的信息保留
 
 ---
 

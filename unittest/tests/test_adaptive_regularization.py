@@ -158,13 +158,13 @@ class TestAdaptiveRegularization(unittest.TestCase):
         print(f"  Fixed ε={fixed_epsilon:.2e}: rel_err={rel_error:.2e}, "
               f"g^Tz={gTz:.2e}, info_ratio={info_ratio:.2f}")
 
-        # Test adaptive regularization
+        # Test adaptive regularization with Gauss-Jordan (handles indefinite)
         for rel_eps in adaptive_values:
             self.solver.mas.assemble_block_matrices(self.solver, use_full_hessian=True)
             self.solver.mas.invert_block_matrices(
                 use_full_inversion=True,
-                use_cholesky=True,
-                use_incomplete=True,
+                use_cholesky=False,  # Use Gauss-Jordan for indefinite matrices
+                use_incomplete=False,
                 force_symmetry=True,
                 regularization_epsilon=0.0,
                 adaptive_regularization=rel_eps
@@ -217,10 +217,8 @@ class TestAdaptiveRegularization(unittest.TestCase):
         print(f"  Improvement: {adaptive_info_ratio / fixed_info_ratio:.2f}x")
 
         # Adaptive should preserve more information (higher ratio)
-        # Only enforce this if fixed regularization was very large
-        if fixed_info_ratio < 0.1:
-            self.assertGreater(adaptive_info_ratio, fixed_info_ratio,
-                               "Adaptive should preserve more info when fixed ε is too large")
+        self.assertGreater(adaptive_info_ratio, fixed_info_ratio,
+                           "Adaptive should preserve more info")
 
     def test_03_scaling_invariance(self):
         """Test that adaptive regularization scales correctly with problem size."""
