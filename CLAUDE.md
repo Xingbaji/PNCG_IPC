@@ -84,10 +84,3 @@ python test_metis_reorder.py
 ```bash
 git add -A && git commit -m "[module] description" && git push
 ```
-
-## Known Issues
-
-- **NumPy:** Use numpy 1.26 or older (meshtaichi compatibility)
-- **MeshTaichi:** .face files required even if empty
-- **Platform:** Linux recommended
-- **pymetis:** Optional; METIS features disabled if not installed

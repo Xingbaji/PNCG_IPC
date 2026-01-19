@@ -29,11 +29,13 @@ class InversionMixin:
     def _invert_3x3(self, m: ti.template()) -> ti.Matrix:
         """Invert a 3x3 matrix."""
         det = m.determinant()
-        if ti.abs(det) < 1e-12:
-            return ti.Matrix.identity(ti.f32, 3)
 
-        inv_det = 1.0 / det
+        # Use safe division to avoid division by zero
+        # If det is too small, use identity matrix
+        safe_det = ti.max(ti.abs(det), ti.f32(1e-12))
+        inv_det = 1.0 / safe_det
 
+        # Compute cofactor matrix and scale by inv_det
         inv = ti.Matrix([
             [(m[1, 1] * m[2, 2] - m[1, 2] * m[2, 1]) * inv_det,
              (m[0, 2] * m[2, 1] - m[0, 1] * m[2, 2]) * inv_det,
@@ -46,7 +48,12 @@ class InversionMixin:
              (m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]) * inv_det]
         ], dt=ti.f32)
 
-        return inv
+        # If determinant was too small, return identity instead
+        result = inv
+        if ti.abs(det) < 1e-12:
+            result = ti.Matrix.identity(ti.f32, 3)
+
+        return result
 
     @ti.kernel
     def _expand_sym_to_full(self):
