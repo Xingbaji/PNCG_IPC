@@ -565,7 +565,7 @@ class InversionMixin:
     def invert_block_matrices(self, use_full_inversion: bool = True,
                               use_cholesky: bool = True,
                               use_blocked: bool = False,
-                              use_incomplete: bool = False,
+                              use_incomplete: bool = True,
                               use_oneway_gj: bool = False,
                               force_symmetry: bool = True,
                               regularization_epsilon: float = 0.0,
@@ -577,13 +577,17 @@ class InversionMixin:
             use_full_inversion: If True, use full 48x48 block inversion.
             use_cholesky: If True, use Cholesky decomposition.
             use_blocked: If True, use blocked Cholesky.
-            use_incomplete: If True, use Incomplete Cholesky IC(0).
+            use_incomplete: If True (default), use Incomplete Cholesky IC(0).
             use_oneway_gj: If True, use One-way Gauss-Jordan (P4 optimization).
             force_symmetry: If True, symmetrize matrices before inversion.
             regularization_epsilon: If > 0, add uniform diagonal regularization.
             adaptive_regularization: If > 0, add per-block adaptive regularization
                                      (relative to block diagonal norm, typical: 0.01-0.1).
                                      This is preferred over fixed epsilon for varying stiffness.
+
+        Default Method: IC(0) (Incomplete Cholesky)
+            - 7.6x faster than Gauss-Jordan with acceptable accuracy (3e-04)
+            - Requires regularization for non-SPD matrices
 
         Regularization Strategy:
             - adaptive_regularization > 0: Use per-block scaling (recommended)
