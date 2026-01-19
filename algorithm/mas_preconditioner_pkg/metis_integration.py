@@ -462,6 +462,227 @@ def _create_identity_result(n_verts: int, cells: np.ndarray,
 
 
 # ============================================================================
+# Partition Quality Metrics
+# ============================================================================
+
+def compute_partition_quality(n_verts: int, partition: np.ndarray,
+                               adjacency_list: List[np.ndarray]) -> Dict:
+    """
+    Compute partition quality metrics including ribbon ratio and boundary vertices.
+
+    This function evaluates partition quality by measuring:
+    1. Ribbon ratio: fraction of vertices with neighbors in other partitions
+    2. Boundary vertex count per partition
+    3. Edge cut: number of edges crossing partition boundaries
+    4. Internal connectivity: average internal neighbors per vertex
+
+    Args:
+        n_verts: Number of vertices
+        partition: Partition assignment for each vertex
+        adjacency_list: Adjacency list for the mesh graph
+
+    Returns:
+        Dictionary with quality metrics:
+        - ribbon_ratio: fraction of boundary vertices (lower is better)
+        - boundary_count: number of boundary vertices
+        - edge_cut: number of edges crossing partitions
+        - avg_internal_neighbors: average internal connectivity
+        - partition_ribbon_ratios: ribbon ratio per partition
+    """
+    n_parts = int(np.max(partition)) + 1
+
+    # Count boundary vertices and edge cuts
+    boundary_count = 0
+    edge_cut = 0
+    internal_neighbors_total = 0
+
+    # Per-partition statistics
+    partition_sizes = np.zeros(n_parts, dtype=np.int32)
+    partition_boundary_counts = np.zeros(n_parts, dtype=np.int32)
+
+    for v in range(n_verts):
+        my_part = partition[v]
+        partition_sizes[my_part] += 1
+
+        is_boundary = False
+        internal_count = 0
+
+        for neighbor in adjacency_list[v]:
+            if partition[neighbor] != my_part:
+                edge_cut += 1
+                is_boundary = True
+            else:
+                internal_count += 1
+
+        if is_boundary:
+            boundary_count += 1
+            partition_boundary_counts[my_part] += 1
+
+        internal_neighbors_total += internal_count
+
+    # Edge cut is counted twice (once from each endpoint)
+    edge_cut //= 2
+
+    # Compute ribbon ratios per partition
+    partition_ribbon_ratios = np.zeros(n_parts, dtype=np.float64)
+    for p in range(n_parts):
+        if partition_sizes[p] > 0:
+            partition_ribbon_ratios[p] = partition_boundary_counts[p] / partition_sizes[p]
+
+    return {
+        'ribbon_ratio': boundary_count / n_verts if n_verts > 0 else 0.0,
+        'boundary_count': int(boundary_count),
+        'edge_cut': int(edge_cut),
+        'avg_internal_neighbors': internal_neighbors_total / n_verts if n_verts > 0 else 0.0,
+        'partition_ribbon_ratios': partition_ribbon_ratios,
+        'avg_partition_ribbon_ratio': float(np.mean(partition_ribbon_ratios)),
+        'max_partition_ribbon_ratio': float(np.max(partition_ribbon_ratios)),
+    }
+
+
+def identify_boundary_vertices(n_verts: int, partition: np.ndarray,
+                                adjacency_list: List[np.ndarray]) -> np.ndarray:
+    """
+    Identify vertices on partition boundaries.
+
+    A vertex is on the boundary if it has at least one neighbor in a different partition.
+
+    Args:
+        n_verts: Number of vertices
+        partition: Partition assignment for each vertex
+        adjacency_list: Adjacency list for the mesh graph
+
+    Returns:
+        Boolean array where True indicates boundary vertex
+    """
+    is_boundary = np.zeros(n_verts, dtype=bool)
+
+    for v in range(n_verts):
+        my_part = partition[v]
+        for neighbor in adjacency_list[v]:
+            if partition[neighbor] != my_part:
+                is_boundary[v] = True
+                break
+
+    return is_boundary
+
+
+# ============================================================================
+# Greedy Partition (Alternative to METIS)
+# ============================================================================
+
+def greedy_partition(n_verts: int, adjacency_list: List[np.ndarray],
+                     block_size: int = BANKSIZE) -> np.ndarray:
+    """
+    Greedy graph partitioning that minimizes boundary vertices.
+
+    This algorithm grows partitions greedily by selecting vertices with
+    the highest connectivity to the current partition. It's useful as a
+    fallback when METIS is not available or for comparison.
+
+    Algorithm:
+    1. Start with the highest-connectivity unassigned vertex as seed
+    2. Greedily add vertices that maximize internal connectivity
+    3. Stop when partition reaches block_size
+    4. Repeat until all vertices are assigned
+
+    Args:
+        n_verts: Number of vertices
+        adjacency_list: Adjacency list for the mesh graph
+        block_size: Target partition size (default: BANKSIZE=16)
+
+    Returns:
+        Partition assignment array
+    """
+    partition = np.full(n_verts, -1, dtype=np.int32)
+    assigned = np.zeros(n_verts, dtype=bool)
+
+    # Compute initial connectivity scores
+    connectivity = np.array([len(adj) for adj in adjacency_list])
+
+    # For very sparse graphs, use simple sequential assignment
+    avg_connectivity = np.mean(connectivity)
+    if avg_connectivity < 2:
+        for v in range(n_verts):
+            partition[v] = v // block_size
+        return partition
+
+    part_id = 0
+
+    while not assigned.all():
+        # Find seed: highest connectivity unassigned vertex
+        unassigned_conn = connectivity * (~assigned)
+        seed = np.argmax(unassigned_conn)
+
+        if assigned[seed]:
+            # All remaining vertices have zero connectivity, assign sequentially
+            for v in range(n_verts):
+                if not assigned[v]:
+                    partition[v] = part_id
+                    assigned[v] = True
+                    if np.sum(partition == part_id) >= block_size:
+                        part_id += 1
+            break
+
+        # Grow partition from seed
+        partition[seed] = part_id
+        assigned[seed] = True
+        current_size = 1
+
+        # Build candidate set from seed's neighbors
+        candidates = set()
+        for neighbor in adjacency_list[seed]:
+            if not assigned[neighbor]:
+                candidates.add(neighbor)
+
+        while current_size < block_size and (candidates or not assigned.all()):
+            best_score = -1
+            best_vertex = -1
+
+            # Score candidates by connection to current partition
+            for v in candidates:
+                if assigned[v]:
+                    continue
+                # Count connections to current partition
+                score = sum(1 for n in adjacency_list[v]
+                           if assigned[n] and partition[n] == part_id)
+                # Small bonus for high connectivity
+                score += len(adjacency_list[v]) * 0.01
+                if score > best_score:
+                    best_score = score
+                    best_vertex = v
+
+            if best_vertex == -1:
+                # No valid candidate from neighbors, find any unassigned
+                for v in range(n_verts):
+                    if not assigned[v]:
+                        best_vertex = v
+                        break
+                if best_vertex == -1:
+                    break
+
+            # Add to partition
+            partition[best_vertex] = part_id
+            assigned[best_vertex] = True
+            current_size += 1
+            candidates.discard(best_vertex)
+
+            # Add new candidates from this vertex's neighbors
+            for neighbor in adjacency_list[best_vertex]:
+                if not assigned[neighbor]:
+                    candidates.add(neighbor)
+
+        part_id += 1
+
+    # Handle any remaining unassigned vertices
+    for v in range(n_verts):
+        if partition[v] == -1:
+            partition[v] = max(0, part_id - 1)
+
+    return partition
+
+
+# ============================================================================
 # METIS Partitioning Functions
 # ============================================================================
 

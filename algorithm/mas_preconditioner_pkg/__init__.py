@@ -71,10 +71,15 @@ from .metis_integration import (
     # File I/O
     save_partition_file,
     load_partition_file,
+    # Partition quality metrics (from HUP integration)
+    compute_partition_quality,
+    identify_boundary_vertices,
+    # Alternative partitioning (from HUP integration)
+    greedy_partition,
 )
 
 # Module version
-__version__ = "1.0.1"
+__version__ = "1.1.0"  # Added partition quality metrics and greedy partition
 
 # All public exports
 __all__ = [
@@ -106,4 +111,9 @@ __all__ = [
     "build_partition_mappings_cpu",
     "save_partition_file",
     "load_partition_file",
+    # Partition quality metrics
+    "compute_partition_quality",
+    "identify_boundary_vertices",
+    # Alternative partitioning
+    "greedy_partition",
 ]
