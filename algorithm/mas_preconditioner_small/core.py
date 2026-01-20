@@ -6,6 +6,7 @@ METIS reordering is computed ONCE at initialization and reused.
 """
 
 import taichi as ti
+import numpy as np
 
 # Constants
 BANKSIZE = 16
@@ -39,7 +40,8 @@ class MASPreconditionerSmall:
     - Correct prolongation using going_next hierarchy
     """
 
-    def __init__(self, mesh, metis_reordered: bool = True, max_verts: int = None):
+    def __init__(self, mesh, metis_reordered: bool = True, max_verts: int = None,
+                 metis_n_parts: int = None):
         """
         Initialize MAS Preconditioner.
 
@@ -51,6 +53,10 @@ class MASPreconditionerSmall:
                             - block_id = vertex_id // BANKSIZE
                             - No runtime mapping lookups needed (fastest mode)
             max_verts: Maximum number of vertices (default: mesh.verts.size)
+            metis_n_parts: Actual number of METIS partitions. If provided, use this
+                          instead of computing from n_verts. This is important for
+                          component-aware METIS where partition count may differ
+                          from ceil(n_verts / BANKSIZE).
 
         Note: Non-METIS and runtime mapping modes have been removed for compile optimization.
               Use util/model_loading.py which applies METIS reordering automatically.
@@ -71,13 +77,18 @@ class MASPreconditionerSmall:
         self.use_metis = True
 
         # Pre-reordered mode: vertex IDs are already in METIS partition order
-        # block_id = vertex_id // BANKSIZE, lane_id = vertex_id % BANKSIZE
-        self.n_parts = (self.n_verts + BANKSIZE - 1) // BANKSIZE
-        print(f"[MAS-Small] METIS pre-reordered mode: {self.n_parts} partitions")
+        # Use actual METIS partition count if provided (important for component-aware METIS)
+        if metis_n_parts is not None:
+            self.n_parts = metis_n_parts
+            print(f"[MAS-Small] METIS pre-reordered mode: {self.n_parts} partitions (from METIS)")
+        else:
+            self.n_parts = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+            print(f"[MAS-Small] METIS pre-reordered mode: {self.n_parts} partitions (computed)")
 
-        # Compute hierarchy sizes
-        self.level_num = min(MAX_LEVELS, self._compute_level_num(self.n_verts))
-        self.total_nodes_all_levels = self._compute_total_nodes(self.n_verts, self.level_num)
+        # Compute hierarchy sizes (using n_parts for coarse levels, not n_verts)
+        self.level_num = min(MAX_LEVELS, self._compute_level_num_from_parts(self.n_parts))
+        self.total_nodes_all_levels = self._compute_total_nodes_from_parts(
+            self.n_verts, self.n_parts, self.level_num)
         self.total_blocks = (self.total_nodes_all_levels + BANKSIZE - 1) // BANKSIZE
 
         # Level info: [size, offset] for each level
@@ -108,6 +119,11 @@ class MASPreconditionerSmall:
         self.partId_map_real = None
         self.real_map_partId = None
 
+        # Partition mapping for going_next (set by model_loading if available)
+        # Maps sorted_vertex_id -> partition_id
+        # Needed when partition sizes < BANKSIZE (common with component-aware METIS)
+        self.sorted_to_partition = None
+
         # State flags
         self.hierarchy_built = False
         self.matrices_assembled = False
@@ -132,7 +148,7 @@ class MASPreconditionerSmall:
               f"{self.total_blocks} blocks")
 
     def _compute_level_num(self, n_verts: int) -> int:
-        """Compute number of hierarchy levels."""
+        """Compute number of hierarchy levels (legacy, uses n_verts)."""
         levels = 1
         size = n_verts
         while size > BANKSIZE and levels < MAX_LEVELS:
@@ -140,8 +156,22 @@ class MASPreconditionerSmall:
             levels += 1
         return levels
 
+    def _compute_level_num_from_parts(self, n_parts: int) -> int:
+        """Compute number of hierarchy levels using actual partition count.
+
+        Level 0: n_verts (fine level)
+        Level 1: n_parts (from METIS)
+        Level 2+: ceil(prev_level / BANKSIZE)
+        """
+        levels = 2  # At least 2 levels (verts and partitions)
+        size = n_parts
+        while size > BANKSIZE and levels < MAX_LEVELS:
+            size = (size + BANKSIZE - 1) // BANKSIZE
+            levels += 1
+        return levels
+
     def _compute_total_nodes(self, n_verts: int, level_num: int) -> int:
-        """Compute total nodes across all levels."""
+        """Compute total nodes across all levels (legacy, uses n_verts)."""
         total = n_verts
         size = n_verts
         for _ in range(level_num - 1):
@@ -149,93 +179,111 @@ class MASPreconditionerSmall:
             total += size
         return total
 
+    def _compute_total_nodes_from_parts(self, n_verts: int, n_parts: int, level_num: int) -> int:
+        """Compute total nodes using actual partition count.
+
+        Level 0: n_verts
+        Level 1: n_parts (from METIS, may differ from ceil(n_verts/BANKSIZE))
+        Level 2+: ceil(prev_level / BANKSIZE)
+        """
+        total = n_verts + n_parts
+        size = n_parts
+        for _ in range(2, level_num):
+            size = (size + BANKSIZE - 1) // BANKSIZE
+            total += size
+        return total
+
     def _init_level_sizes(self):
-        """Initialize level size and offset arrays."""
+        """Initialize level size and offset arrays using actual n_parts."""
         sizes = []
         offsets = []
 
-        size = self.n_verts
-        offset = 0
-        for level in range(self.level_num):
+        # Level 0: n_verts
+        sizes.append(self.n_verts)
+        offsets.append(0)
+
+        # Level 1: n_parts (from METIS)
+        if self.level_num >= 2:
+            sizes.append(self.n_parts)
+            offsets.append(self.n_verts)
+
+        # Level 2+: ceil(prev_level / BANKSIZE)
+        offset = self.n_verts + self.n_parts
+        size = self.n_parts
+        for level in range(2, self.level_num):
+            size = (size + BANKSIZE - 1) // BANKSIZE
             sizes.append(size)
             offsets.append(offset)
             offset += size
-            size = (size + BANKSIZE - 1) // BANKSIZE
 
-        for i in range(self.level_num):
+        for i in range(len(sizes)):
             self.level_size[i] = ti.Vector([sizes[i], offsets[i]])
-        for i in range(self.level_num, MAX_LEVELS):
+        for i in range(len(sizes), MAX_LEVELS):
             self.level_size[i] = ti.Vector([0, offset])
 
     # ========================================================================
     # Hierarchy Building
     # ========================================================================
 
-    @ti.kernel
-    def _build_going_next(self, level_num: ti.i32):
+    def _build_going_next(self, level_num: int):
         """
         Build going_next mapping for METIS pre-reordered mesh.
 
-        When mesh is pre-reordered, vertex IDs directly correspond to partitions:
-        - partition_id = vertex_id // BANKSIZE
-        No mapping lookup needed!
+        Uses the sorted_to_partition mapping to correctly identify which partition
+        each vertex belongs to, handling cases where partition size < BANKSIZE.
         """
-        if level_num == 1:
+        going_next_np = np.full(self.total_nodes_all_levels, -1, dtype=np.int32)
+
+        if level_num <= 1:
+            self.going_next.from_numpy(going_next_np)
+            return
+
+        # Level 0: vertices map to coarse based on their partition ID
+        level_1_offset = int(self.level_size[1][1])
+
+        if self.sorted_to_partition is not None:
+            # Use actual partition mapping
             for i in range(self.n_verts):
-                self.going_next[i] = -1
+                part_id = self.sorted_to_partition[i]
+                coarse_idx = level_1_offset + part_id
+                going_next_np[i] = coarse_idx
         else:
-            # Level 0: vertices map to coarse based on position (direct calculation)
+            # Fallback: assume partition_id = vertex_id // BANKSIZE
             for i in range(self.n_verts):
-                # In pre-reordered mode, partition = vertex_id // BANKSIZE
                 part_id = i // BANKSIZE
-                # Coarse node index = level_1_offset + partition_id
-                coarse_idx = self.level_size[1][1] + part_id
-                self.going_next[i] = coarse_idx
+                coarse_idx = level_1_offset + part_id
+                going_next_np[i] = coarse_idx
 
-            # Higher levels: sequential mapping (same as non-METIS)
-            for level in range(1, level_num - 1):
-                level_offset = self.level_size[level][1]
-                level_size_val = self.level_size[level][0]
-                next_offset = self.level_size[level + 1][1]
+        # Higher levels: sequential mapping
+        for level in range(1, level_num - 1):
+            level_offset = int(self.level_size[level][1])
+            level_size_val = int(self.level_size[level][0])
+            next_offset = int(self.level_size[level + 1][1])
 
-                for i in range(level_size_val):
-                    idx = level_offset + i
-                    coarse_idx = next_offset + i // BANKSIZE
-                    self.going_next[idx] = coarse_idx
+            for i in range(level_size_val):
+                idx = level_offset + i
+                coarse_idx = next_offset + i // BANKSIZE
+                going_next_np[idx] = coarse_idx
 
-            # Last level: map to -1
-            last_offset = self.level_size[level_num - 1][1]
-            last_size = self.level_size[level_num - 1][0]
-            for i in range(last_size):
-                self.going_next[last_offset + i] = -1
+        # Last level: map to -1 (already initialized)
+
+        self.going_next.from_numpy(going_next_np)
 
     def build_hierarchy(self):
         """Build the multi-level hierarchy for METIS pre-reordered mesh."""
-        # Recompute level sizes for METIS
-        # Level 1 size = number of METIS partitions
-        level_1_size = self.n_parts
-        level_1_offset = self.n_verts
+        # Sanity check: verify n_parts matches sorted_to_partition if available
+        if self.sorted_to_partition is not None:
+            actual_n_parts = int(self.sorted_to_partition.max()) + 1
+            if actual_n_parts != self.n_parts:
+                print(f"[MAS-Small] WARNING: n_parts mismatch: {self.n_parts} != {actual_n_parts} (from sorted_to_partition)")
 
-        sizes = [self.n_verts, level_1_size]
-        offsets = [0, level_1_offset]
-
-        # Compute higher levels
-        size = level_1_size
-        offset = level_1_offset + size
-        for _ in range(2, self.level_num):
-            size = (size + BANKSIZE - 1) // BANKSIZE
-            sizes.append(size)
-            offsets.append(offset)
-            offset += size
-
-        # Update level_size field
-        for i in range(len(sizes)):
-            self.level_size[i] = ti.Vector([sizes[i], offsets[i]])
+        # Level sizes are already initialized in __init__ via _init_level_sizes()
+        # using the correct n_parts value
 
         # Pre-reordered mode: direct partition calculation
         self._build_going_next(self.level_num)
         print(f"[MAS-Small] Hierarchy built: {self.level_num} levels, "
-              f"L0={self.n_verts}, L1={level_1_size}")
+              f"L0={self.n_verts}, L1={self.n_parts}")
 
         self.hierarchy_built = True
 

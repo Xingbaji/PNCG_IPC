@@ -12,6 +12,7 @@ Key features:
 
 import numpy as np
 from typing import List, Tuple, Optional, Dict
+from collections import deque
 
 BANKSIZE = 16
 
@@ -25,7 +26,7 @@ def check_pymetis_available() -> bool:
         return False
 
 
-def build_adjacency_from_cells(n_verts: int, cells: np.ndarray) -> List[np.ndarray]:
+def build_adjacency_from_cells(n_verts: int, cells: np.ndarray) -> Tuple[List[np.ndarray], Dict[int, set]]:
     """
     Build adjacency list from cell connectivity.
 
@@ -35,6 +36,7 @@ def build_adjacency_from_cells(n_verts: int, cells: np.ndarray) -> List[np.ndarr
 
     Returns:
         adjacency_list: List of neighbor arrays for each vertex
+        adj_dict: Dictionary mapping vertex to set of neighbors (for component detection)
     """
     adj_dict = {i: set() for i in range(n_verts)}
 
@@ -52,7 +54,43 @@ def build_adjacency_from_cells(n_verts: int, cells: np.ndarray) -> List[np.ndarr
         neighbors = np.array(list(adj_dict[i]), dtype=np.int32)
         adjacency_list.append(neighbors)
 
-    return adjacency_list
+    return adjacency_list, adj_dict
+
+
+def find_connected_components(n_verts: int, adj_dict: Dict[int, set]) -> List[List[int]]:
+    """
+    Find connected components in the mesh graph using BFS.
+
+    Args:
+        n_verts: Number of vertices
+        adj_dict: Adjacency dictionary
+
+    Returns:
+        List of components, each component is a list of vertex indices
+    """
+    visited = set()
+    components = []
+
+    def bfs(start):
+        component = []
+        queue = [start]
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            component.append(node)
+            for neighbor in adj_dict[node]:
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        return component
+
+    for v in range(n_verts):
+        if v not in visited:
+            comp = bfs(v)
+            components.append(comp)
+
+    return components
 
 
 def metis_partition(n_verts: int, adjacency_list: List[np.ndarray],
@@ -123,10 +161,70 @@ class MetisReorderResult:
                 self.real_map_partId is not None)
 
 
+def _partition_single_component(
+    component_verts: List[int],
+    adjacency_list: List[np.ndarray],
+    block_size: int
+) -> np.ndarray:
+    """
+    Partition a single connected component using METIS.
+
+    Args:
+        component_verts: List of vertex indices in this component
+        adjacency_list: Full adjacency list (global indices)
+        block_size: Maximum partition size
+
+    Returns:
+        partition: Array of partition IDs for vertices in this component (local IDs)
+    """
+    n_comp = len(component_verts)
+
+    if n_comp <= block_size:
+        # Small component: single partition
+        return np.zeros(n_comp, dtype=np.int32)
+
+    # Build local adjacency for this component
+    global_to_local = {v: i for i, v in enumerate(component_verts)}
+    local_adj = []
+    for v in component_verts:
+        neighbors = []
+        for n in adjacency_list[v]:
+            if n in global_to_local:
+                neighbors.append(global_to_local[n])
+        local_adj.append(np.array(neighbors, dtype=np.int32))
+
+    # Compute number of partitions needed
+    for metis_offset in range(block_size):
+        n_parts = (n_comp + block_size - metis_offset - 1) // (block_size - metis_offset)
+
+        if n_parts <= 1:
+            return np.zeros(n_comp, dtype=np.int32)
+
+        partition = metis_partition(n_comp, local_adj, n_parts)
+
+        # Check max partition size
+        partition_sizes = np.bincount(partition)
+        max_size = int(np.max(partition_sizes))
+
+        if max_size <= block_size:
+            return partition
+
+    # Fallback: sequential partitioning
+    partition = np.zeros(n_comp, dtype=np.int32)
+    for i in range(n_comp):
+        partition[i] = i // block_size
+    return partition
+
+
 def compute_metis_reorder(n_verts: int, cells: np.ndarray,
                           block_size: int = BANKSIZE) -> MetisReorderResult:
     """
     Compute METIS-based reordering for MAS preconditioner.
+
+    This function handles multiple disconnected objects correctly by:
+    1. Detecting connected components in the mesh
+    2. Partitioning each component separately with METIS
+    3. Ensuring partitions don't span across disconnected objects
 
     This function should be called ONCE at simulation initialization.
     The result is then passed to MASPreconditionerSmall for reuse.
@@ -148,35 +246,48 @@ def compute_metis_reorder(n_verts: int, cells: np.ndarray,
         print("[METIS] WARNING: pymetis not available, using identity mapping")
         return _create_identity_result(n_verts, block_size)
 
-    # Build adjacency list
+    # Build adjacency list and detect connected components
     print("[METIS] Building adjacency graph...")
-    adjacency_list = build_adjacency_from_cells(n_verts, cells)
+    adjacency_list, adj_dict = build_adjacency_from_cells(n_verts, cells)
 
-    # Iteratively find partition count that satisfies block_size constraint
-    partition = None
-    n_parts = 1
+    # Find connected components
+    components = find_connected_components(n_verts, adj_dict)
+    n_components = len(components)
 
-    for metis_offset in range(block_size):
-        n_parts = (n_verts + block_size - metis_offset - 1) // (block_size - metis_offset)
+    if n_components > 1:
+        print(f"[METIS] Found {n_components} disconnected components, partitioning separately")
 
-        if n_parts <= 1:
-            partition = np.zeros(n_verts, dtype=np.int32)
-            n_parts = 1
-            break
+    # Partition each component separately and merge results
+    global_partition = np.zeros(n_verts, dtype=np.int32)
+    partition_offset = 0
 
-        partition = metis_partition(n_verts, adjacency_list, n_parts)
+    for comp_idx, component in enumerate(components):
+        # Partition this component
+        local_partition = _partition_single_component(component, adjacency_list, block_size)
 
-        # Check max partition size
-        partition_sizes = np.bincount(partition)
-        max_size = int(np.max(partition_sizes))
+        # Map local partition IDs to global partition IDs
+        n_local_parts = int(local_partition.max()) + 1 if len(local_partition) > 0 else 0
 
-        if max_size <= block_size:
-            print(f"[METIS] Success with {n_parts} partitions, max size = {max_size}")
-            break
+        for local_idx, global_idx in enumerate(component):
+            global_partition[global_idx] = local_partition[local_idx] + partition_offset
+
+        partition_offset += n_local_parts
+
+        if n_components > 1 and n_components <= 10:
+            print(f"[METIS]   Component {comp_idx}: {len(component)} verts, {n_local_parts} partitions")
+
+    n_parts = partition_offset
+    partition = global_partition
+
+    # Verify max partition size
+    partition_sizes = np.bincount(partition)
+    max_size = int(np.max(partition_sizes))
+    print(f"[METIS] Success with {n_parts} partitions, max size = {max_size}")
 
     result.n_parts = n_parts
 
     # Compute sort index (stable sort by partition ID)
+    # After sorting, vertices with same partition are contiguous
     indexed = [(i, partition[i]) for i in range(n_verts)]
     indexed.sort(key=lambda x: x[1])
 
@@ -212,11 +323,17 @@ def compute_metis_reorder(n_verts: int, cells: np.ndarray,
     result.partId_map_real = partId_map_real
     result.real_map_partId = real_map_partId
 
+    # Store partition start offsets for going_next computation
+    # This maps: sorted_vertex_id -> partition_id
+    # Needed because partition_id != sorted_vertex_id // BANKSIZE when partitions are < BANKSIZE
+    result.sorted_to_partition = sorted_partition.copy()
+
     # Compute statistics
     partition_sizes = np.bincount(sorted_partition)
     result.stats = {
         'n_vertices': n_verts,
         'n_partitions': n_parts,
+        'n_components': n_components,
         'max_partition_size': int(np.max(partition_sizes)),
         'min_partition_size': int(np.min(partition_sizes)),
         'avg_partition_size': float(np.mean(partition_sizes)),
@@ -227,6 +344,8 @@ def compute_metis_reorder(n_verts: int, cells: np.ndarray,
     print(f"  - Partitions: {n_parts}")
     print(f"  - Max size: {result.stats['max_partition_size']}")
     print(f"  - Avg size: {result.stats['avg_partition_size']:.1f}")
+    if n_components > 1:
+        print(f"  - Components: {n_components} (partitioned separately)")
 
     return result
 

@@ -114,17 +114,35 @@ class MASPNCGSolverNoCollision(base_deformer):
         # Note: model_loading applies METIS reordering, so metis_reordered=True
         t0 = time.perf_counter()
         print('[MAS-PNCG] Initializing MAS preconditioner...')
-        self.mas_preconditioner = MASPreconditionerSmall(self.mesh, metis_reordered=True)
+
+        # Get actual partition count from METIS result (may differ from ceil(n_verts/BANKSIZE)
+        # due to component-aware partitioning)
+        metis_n_parts = None
+        metis_sorted_to_partition = None
+        if hasattr(model, 'metis_result') and model.metis_result is not None:
+            if hasattr(model.metis_result, 'n_parts'):
+                metis_n_parts = model.metis_result.n_parts
+            if hasattr(model.metis_result, 'sorted_to_partition'):
+                metis_sorted_to_partition = model.metis_result.sorted_to_partition
+
+        self.mas_preconditioner = MASPreconditionerSmall(
+            self.mesh,
+            metis_reordered=True,
+            metis_n_parts=metis_n_parts
+        )
+
+        # Pass METIS partition mapping for correct going_next computation
+        # This is needed when partition sizes < BANKSIZE (common with component-aware METIS)
+        if metis_sorted_to_partition is not None:
+            self.mas_preconditioner.sorted_to_partition = metis_sorted_to_partition
+
         t_mas = (time.perf_counter() - t0) * 1000
         print(f'[MAS-PNCG] MAS initialized with {self.mas_preconditioner.level_num} levels')
 
         # Multi-level preconditioner control
-        # For scenes with multiple disconnected objects, disable multilevel to avoid
-        # incorrect cross-object coupling in coarse levels
-        n_objects = model.dict.get('n_objects', 1)
-        self.use_multilevel = (n_objects == 1)  # Only use multilevel for single object
-        if not self.use_multilevel:
-            print(f'[MAS-PNCG] Multi-object scene ({n_objects} objects): using level-0 only')
+        # With component-aware METIS (partitions each connected component separately),
+        # multilevel preconditioning is now safe for multi-object scenes
+        self.use_multilevel = True
 
         # Buffer fields for hessian_matvec
         t0 = time.perf_counter()
