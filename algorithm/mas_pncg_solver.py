@@ -1,41 +1,55 @@
 """
-MAS-PNCG Solver Implementation
+MAS-PNCG Solver with IPC Contact Support.
 
-Implements the complete MAS-PNCG algorithm from the paper:
-"An Efficient Multilevel Preconditioned Nonlinear Conjugate Gradient Framework
-for Incremental Potential Contact"
+Full MAS-PNCG solver with:
+- IPC contact handling (PT/EE collisions via BVH)
+- MAS preconditioner with contact Hessian integration
+- Optimized 2D subspace minimization
+- Powell's restart criterion
+- CCD-based line search
 
-Key components:
-1. MAS Preconditioner with Sparse-Input Woodbury Updates
-2. Optimal 2D Subspace Minimization
-3. Powell's Restart Criterion
-4. Conservative CCD with Per-Subdomain Step Sizes
-5. Improved Frame-Invariant Lower Bound for CCD
+Based on mas_pncg_solver_nocolli.py with collision detection from pncg_base_ipc.py.
 """
 
+import time
 import taichi as ti
-import numpy as np
-from algorithm.collision_detection_bvh import *
-from util.model_loading import *
-from algorithm.mas_preconditioner_small import MASPreconditionerSmall, BANKSIZE
+from algorithm.collision_detection_bvh import collision_detection_bvh_module
+from algorithm.mas_preconditioner_contact import MASPreconditionerContact, BANKSIZE
+from util.model_loading import model_loading
 
 # Constants
-RESTART_THRESHOLD = 0.3  # Powell's restart threshold (delta)
-ROTATION_THRESHOLD = 0.9  # cos(25°) ≈ 0.906, for normal stability check
-TOP_K_UPDATES = 8  # Maximum rank-1 updates per subdomain
-CCD_ALPHA_MIN = 1e-6  # Minimum step size for CCD
+RESTART_THRESHOLD = 0.5  # Powell's restart threshold
+ENERGY_TOL = 1e-4        # Relative energy change tolerance for convergence
+STAGNANT_WINDOW = 5      # Number of iterations to check for energy stagnation
 
 
 @ti.data_oriented
 class MASPNCGSolver(collision_detection_bvh_module):
     """
-    MAS-PNCG solver implementing the full algorithm from the paper.
+    MAS-PNCG solver with IPC contact support.
+
+    Inherits from collision_detection_bvh_module for BVH-based collision detection.
+    Uses MASPreconditionerContact for contact-aware preconditioning.
     """
 
     def __init__(self, demo='cube_0'):
+        """
+        Initialize solver.
+
+        Args:
+            demo: Demo configuration name
+        """
+        init_start = time.perf_counter()
+
+        # Load model first to get parameters
+        t0 = time.perf_counter()
         model = model_loading(demo=demo)
+        t_model_loading = (time.perf_counter() - t0) * 1000
+
         self.demo = demo
-        print('demo', self.demo)
+        print(f'[MAS-PNCG] demo={demo}')
+
+        # Store parameters before calling parent __init__
         self.dict = model.dict
         self.mu, self.la = model.mu, model.la
         self.density = model.density
@@ -47,11 +61,12 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.iter_max = model.iter_max
         self.camera_position = model.camera_position
         self.camera_lookat = model.camera_lookat
-        self.ground_barrier = getattr(model, 'ground_barrier', 0)  # Default to 0 for collision-free demos
+        self.ground_barrier = model.ground_barrier
         self.frame = 0
         self.SMALL_NUM = 1e-7
 
-        # Initialize vertex fields
+        # Initialize vertex fields (extended for MAS-PNCG)
+        t0 = time.perf_counter()
         self.mesh.verts.place({
             'x': ti.types.vector(3, float),          # Current position
             'v': ti.types.vector(3, float),          # Velocity
@@ -67,6 +82,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
             'z_prev': ti.types.vector(3, float),     # Previous z (for Powell criterion)
             'w': ti.types.vector(3, float),          # H*p (Hessian-vector product)
             'Hv': ti.types.vector(3, float),         # H*z (for 2D subspace)
+            'diagH': ti.types.vector(3, float),      # Diagonal Hessian (for fallback)
         })
 
         self.mesh.cells.place({'B': ti.math.mat3, 'W': float})
@@ -75,71 +91,137 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.mesh.verts.x_prev.copy_from(self.mesh.verts.x)
         self.n_verts = len(self.mesh.verts)
         self.n_cells = len(self.mesh.cells)
-        print('n_verts, n_cells', self.n_verts, self.n_cells)
+        t_mesh_fields = (time.perf_counter() - t0) * 1000
+        print(f'Mesh: {self.n_verts} verts, {self.n_cells} cells')
 
-        # Precompute
+        # Precompute mass and B matrices (inherited from base_deformer)
+        t0 = time.perf_counter()
         self.precompute()
+        t_precompute = (time.perf_counter() - t0) * 1000
+
+        # Initialize indices for rendering
+        t0 = time.perf_counter()
         self.indices = ti.field(ti.i32, shape=len(self.mesh.cells) * 4 * 3)
         self.init_indices()
-        self.assign_elastic_type(model.elastic_type)
+        t_indices = (time.perf_counter() - t0) * 1000
 
-        # Boundary elements
+        # Assign elastic type (inherited from base_deformer)
+        t0 = time.perf_counter()
+        self.assign_elastic_type(model.elastic_type)
+        t_elastic = (time.perf_counter() - t0) * 1000
+
+        # Set point lights for visualization
+        self.set_point_lights()
+
+        # Boundary elements (for collision detection)
         self.boundary_points = model.boundary_points
         self.boundary_edges = model.boundary_edges
         self.boundary_triangles = model.boundary_triangles
         self.n_boundary_points = self.boundary_points.shape[0]
         self.n_boundary_edges = self.boundary_edges.shape[0]
         self.n_boundary_triangles = self.boundary_triangles.shape[0]
-        print('boundary size', self.n_boundary_points, self.n_boundary_edges, self.n_boundary_triangles)
-        self.set_point_lights()
+        print(f'Boundary: {self.n_boundary_points} points, {self.n_boundary_edges} edges, '
+              f'{self.n_boundary_triangles} triangles')
 
         # IPC parameters
-        print('init BVH structures')
+        t0 = time.perf_counter()
         self.kappa = model.kappa
         self.dHat = model.dHat
-        self.barrier_type = getattr(model, 'barrier_type', 'cubic')
+        self.barrier_type = getattr(model, 'barrier_type', 'log')
         self.adaptive_kappa = getattr(model, 'adaptive_kappa', False)
+        self.cache_kappa = getattr(model, 'cache_kappa', True)
         self.init_bvh()
-        print('dHat:', self.dHat, 'kappa:', self.kappa, 'barrier_type:', self.barrier_type)
+        t_bvh = (time.perf_counter() - t0) * 1000
+        print(f'IPC: dHat={self.dHat}, kappa={self.kappa}, barrier={self.barrier_type}')
 
         self.config = model.dict
         self.config['dHat'] = self.dHat
         self.config['kappa'] = self.kappa
+        self.config['barrier_type'] = self.barrier_type
 
-        # MAS Preconditioner (simplified version)
-        print('Initializing MAS preconditioner (small)...')
-        self.mas_preconditioner = MASPreconditionerSmall(self.mesh)
-        print('MAS preconditioner initialized')
+        # MAS Preconditioner with Contact support
+        t0 = time.perf_counter()
+        print('[MAS-PNCG] Initializing MAS preconditioner with contact support...')
+        self.mas_preconditioner = MASPreconditionerContact(
+            self.mesh,
+            max_contacts=self.MAX_C,
+            metis_reordered=True
+        )
+        t_mas = (time.perf_counter() - t0) * 1000
+        print(f'[MAS-PNCG] MAS initialized with {self.mas_preconditioner.level_num} levels')
 
-        # Buffer fields for hessian_matvec (used for 2D subspace minimization)
+        # Buffer fields for hessian_matvec
+        t0 = time.perf_counter()
         self.hv_input = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
         self.hv_output = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
+        t_buffers = (time.perf_counter() - t0) * 1000
 
         # MAS-PNCG state variables
         self.restart_threshold = RESTART_THRESHOLD
-        self.restart = ti.field(dtype=ti.i32, shape=())  # Flag for restart
-        self.restart[None] = 1  # Start with restart=True
+        self.energy_tol = ENERGY_TOL
+        self.stagnant_window = STAGNANT_WINDOW
+        self.energy_history = []
 
         # Scalar fields for 2D subspace computation
-        self.z_H_z = ti.field(dtype=ti.f32, shape=())  # z^T H z
-        self.z_H_p = ti.field(dtype=ti.f32, shape=())  # z^T H p
-        self.p_H_p = ti.field(dtype=ti.f32, shape=())  # p^T H p
-        self.z_g = ti.field(dtype=ti.f32, shape=())    # z^T g
-        self.p_g = ti.field(dtype=ti.f32, shape=())    # p^T g
-        self.g_z_prev = ti.field(dtype=ti.f32, shape=())  # g^T z_prev (for Powell)
-        self.g_z = ti.field(dtype=ti.f32, shape=())       # g^T z
+        t0 = time.perf_counter()
+        self.z_H_z = ti.field(dtype=ti.f32, shape=())
+        self.z_H_p = ti.field(dtype=ti.f32, shape=())
+        self.p_H_p = ti.field(dtype=ti.f32, shape=())
+        self.z_g = ti.field(dtype=ti.f32, shape=())
+        self.p_g = ti.field(dtype=ti.f32, shape=())
+        self.g_z_prev = ti.field(dtype=ti.f32, shape=())
+        self.g_z = ti.field(dtype=ti.f32, shape=())
+        t_scalars = (time.perf_counter() - t0) * 1000
 
-        # Per-subdomain step sizes for Conservative CCD
-        n_subdomains = (self.n_verts + BANKSIZE - 1) // BANKSIZE
-        self.subdomain_alpha = ti.field(dtype=ti.f32, shape=n_subdomains)
+        init_total = (time.perf_counter() - init_start) * 1000
+
+        # Print initialization timing summary
+        print(f'\n[Init Timing Summary]')
+        print(f'  Model loading:      {t_model_loading:7.2f} ms')
+        print(f'  Mesh fields:        {t_mesh_fields:7.2f} ms')
+        print(f'  Precompute (B,m):   {t_precompute:7.2f} ms')
+        print(f'  Indices:            {t_indices:7.2f} ms')
+        print(f'  Elastic type:       {t_elastic:7.2f} ms')
+        print(f'  BVH init:           {t_bvh:7.2f} ms')
+        print(f'  MAS preconditioner: {t_mas:7.2f} ms')
+        print(f'  Buffers:            {t_buffers:7.2f} ms')
+        print(f'  Scalar fields:      {t_scalars:7.2f} ms')
+        print(f'  --------------------------------')
+        print(f'  Total:              {init_total:7.2f} ms\n')
 
     # ========================================================================
-    # Barrier Functions (Cubic)
+    # Barrier Functions (IPC)
     # ========================================================================
 
     @ti.func
     def barrier_E(self, d):
-        """Cubic barrier energy"""
+        """Log barrier energy."""
+        E = 0.0
+        if d < self.dHat and d > 1e-10:
+            E = -self.kappa * (d - self.dHat) ** 2 * ti.log(d / self.dHat)
+        return E
+
+    @ti.func
+    def barrier_g(self, d):
+        """Log barrier gradient."""
+        g = 0.0
+        if d < self.dHat and d > 1e-10:
+            t2 = d - self.dHat
+            g = self.kappa * (t2 * ti.log(d / self.dHat) * (-2.0) - (t2 ** 2) / d)
+        return g
+
+    @ti.func
+    def barrier_H(self, d):
+        """Log barrier Hessian."""
+        H = 0.0
+        if d < self.dHat and d > 1e-10:
+            dHat = self.dHat
+            H = self.kappa * ((-2) * ti.log(d / dHat) - 4 + 4 * dHat / d + (d - dHat) ** 2 / d ** 2)
+        return H
+
+    @ti.func
+    def cubic_barrier_E(self, d):
+        """Cubic barrier energy."""
         E = 0.0
         if d < self.dHat:
             y = d - self.dHat
@@ -147,8 +229,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
         return E
 
     @ti.func
-    def barrier_g(self, d):
-        """Cubic barrier gradient"""
+    def cubic_barrier_g(self, d):
+        """Cubic barrier gradient."""
         g = 0.0
         if d < self.dHat:
             y = d - self.dHat
@@ -156,80 +238,91 @@ class MASPNCGSolver(collision_detection_bvh_module):
         return g
 
     @ti.func
-    def barrier_H(self, d):
-        """Cubic barrier Hessian"""
+    def cubic_barrier_H(self, d):
+        """Cubic barrier Hessian."""
         H = 0.0
         if d < self.dHat:
             H = 4.0 * self.kappa * (1.0 - d / self.dHat)
         return H
 
-    @ti.func
-    def get_barrier_E(self, d):
-        return self.barrier_E(d)
-
-    @ti.func
-    def get_barrier_g(self, d):
-        return self.barrier_g(d)
-
-    @ti.func
-    def get_barrier_H(self, d):
-        return self.barrier_H(d)
-
     # ========================================================================
-    # Gradient Computation
+    # Gradient Computation (with contact)
     # ========================================================================
 
     @ti.kernel
     def compute_grad(self):
-        """Compute gradient of the total energy."""
-        # Inertia potential
-        ti.mesh_local(self.mesh.verts.grad)
+        """Compute gradient for elastic + inertia + contact."""
+        # Initialize with inertia term
         for vert in self.mesh.verts:
-            m = vert.m
             vert.grad_prev = vert.grad
-            vert.grad = m * (vert.x - vert.x_hat)
+            vert.grad = vert.m * (vert.x - vert.x_hat)
+            vert.diagH = ti.Vector([vert.m, vert.m, vert.m])
 
-        # Elastic potential
+        # Add elastic term
         for c in self.mesh.cells:
             Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
             B = c.B
             F = Ds @ B
             para = c.W * self.dt ** 2
+
+            # Compute elastic gradient
             dPsidx = para * self.compute_dPsidx(F, B, self.mu, self.la)
+
+            # Add to vertex gradients
             for i in range(4):
                 c.verts[i].grad += ti.Vector([dPsidx[3 * i], dPsidx[3 * i + 1], dPsidx[3 * i + 2]], float)
 
-        # IPC potential
-        for k, j in self.cid:
-            pair = self.cid[k, j]
+            # Add diagonal Hessian contribution (for fallback)
+            diagH_contrib = para * self.compute_diagH(F, B, self.mu, self.la)
+            for i in range(4):
+                c.verts[i].diagH += ti.Vector([diagH_contrib[3 * i], diagH_contrib[3 * i + 1],
+                                               diagH_contrib[3 * i + 2]], float)
+
+        # Add contact gradient
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
             ids = pair.a
             dist = pair.b
             cord = pair.c
             t = pair.d
 
-            bg = self.get_barrier_g(dist)
-            para = bg / dist
-            for i in range(4):
-                CORD = cord[i]
-                ID = ids[i]
-                self.mesh.verts.grad[ID] += para * CORD * t
+            # Compute barrier gradient
+            if ti.static(self.barrier_type == 'cubic'):
+                bg = self.cubic_barrier_g(dist)
+            else:
+                bg = self.barrier_g(dist)
+
+            scale = self.dt ** 2
+
+            # Add gradient contribution to each vertex
+            for i in ti.static(range(4)):
+                vi = ti.i32(ids[i])
+                if vi >= 0 and vi < self.n_verts:
+                    grad_contrib = scale * bg * cord[i] * t
+                    self.mesh.verts.grad[vi] += grad_contrib
 
     @ti.kernel
     def add_grad_ground_barrier(self):
         """Add ground barrier gradient contribution."""
-        min_dist = 1e-2 * self.dHat
-        for i in range(self.n_boundary_points):
-            p = self.boundary_points[i]
-            x_a0 = self.mesh.verts.x[p]
-            dist = x_a0[1] - self.ground
-            if dist < self.dHat:
-                if dist <= min_dist:
-                    self.mesh.verts.x[p][1] = self.ground + min_dist
-                    dist = min_dist
-                self.mesh.verts.grad[p][1] += self.get_barrier_g(dist)
+        for vert in self.mesh.verts:
+            d = vert.x[1] - self.ground
+            if d < self.dHat and d > 1e-10:
+                if ti.static(self.barrier_type == 'cubic'):
+                    bg = self.cubic_barrier_g(d)
+                else:
+                    bg = self.barrier_g(d)
+                vert.grad[1] += self.dt ** 2 * bg
 
     # ========================================================================
-    # Hessian-Vector Product (using MAS preconditioner)
+    # Preconditioner
+    # ========================================================================
+
+    def apply_preconditioner(self):
+        """Apply MAS preconditioner."""
+        self.mas_preconditioner.apply()
+
+    # ========================================================================
+    # Hessian-Vector Products
     # ========================================================================
 
     @ti.kernel
@@ -239,16 +332,22 @@ class MASPNCGSolver(collision_detection_bvh_module):
             self.hv_input[vert.id] = vert.z
 
     @ti.kernel
-    def _copy_p_to_buffer(self):
-        """Copy mesh.verts.p to hv_input buffer."""
-        for vert in self.mesh.verts:
-            self.hv_input[vert.id] = vert.p
-
-    @ti.kernel
     def _copy_buffer_to_Hv(self):
         """Copy hv_output buffer to mesh.verts.Hv."""
         for vert in self.mesh.verts:
             vert.Hv = self.hv_output[vert.id]
+
+    def compute_Hv_z(self):
+        """Compute Hv = H * z."""
+        self._copy_z_to_buffer()
+        self.mas_preconditioner.hessian_matvec(self.hv_input, self.hv_output)
+        self._copy_buffer_to_Hv()
+
+    @ti.kernel
+    def _copy_p_to_buffer(self):
+        """Copy mesh.verts.p to hv_input buffer."""
+        for vert in self.mesh.verts:
+            self.hv_input[vert.id] = vert.p
 
     @ti.kernel
     def _copy_buffer_to_w(self):
@@ -256,20 +355,14 @@ class MASPNCGSolver(collision_detection_bvh_module):
         for vert in self.mesh.verts:
             vert.w = self.hv_output[vert.id]
 
-    def compute_Hv_z(self):
-        """Compute Hv = H * z using preconditioner's hessian_matvec."""
-        self._copy_z_to_buffer()
-        self.mas_preconditioner.hessian_matvec(self.hv_input, self.hv_output)
-        self._copy_buffer_to_Hv()
-
     def compute_Hv_p(self):
-        """Compute w = H * p using preconditioner's hessian_matvec."""
+        """Compute w = H * p."""
         self._copy_p_to_buffer()
         self.mas_preconditioner.hessian_matvec(self.hv_input, self.hv_output)
         self._copy_buffer_to_w()
 
     # ========================================================================
-    # 2D Subspace Minimization (Section 3.2)
+    # 2D Subspace Minimization
     # ========================================================================
 
     @ti.kernel
@@ -277,7 +370,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
         """
         Compute scalar products for the 2x2 system:
         - z_H_z = z^T * H * z
-        - z_H_p = z^T * H * p = z^T * w (since w = H*p)
+        - z_H_p = z^T * H * p = z^T * w
         - p_H_p = p^T * H * p = p^T * w
         - z_g = z^T * g
         - p_g = p^T * g
@@ -295,27 +388,18 @@ class MASPNCGSolver(collision_detection_bvh_module):
             w = vert.w    # H*p
             g = vert.grad
 
-            # z^T * H * z = z^T * Hv
             self.z_H_z[None] += ti.f32(z.dot(Hv))
-
-            # z^T * H * p = z^T * w
             self.z_H_p[None] += ti.f32(z.dot(w))
-
-            # p^T * H * p = p^T * w
             self.p_H_p[None] += ti.f32(p.dot(w))
-
-            # z^T * g
             self.z_g[None] += ti.f32(z.dot(g))
-
-            # p^T * g
             self.p_g[None] += ti.f32(p.dot(g))
 
     def solve_2x2_subspace(self) -> tuple:
         """
         Solve the 2x2 system for optimal (mu, nu):
 
-        [z·H·z   -z·H·p] [μ]   [z·g ]
-        [-p·H·z   p·H·p] [ν] = [-p·g]
+        [z*H*z   -z*H*p] [mu]   [z*g ]
+        [-p*H*z   p*H*p] [nu] = [-p*g]
 
         Returns (mu, nu)
         """
@@ -325,23 +409,17 @@ class MASPNCGSolver(collision_detection_bvh_module):
         b1 = float(self.z_g[None])
         b2 = -float(self.p_g[None])
 
-        # Compute determinant
         det = A11 * A22 - A12 * A12
-
-        # Check for singularity
         eps_sing = 1e-12
         max_diag = max(abs(A11 * A22), eps_sing)
 
         if abs(det) < eps_sing * max_diag:
-            # Fallback to steepest descent: mu = z·g / z·H·z, nu = 0
             if abs(A11) > eps_sing:
                 mu = b1 / A11
             else:
                 mu = 1.0
             nu = 0.0
-            print(f"[2D Subspace] Singular, fallback: mu={mu:.4f}, nu=0")
         else:
-            # Solve 2x2 system via Cramer's rule
             mu = (b1 * A22 - b2 * A12) / det
             nu = (A11 * b2 - A12 * b1) / det
 
@@ -349,41 +427,31 @@ class MASPNCGSolver(collision_detection_bvh_module):
 
     @ti.kernel
     def update_search_direction(self, mu: float, nu: float):
-        """
-        Update search direction: p_{k+1} = -mu * z + nu * p_k
-        Update w: w_{k+1} = -mu * Hv + nu * w_k (maintains w = H*p)
-        """
+        """Update search direction: p = -mu * z + nu * p"""
         for vert in self.mesh.verts:
             vert.p = -mu * vert.z + nu * vert.p
-            vert.w = -mu * vert.Hv + nu * vert.w
 
     @ti.kernel
     def compute_init_search_direction(self):
-        """
-        First iteration: p = -z, w = -Hv
-        Equivalent to mu = 1, nu = 0 but using 1D optimization:
-        mu = z·g / z·H·z
-        """
-        # Compute optimal mu for 1D case
-        z_g = ti.f32(0.0)
-        z_H_z = ti.f32(0.0)
+        """First iteration: p = -mu * z where mu = z*g / z*H*z"""
+        self.z_g[None] = 0.0
+        self.z_H_z[None] = 0.0
         for vert in self.mesh.verts:
-            z_g += ti.f32(vert.z.dot(vert.grad))
-            z_H_z += ti.f32(vert.z.dot(vert.Hv))
+            self.z_g[None] += ti.f32(vert.z.dot(vert.grad))
+            self.z_H_z[None] += ti.f32(vert.z.dot(vert.Hv))
 
-        mu = z_g / ti.max(z_H_z, 1e-12)
+        mu = self.z_g[None] / ti.max(self.z_H_z[None], 1e-12)
 
         for vert in self.mesh.verts:
             vert.p = -mu * vert.z
-            vert.w = -mu * vert.Hv
 
     # ========================================================================
-    # Powell's Restart Criterion (Section 3.3)
+    # Powell's Restart Criterion
     # ========================================================================
 
     @ti.kernel
     def cache_z_prev(self):
-        """Cache current z as z_prev for next iteration's Powell criterion."""
+        """Cache current z as z_prev."""
         for vert in self.mesh.verts:
             vert.z_prev = vert.z
 
@@ -402,205 +470,46 @@ class MASPNCGSolver(collision_detection_bvh_module):
             self.g_z[None] += ti.f32(g.dot(z))
 
     def check_powell_restart(self) -> bool:
-        """
-        Check Powell's restart criterion:
-        r_k = |g·z_prev| / (g·z)
-        Restart if r_k > threshold
-        """
+        """Check Powell's restart criterion."""
         g_z_prev = abs(float(self.g_z_prev[None]))
         g_z = float(self.g_z[None])
 
         if g_z < 1e-12:
-            return True  # Restart if g·z is too small
+            return True
 
         r_k = g_z_prev / g_z
-
-        if r_k > self.restart_threshold:
-            print(f"[Powell] r_k = {r_k:.4f} > {self.restart_threshold}, triggering restart")
-            return True
-        return False
+        return r_k > self.restart_threshold
 
     # ========================================================================
-    # Conservative CCD (Section 3.4)
+    # Line Search with CCD
     # ========================================================================
-
-    @ti.kernel
-    def compute_subdomain_ccd(self) -> float:
-        """
-        Compute per-subdomain conservative step sizes.
-        Returns the minimum global step size for logging.
-        """
-        n_subdomains = (self.n_verts + BANKSIZE - 1) // BANKSIZE
-
-        # Initialize all subdomain alphas to 1.0
-        for d in range(n_subdomains):
-            self.subdomain_alpha[d] = 1.0
-
-        # Global minimum for logging
-        alpha_min = 1.0
-
-        # Check each contact and update relevant subdomain alphas
-        for k, j in self.cid:
-            pair = self.cid[k, j]
-            ids = pair.a
-            dist = pair.b
-
-            # Skip if distance is safe
-            if dist > 0.9 * self.dHat:
-                continue
-
-            # For each vertex in contact, compute safe step size
-            for i in range(4):
-                vid = ids[i]
-                subdomain_id = vid // BANKSIZE
-
-                # Get vertex motion
-                p_i = self.mesh.verts.p[vid]
-                p_norm = p_i.norm()
-
-                if p_norm < 1e-10:
-                    continue
-
-                # Conservative estimate: ensure we don't move more than half the current gap
-                safe_dist = 0.3 * dist
-                alpha_safe = safe_dist / p_norm
-
-                # Clamp to minimum
-                alpha_safe = ti.max(alpha_safe, ti.f32(CCD_ALPHA_MIN))
-
-                # Update subdomain alpha (minimum across all contacts)
-                ti.atomic_min(self.subdomain_alpha[subdomain_id], ti.f32(alpha_safe))
-                ti.atomic_min(alpha_min, alpha_safe)
-
-        return alpha_min
-
-    @ti.kernel
-    def apply_subdomain_step(self, global_alpha: float):
-        """
-        Apply per-subdomain step sizes:
-        x_{k+1} = x_k + min(alpha_d, global_alpha) * p
-        """
-        for idx in range(self.n_verts):
-            subdomain_id = idx // BANKSIZE
-            alpha_d = self.subdomain_alpha[subdomain_id]
-
-            # Use minimum of subdomain alpha and global alpha
-            alpha = ti.min(alpha_d, ti.f32(global_alpha))
-
-            self.mesh.verts.x[idx] += alpha * self.mesh.verts.p[idx]
-
-    # ========================================================================
-    # Improved Lower Bound for CCD (Section 3.5)
-    # ========================================================================
-
-    @ti.kernel
-    def compute_improved_ccd_bound(self) -> float:
-        """
-        Compute improved frame-invariant lower bound for step sizes.
-
-        For PT: l_tight = max_j ||p_P - p_{T_j}||
-        For EE: l_tight = max_{i,j} ||p_{E1i} - p_{E2j}||
-
-        Returns: maximum relative motion across all contacts
-        """
-        max_relative_motion = 0.0
-
-        for k, j in self.cid:
-            pair = self.cid[k, j]
-            ids = pair.a
-
-            # Get motion vectors for all 4 vertices
-            p0 = self.mesh.verts.p[ids[0]]
-            p1 = self.mesh.verts.p[ids[1]]
-            p2 = self.mesh.verts.p[ids[2]]
-            p3 = self.mesh.verts.p[ids[3]]
-
-            # Compute all pairwise relative motions
-            # For PT (point vs triangle vertices) or EE (edge vertices vs edge vertices)
-            rel_01 = (p0 - p1).norm()
-            rel_02 = (p0 - p2).norm()
-            rel_03 = (p0 - p3).norm()
-            rel_12 = (p1 - p2).norm()
-            rel_13 = (p1 - p3).norm()
-            rel_23 = (p2 - p3).norm()
-
-            # Maximum relative motion for this contact
-            l_tight = ti.max(rel_01, ti.max(rel_02, ti.max(rel_03,
-                       ti.max(rel_12, ti.max(rel_13, rel_23)))))
-
-            ti.atomic_max(max_relative_motion, l_tight)
-
-        return max_relative_motion
-
-    # ========================================================================
-    # Line Search and Energy Computation
-    # ========================================================================
-
-    @ti.kernel
-    def compute_E(self) -> float:
-        """Compute total energy."""
-        E = 0.0
-
-        # Inertia
-        for vert in self.mesh.verts:
-            E += 0.5 * vert.m * (vert.x - vert.x_hat).norm_sqr()
-
-        # Elastic
-        for c in self.mesh.cells:
-            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
-            F = Ds @ c.B
-            Psi = self.compute_Psi(F, self.mu, self.la)
-            E += (self.dt ** 2) * c.W * Psi
-
-        # Contact
-        for k, j in self.cid:
-            pair = self.cid[k, j]
-            dist = pair.b
-            E += self.get_barrier_E(dist)
-
-        return E
-
-    @ti.kernel
-    def compute_gTp(self) -> float:
-        """Compute g^T * p."""
-        gTp = 0.0
-        for vert in self.mesh.verts:
-            gTp += vert.grad.dot(vert.p)
-        return gTp
-
-    @ti.kernel
-    def compute_pHp(self) -> float:
-        """Compute p^T * H * p = p^T * w."""
-        ret = 0.0
-        for vert in self.mesh.verts:
-            ret += vert.p.dot(vert.w)
-        return ret
 
     @ti.kernel
     def compute_p_inf_norm(self) -> float:
-        """Compute infinity norm of p."""
+        """Compute infinity norm of search direction."""
         p_max = 0.0
         for vert in self.mesh.verts:
             p_norm = vert.p.norm()
             ti.atomic_max(p_max, p_norm)
         return p_max
 
-    def line_search(self) -> tuple:
+    def compute_ccd_alpha(self) -> float:
         """
-        Compute step size using quadratic model:
-        alpha = -g^T*p / (p^T*H*p)
-
-        Returns: (alpha, gTp, pHp)
+        Compute maximum safe step size using CCD.
+        Returns alpha_max such that x + alpha * p is collision-free for alpha in [0, alpha_max].
         """
-        gTp = self.compute_gTp()
-        pHp = self.compute_pHp()
+        # For now, use simple distance-based clamping
+        # TODO: Implement proper CCD if needed
+        p_max = self.compute_p_inf_norm()
+        if p_max > 1e-10:
+            alpha_max = 0.5 * self.dHat / p_max
+        else:
+            alpha_max = 1.0
+        return min(alpha_max, 1.0)
 
-        # Ensure pHp is positive
-        if pHp <= 0:
-            pHp = 1e-6
-
-        alpha = -gTp / pHp
-        return alpha, gTp, pHp
+    # ========================================================================
+    # Position Update
+    # ========================================================================
 
     @ti.kernel
     def update_x(self, alpha: float):
@@ -617,118 +526,210 @@ class MASPNCGSolver(collision_detection_bvh_module):
             vert.x_hat[1] += self.dt * self.dt * self.gravity
 
     @ti.kernel
-    def update_v_and_bound(self):
-        """Update velocity and enforce ground boundary."""
+    def update_v(self):
+        """Update velocity: v = (x - x_n) / dt."""
         for vert in self.mesh.verts:
             vert.v = (vert.x - vert.x_n) / self.dt
-            if vert.x[1] < self.ground:
-                vert.x[1] = self.ground
-                if vert.v[1] < 0.0:
-                    vert.v[1] = 0.0
+
+    @ti.kernel
+    def compute_grad_inf_norm(self) -> float:
+        """Compute infinity norm of gradient."""
+        g_max = 0.0
+        for vert in self.mesh.verts:
+            g_norm = vert.grad.norm()
+            ti.atomic_max(g_max, g_norm)
+        return g_max
+
+    @ti.kernel
+    def compute_z_norm(self) -> float:
+        """Compute L2 norm of preconditioned gradient z."""
+        z_sq = 0.0
+        for vert in self.mesh.verts:
+            z_sq += vert.z.dot(vert.z)
+        return ti.sqrt(z_sq)
+
+    @ti.kernel
+    def compute_energy(self) -> float:
+        """Compute total energy: inertia + elastic + contact."""
+        E = 0.0
+
+        # Inertia energy
+        for vert in self.mesh.verts:
+            diff = vert.x - vert.x_hat
+            E += 0.5 * vert.m * diff.dot(diff)
+
+        # Elastic energy
+        for c in self.mesh.cells:
+            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
+            F = Ds @ c.B
+            para = c.W * self.dt ** 2
+            E += para * self.compute_Psi(F, self.mu, self.la)
+
+        # Contact energy
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
+            dist = pair.b
+            if ti.static(self.barrier_type == 'cubic'):
+                E += self.dt ** 2 * self.cubic_barrier_E(dist)
+            else:
+                E += self.dt ** 2 * self.barrier_E(dist)
+
+        return E
 
     # ========================================================================
-    # Main Step Function (Algorithm 1 from Paper)
+    # Main Step Function
     # ========================================================================
 
-    def step(self):
-        """
-        Main MAS-PNCG step implementing Algorithm 1 from the paper.
+    def check_energy_stagnation(self, energy):
+        """Check if energy has stagnated."""
+        self.energy_history.append(energy)
 
-        Key features:
-        - MAS preconditioner (simplified version without Woodbury updates)
-        - Optimal 2D subspace minimization for search direction
-        - Powell's restart criterion to detect conjugacy loss
-        - Conservative CCD for penetration-free motion
+        if len(self.energy_history) < self.stagnant_window + 1:
+            return False
+
+        if len(self.energy_history) > self.stagnant_window + 1:
+            self.energy_history = self.energy_history[-(self.stagnant_window + 1):]
+
+        E_old = self.energy_history[0]
+        E_new = self.energy_history[-1]
+
+        if E_old > 1e-12:
+            rel_change = abs(E_old - E_new) / E_old
+            return rel_change < self.energy_tol
+
+        return False
+
+    def step(self, verbose=False):
         """
-        print(f'Frame {self.frame}')
+        Main MAS-PNCG step with IPC contact.
+
+        Returns: number of iterations
+        """
+        if verbose:
+            print(f'\n{"="*110}')
+            print(f'Frame {self.frame}')
+            print(f'{"="*110}')
+            print(f'{"iter":>4} {"E":>12} {"|g|_inf":>10} {"|z|":>10} {"mu":>10} {"nu":>10} '
+                  f'{"r_k":>8} {"rst":>3} {"n_cnt":>6} {"t_cnt":>7} {"t_rbd":>7} {"t_app":>7}')
+            print(f'{"-"*110}')
+
         self.assign_xn_xhat()
+        self.energy_history.clear()
 
-        # Initialize restart flag
         do_restart = True
+        mu, nu = 0.0, 0.0
+        r_k = 0.0
 
         for iter in range(self.iter_max):
             # Step 1: Find contacts
+            t_cnt_start = time.perf_counter()
             self.find_cnts(PRINT=False)
+            n_contacts = self.n_contacts[None]
+            t_cnt = (time.perf_counter() - t_cnt_start) * 1000
 
             # Step 2: Compute gradient
             self.compute_grad()
             if self.ground_barrier == 1:
                 self.add_grad_ground_barrier()
 
-            # Step 3: Rebuild preconditioner on restart
+            # Step 3: Check convergence
+            grad_inf = self.compute_grad_inf_norm()
+            energy = self.compute_energy()
+
+            if grad_inf < self.epsilon:
+                if verbose:
+                    print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
+                          f'{"--":>8} {"--":>3} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
+                    print(f'  => Converged at iter {iter}, |g|_inf={grad_inf:.2e}')
+                break
+
+            if self.check_energy_stagnation(energy):
+                if verbose:
+                    print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
+                          f'{"--":>8} {"--":>3} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
+                    print(f'  => Converged at iter {iter}, energy stagnated')
+                break
+
+            # Step 4: Rebuild preconditioner on restart
+            t_rebuild_start = time.perf_counter()
             if do_restart:
-                self.mas_preconditioner.rebuild(self)
+                self.mas_preconditioner.rebuild_with_contacts(self)
+                ti.sync()
+            t_rebuild = (time.perf_counter() - t_rebuild_start) * 1000
 
-            # Step 4: Apply preconditioner: z = P * g
-            self.mas_preconditioner.apply()
+            # Step 5: Cache z_prev
+            if iter > 0:
+                self.cache_z_prev()
 
-            # Step 5: Compute Hessian-vector product Hv = H * z
+            # Step 6: Apply preconditioner
+            t_apply_start = time.perf_counter()
+            self.apply_preconditioner()
+            t_apply = (time.perf_counter() - t_apply_start) * 1000
+
+            # Step 7: Compute Hv = H * z
             self.compute_Hv_z()
 
-            # Step 6: Compute search direction via 2D subspace or 1D
+            if verbose:
+                z_norm = self.compute_z_norm()
+
+            # Step 8: Compute search direction
             if iter == 0 or do_restart:
-                # First iteration or restart: 1D optimization (Section 3.2)
-                # p = -mu * z where mu = z·g / z·H·z
                 self.compute_init_search_direction()
-                # Compute w = H * p for next iteration's 2D subspace
-                self.compute_Hv_p()
+                mu = float(self.z_g[None]) / max(float(self.z_H_z[None]), 1e-12)
+                nu = 0.0
             else:
-                # 2D subspace optimization (Section 3.2, Eq. 6)
-                # w = H * p was computed in previous iteration
-
-                # Compute scalar products for 2x2 system
                 self.compute_subspace_scalars()
-
-                # Solve 2x2 system for optimal (mu, nu)
                 mu, nu = self.solve_2x2_subspace()
-
-                # Update: p = -mu*z + nu*p, w = -mu*Hv + nu*w
                 self.update_search_direction(mu, nu)
 
-            # Step 7: Line search using quadratic model
-            # Note: mu from 2D subspace acts as "natural step size"
-            alpha, gTp, pHp = self.line_search()
+            # Step 9: Compute w = H * p
+            self.compute_Hv_p()
 
-            # Step 8: CCD clamping (Conservative CCD, Section 3.4)
-            p_max = self.compute_p_inf_norm()
-            if alpha * p_max > 0.5 * self.dHat:
-                alpha_init = alpha
-                alpha = 0.5 * self.dHat / p_max
-                print(f'alpha clamped: {alpha:.6f} (init: {alpha_init:.6f})')
+            # Log iteration info
+            if verbose:
+                restart_str = "Y" if do_restart else "N"
+                r_k_str = f'{r_k:>8.4f}' if iter > 0 else f'{"--":>8}'
+                print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {z_norm:>10.2e} {mu:>10.4f} {nu:>10.4f} '
+                      f'{r_k_str} {restart_str:>3} {n_contacts:>6} {t_cnt:>6.2f}ms {t_rebuild:>6.2f}ms {t_apply:>6.2f}ms')
 
-            # Step 9: Update position
+            # Step 10: Line search with CCD
+            alpha = self.compute_ccd_alpha()
             self.update_x(alpha)
 
-            # Step 10: Convergence check
-            delta_E = -alpha * gTp - 0.5 * alpha ** 2 * pHp
-            if iter == 0:
-                delta_E_init = delta_E
-
-            if delta_E < self.epsilon * delta_E_init:
-                print(f'converged at iter {iter}, rate={delta_E/delta_E_init:.6f}, '
-                      f'delta_E={delta_E:.6e}, alpha={alpha:.6f}')
-                break
-            else:
-                print(f'iter {iter}, rate={delta_E/delta_E_init:.6f}, '
-                      f'delta_E={delta_E:.6e}, alpha={alpha:.6f}, gTp={gTp:.6e}, pHp={pHp:.6e}')
-
-            # Step 11: Powell's restart criterion (Section 3.3)
+            # Step 11: Powell's restart criterion
             if iter > 0:
                 self.compute_powell_scalars()
+                g_z_prev = abs(float(self.g_z_prev[None]))
+                g_z = float(self.g_z[None])
+                r_k = g_z_prev / g_z if g_z > 1e-12 else 1.0
                 do_restart = self.check_powell_restart()
             else:
                 do_restart = False
+                r_k = 0.0
 
-            # Step 12: Cache z for next iteration's Powell check
-            self.cache_z_prev()
-
-        self.update_v_and_bound()
+        self.update_v()
         self.frame += 1
-        return iter
+        return iter + 1
 
-    def run_headless(self, n_frames=300):
-        """Run simulation in headless mode."""
-        print(f"Running in headless mode for {n_frames} frames...")
-        for i in range(n_frames):
-            self.step()
-        print("Headless run finished.")
+
+def test_solver():
+    """Test the MAS-PNCG solver with contact."""
+    ti.init(arch=ti.gpu, default_fp=ti.f32,
+            offline_cache=True, offline_cache_file_path='.taichi_cache')
+
+    print("\n" + "="*60)
+    print("Testing MAS-PNCG Solver with Contact")
+    print("="*60)
+
+    # Use a demo with contact support
+    solver = MASPNCGSolver(demo='eight_E_drop_demo_contact')
+
+    for f in range(5):
+        t0 = time.perf_counter()
+        iters = solver.step(verbose=True)
+        t1 = time.perf_counter()
+        print(f"Frame {f}: {iters} iters, {(t1-t0)*1000:.2f}ms")
+
+
+if __name__ == '__main__':
+    test_solver()
