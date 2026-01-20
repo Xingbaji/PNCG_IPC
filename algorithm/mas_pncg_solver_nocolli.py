@@ -139,11 +139,6 @@ class MASPNCGSolverNoCollision(base_deformer):
         t_mas = (time.perf_counter() - t0) * 1000
         print(f'[MAS-PNCG] MAS initialized with {self.mas_preconditioner.level_num} levels')
 
-        # Multi-level preconditioner control
-        # With component-aware METIS (partitions each connected component separately),
-        # multilevel preconditioning is now safe for multi-object scenes
-        self.use_multilevel = True
-
         # Buffer fields for hessian_matvec
         t0 = time.perf_counter()
         self.hv_input = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
@@ -216,7 +211,7 @@ class MASPNCGSolverNoCollision(base_deformer):
 
     def apply_preconditioner(self):
         """Apply MAS preconditioner."""
-        self.mas_preconditioner.apply(use_multilevel=self.use_multilevel)
+        self.mas_preconditioner.apply()
 
     # ========================================================================
     # Hessian-Vector Products
