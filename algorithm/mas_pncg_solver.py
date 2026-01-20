@@ -16,6 +16,10 @@ import taichi as ti
 from algorithm.collision_detection_bvh import collision_detection_bvh_module
 from algorithm.mas_preconditioner_contact import MASPreconditionerContact, BANKSIZE
 from util.model_loading import model_loading
+from math_utils.graphic_util import (
+    point_triangle_ccd_lower_bound,
+    edge_edge_ccd_lower_bound
+)
 
 # Constants
 RESTART_THRESHOLD = 0.5  # Powell's restart threshold
@@ -171,6 +175,11 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.p_g = ti.field(dtype=ti.f32, shape=())
         self.g_z_prev = ti.field(dtype=ti.f32, shape=())
         self.g_z = ti.field(dtype=ti.f32, shape=())
+
+        # Per-subdomain step sizes for conservative CCD (Algorithm 2 in paper)
+        # Each subdomain (block of BANKSIZE=16 vertices) has its own alpha
+        self.n_subdomains = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+        self.subdomain_alpha = ti.field(dtype=ti.f32, shape=self.n_subdomains)
         t_scalars = (time.perf_counter() - t0) * 1000
 
         init_total = (time.perf_counter() - init_start) * 1000
@@ -256,7 +265,6 @@ class MASPNCGSolver(collision_detection_bvh_module):
         for vert in self.mesh.verts:
             vert.grad_prev = vert.grad
             vert.grad = vert.m * (vert.x - vert.x_hat)
-            vert.diagH = ti.Vector([vert.m, vert.m, vert.m])
 
         # Add elastic term
         for c in self.mesh.cells:
@@ -272,12 +280,6 @@ class MASPNCGSolver(collision_detection_bvh_module):
             for i in range(4):
                 c.verts[i].grad += ti.Vector([dPsidx[3 * i], dPsidx[3 * i + 1], dPsidx[3 * i + 2]], float)
 
-            # Add diagonal Hessian contribution (for fallback)
-            diagH_contrib = para * self.compute_diagH(F, B, self.mu, self.la)
-            for i in range(4):
-                c.verts[i].diagH += ti.Vector([diagH_contrib[3 * i], diagH_contrib[3 * i + 1],
-                                               diagH_contrib[3 * i + 2]], float)
-
         # Add contact gradient
         for idx in range(self.n_contacts[None]):
             pair = self.contact_pairs[idx]
@@ -287,6 +289,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
             t = pair.d
 
             # Compute barrier gradient
+            bg = 0.0
             if ti.static(self.barrier_type == 'cubic'):
                 bg = self.cubic_barrier_g(dist)
             else:
@@ -307,6 +310,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
         for vert in self.mesh.verts:
             d = vert.x[1] - self.ground
             if d < self.dHat and d > 1e-10:
+                bg = 0.0
                 if ti.static(self.barrier_type == 'cubic'):
                     bg = self.cubic_barrier_g(d)
                 else:
@@ -501,15 +505,157 @@ class MASPNCGSolver(collision_detection_bvh_module):
         """
         Compute maximum safe step size using CCD.
         Returns alpha_max such that x + alpha * p is collision-free for alpha in [0, alpha_max].
+
+        Note: This returns the global minimum alpha. For per-subdomain stepping,
+        use compute_subdomain_ccd() which populates self.subdomain_alpha.
         """
-        # For now, use simple distance-based clamping
-        # TODO: Implement proper CCD if needed
-        p_max = self.compute_p_inf_norm()
-        if p_max > 1e-10:
-            alpha_max = 0.5 * self.dHat / p_max
-        else:
-            alpha_max = 1.0
-        return min(alpha_max, 1.0)
+        # Use per-subdomain conservative CCD
+        self.compute_subdomain_ccd()
+        # Return global minimum for compatibility
+        return float(self._get_min_subdomain_alpha())
+
+    # ========================================================================
+    # Per-Subdomain Conservative CCD (Algorithm 2 in paper)
+    # ========================================================================
+    #
+    # Key insight from paper Section 3.5:
+    # "By independently evaluating distance functions and applying safe steps
+    # {α_d} locally for each subdomain d, regions with fewer constraints can
+    # maintain their optimal descent speed while only the critical subdomains
+    # are conservatively damped."
+    #
+    # Position update formula:
+    # x_{k+1} = x_k + Σ_d S_d^T α_d S_d p_{k+1}
+    # ========================================================================
+
+    @ti.kernel
+    def _init_subdomain_alpha(self):
+        """Initialize all subdomain alphas to 1.0."""
+        for d in range(self.n_subdomains):
+            self.subdomain_alpha[d] = 1.0
+
+    @ti.kernel
+    def _get_min_subdomain_alpha(self) -> ti.f32:
+        """Get minimum alpha across all subdomains."""
+        alpha_min = ti.f32(1.0)
+        for d in range(self.n_subdomains):
+            ti.atomic_min(alpha_min, self.subdomain_alpha[d])
+        return alpha_min
+
+    @ti.kernel
+    def _compute_subdomain_ccd_contacts(self):
+        """
+        Compute per-subdomain CCD for all contacts (PT and EE).
+
+        For each contact, computes conservative step size and updates
+        the subdomain_alpha for all involved subdomains.
+
+        Based on Algorithm 2 (Subdomain Conservative CCD) in the paper.
+        """
+        for idx in range(self.n_contacts[None]):
+            pair = self.contact_pairs[idx]
+            ids = pair.a
+            cord = pair.c
+
+            # Get vertex indices
+            v0_id = ti.i32(ids[0])
+            v1_id = ti.i32(ids[1])
+            v2_id = ti.i32(ids[2])
+            v3_id = ti.i32(ids[3])
+
+            # Check if this is a PT contact (cord[0] == 1.0 for PT)
+            is_pt = ti.abs(cord[0] - 1.0) < 0.01
+
+            # Current positions
+            x0 = self.mesh.verts.x[v0_id]
+            x1 = self.mesh.verts.x[v1_id]
+            x2 = self.mesh.verts.x[v2_id]
+            x3 = self.mesh.verts.x[v3_id]
+
+            # Displacements (search direction)
+            p0 = self.mesh.verts.p[v0_id]
+            p1 = self.mesh.verts.p[v1_id]
+            p2 = self.mesh.verts.p[v2_id]
+            p3 = self.mesh.verts.p[v3_id]
+
+            # Compute CCD lower bound using cubic polynomial method
+            alpha_l = ti.f32(1.0)
+            if is_pt:
+                alpha_l = point_triangle_ccd_lower_bound(x0, x1, x2, x3, p0, p1, p2, p3)
+            else:
+                alpha_l = edge_edge_ccd_lower_bound(x0, x1, x2, x3, p0, p1, p2, p3)
+
+            # Apply safety factor
+            alpha_safe = 0.9 * alpha_l
+
+            # Clamp to minimum
+            alpha_safe = ti.max(alpha_safe, ti.f32(1e-6))
+
+            # Update alpha for all subdomains involved in this contact
+            subdomain_0 = v0_id // BANKSIZE
+            subdomain_1 = v1_id // BANKSIZE
+            subdomain_2 = v2_id // BANKSIZE
+            subdomain_3 = v3_id // BANKSIZE
+
+            ti.atomic_min(self.subdomain_alpha[subdomain_0], alpha_safe)
+            ti.atomic_min(self.subdomain_alpha[subdomain_1], alpha_safe)
+            ti.atomic_min(self.subdomain_alpha[subdomain_2], alpha_safe)
+            ti.atomic_min(self.subdomain_alpha[subdomain_3], alpha_safe)
+
+    @ti.kernel
+    def _compute_subdomain_ccd_ground(self):
+        """
+        Compute per-subdomain CCD for ground plane collision.
+
+        For vertices moving toward the ground, computes safe step size
+        and updates the corresponding subdomain's alpha.
+        """
+        ground_y = self.ground
+        safety_margin = 0.1 * self.dHat
+
+        for vert in self.mesh.verts:
+            vid = vert.id
+            subdomain_id = vid // BANKSIZE
+
+            # Current distance to ground
+            d = vert.x[1] - ground_y
+
+            # Velocity toward ground (negative p[1] means moving down)
+            v_y = vert.p[1]
+
+            # Only check if moving toward ground and currently above safety margin
+            if v_y < -1e-10 and d > safety_margin:
+                # Time to reach safety margin: d + alpha * v_y = safety_margin
+                # alpha = (d - safety_margin) / (-v_y)
+                toc = (d - safety_margin) / (-v_y)
+                alpha_safe = 0.9 * toc
+                alpha_safe = ti.max(alpha_safe, ti.f32(1e-6))
+
+                ti.atomic_min(self.subdomain_alpha[subdomain_id], alpha_safe)
+
+    def compute_subdomain_ccd(self):
+        """
+        Compute per-subdomain conservative CCD step sizes.
+
+        Implements Algorithm 2 from the paper:
+        1. Initialize all subdomain alphas to 1.0
+        2. For each contact, compute CCD lower bound and update involved subdomains
+        3. For ground collision, update subdomain alphas
+
+        After this call, self.subdomain_alpha[d] contains the safe step size
+        for subdomain d. Use update_x_subdomain() to apply per-subdomain stepping.
+        """
+        # Step 1: Initialize all alphas to 1.0
+        self._init_subdomain_alpha()
+
+        # Step 2: Compute CCD for all contacts
+        n_contacts = self.n_contacts[None]
+        if n_contacts > 0:
+            self._compute_subdomain_ccd_contacts()
+
+        # Step 3: Compute CCD for ground
+        if self.ground_barrier == 1:
+            self._compute_subdomain_ccd_ground()
 
     # ========================================================================
     # Position Update
@@ -517,9 +663,28 @@ class MASPNCGSolver(collision_detection_bvh_module):
 
     @ti.kernel
     def update_x(self, alpha: float):
-        """Update positions: x += alpha * p."""
+        """Update positions: x += alpha * p (global uniform step size)."""
         for vert in self.mesh.verts:
             vert.x += alpha * vert.p
+
+    @ti.kernel
+    def update_x_subdomain(self):
+        """
+        Update positions using per-subdomain step sizes.
+
+        Implements the position update formula from the paper:
+        x_{k+1} = x_k + Σ_d S_d^T α_d S_d p_{k+1}
+
+        Each vertex uses the alpha from its subdomain:
+        x[v] += subdomain_alpha[v // BANKSIZE] * p[v]
+
+        This allows regions with fewer constraints to maintain optimal descent
+        while critical subdomains are conservatively damped.
+        """
+        for vert in self.mesh.verts:
+            subdomain_id = vert.id // BANKSIZE
+            alpha_d = self.subdomain_alpha[subdomain_id]
+            vert.x += alpha_d * vert.p
 
     @ti.kernel
     def assign_xn_xhat(self):
@@ -725,9 +890,12 @@ class MASPNCGSolver(collision_detection_bvh_module):
                 print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {z_norm:>10.2e} {mu:>10.4f} {nu:>10.4f} '
                       f'{r_k_str} {restart_str:>3} {update_type:>8} {n_contacts:>6} {t_cnt:>6.2f}ms {t_rebuild:>6.2f}ms {t_apply:>6.2f}ms')
 
-            # Step 10: Line search with CCD
-            alpha = self.compute_ccd_alpha()
-            self.update_x(alpha)
+            # Step 10: Line search with per-subdomain CCD (Algorithm 2 in paper)
+            # Compute per-subdomain step sizes to avoid "numerical locking"
+            self.compute_subdomain_ccd()
+            # Update positions using per-subdomain alphas:
+            # x_{k+1} = x_k + Σ_d S_d^T α_d S_d p_{k+1}
+            self.update_x_subdomain()
 
             # Step 11: Powell's restart criterion
             if iter > 0:

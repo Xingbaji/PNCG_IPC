@@ -8,7 +8,7 @@ material:
   elastic_type: NH            # Neo-Hookean constitutive model
 
 solver:
-  epsilon: 1e-4               # Convergence tolerance
+  epsilon: 1e-6               # Convergence tolerance (tight for gravity-driven motion)
   iter_max: 50                # Max PNCG iterations
   dt: 0.01                    # Time step (seconds)
 

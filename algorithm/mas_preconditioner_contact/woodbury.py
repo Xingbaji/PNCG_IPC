@@ -501,8 +501,8 @@ class WoodburySupport:
         # Following the paper: "coarse-level components primarily capture
         # low-frequency error modes, which evolve relatively slowly"
         for level in range(1, self.level_num):
-            level_offset = self.precond.level_size[level, 1]
-            level_size = self.precond.level_size[level, 0]
+            level_offset = self.precond.level_size[level][1]
+            level_size = self.precond.level_size[level][0]
 
             if level_size <= 0:
                 continue
