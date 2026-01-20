@@ -816,6 +816,80 @@ python -m pytest tests/test_mas_ground_truth.py -v
 
 ---
 
+## 13. Model Loading with METIS Pre-Reordering
+
+> **Updated 2026-01-20**: METIS reordering is now integrated directly into `model_loading.py`.
+
+### 13.1 Automatic METIS Reordering
+
+All meshes loaded through `model_loading` are now automatically METIS-reordered during loading. This provides optimal vertex ordering for MAS preconditioner without any code changes to simulation scripts.
+
+```python
+# After loading, vertex IDs directly map to METIS partitions:
+#   block_id = vertex_id // BANKSIZE (=16)
+#   lane_id  = vertex_id % BANKSIZE
+```
+
+### 13.2 Integration Architecture
+
+```
+util/model_loading.py
+├── _merge_and_reorder_models()      # Merge models + apply METIS
+├── load_demo_n_object_collision_free()  # Uses METIS reordering
+├── load_demo_n_object()             # Uses METIS reordering
+├── load_demo_n_object_dirichlet()   # Uses METIS reordering + boundary remapping
+├── load_mesh_and_boundarys_metis()  # New: METIS-aware boundary loading
+└── load_and_save_boundarys_metis()  # New: Save boundary with METIS order
+```
+
+### 13.3 Key Changes
+
+1. **`_merge_and_reorder_models(models)`**: New helper function that:
+   - Merges multiple models into single mesh
+   - Applies METIS reordering via `reorder_mesh_data_metis()`
+   - Returns `{0: verts, 3: cells}` dict for `Patcher.load_mesh()`
+
+2. **Boundary Data**: Boundary points/edges/triangles now use METIS-reordered vertex IDs
+   - Saved to `demo_results/final/{demo}_metis/boundary/`
+   - Separate from non-METIS boundary data
+
+3. **Dirichlet Conditions**: Dirichlet flags are remapped according to METIS order
+
+### 13.4 Usage with MASPreconditionerSmall
+
+Since model_loading now performs METIS reordering automatically, the preconditioner can use direct indexing:
+
+```python
+from util.model_loading import model_loading
+from algorithm.mas_preconditioner_small import MASPreconditionerSmall
+
+# Load model (METIS reordering happens automatically)
+model = model_loading(demo='cube_40')
+
+# Create preconditioner - no additional parameters needed!
+# Vertex IDs are already in METIS partition order.
+preconditioner = MASPreconditionerSmall(model.mesh)
+
+# metis_result is stored in model for reference
+if model.metis_result:
+    print(f"METIS partitions: {model.metis_result.n_parts}")
+```
+
+### 13.5 Performance Benefits
+
+| Mode | Description | Apply Time |
+|------|-------------|------------|
+| **Pre-reordered (new default)** | Mesh reordered at load time | ~0.29ms |
+| Runtime mapping | Lookup via `real_map_partId` | ~0.35ms |
+| No METIS | Sequential blocks | Variable |
+
+The pre-reordered mode provides:
+- No runtime mapping lookups during preconditioner apply
+- Optimal cache locality (METIS ensures mesh neighbors are in same block)
+- Banded O(5) solve instead of full O(16) solve
+
+---
+
 ## References
 
 1. **StiffGIPC Paper**: "StiffGIPC: Advancing GPU IPC for Stiff Affine-Deformable Simulation"

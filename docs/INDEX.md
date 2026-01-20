@@ -1,6 +1,6 @@
 # 文档索引
 
-> 最后更新: 2026-01-20
+> 最后更新: 2026-01-20 (METIS integration in model_loading)
 
 ## 目录结构
 
@@ -34,10 +34,26 @@ docs/
 | 文档 | 描述 |
 |------|------|
 | [MAS_PNCG_ALGORITHM.md](algorithm/MAS_PNCG_ALGORITHM.md) | **MAS-PNCG 算法详解** (纯算法) |
-| [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | MAS预条件器完整实现 |
+| [MAS_PRECONDITIONER_IMPLEMENTATION.md](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md) | MAS预条件器完整实现 (含METIS集成) |
 | [MAS_PRECONDITIONER_PKG_TESTING.md](algorithm/MAS_PRECONDITIONER_PKG_TESTING.md) | MAS包测试框架 |
 | [GCP_IMPLEMENTATION.md](algorithm/GCP_IMPLEMENTATION.md) | 几何接触势能(GCP)实现 |
 | [CUBIC_BARRIER_IMPLEMENTATION.md](algorithm/CUBIC_BARRIER_IMPLEMENTATION.md) | 三次障碍函数实现 |
+| [CONTACT_FILTER_IMPLEMENTATION.md](algorithm/CONTACT_FILTER_IMPLEMENTATION.md) | **Contact Filter双半径碰撞检测** ✅ 新增 |
+
+### METIS Pre-Reordering (新增 2026-01-20)
+
+METIS重排序现已集成到 `util/model_loading.py` 中，所有网格加载时自动进行METIS重排序：
+
+```python
+# 加载模型时自动METIS重排序
+model = model_loading(demo='cube_40')
+# 顶点ID直接对应METIS分区: block_id = vid // 16, lane_id = vid % 16
+
+# MAS预条件器无需额外参数
+preconditioner = MASPreconditionerSmall(model.mesh)
+```
+
+详见: [MAS_PRECONDITIONER_IMPLEMENTATION.md § 13](algorithm/MAS_PRECONDITIONER_IMPLEMENTATION.md#13-model-loading-with-metis-pre-reordering)
 
 ---
 
