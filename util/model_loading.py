@@ -4,9 +4,9 @@ Model loading module for PNCG_IPC simulations.
 This module provides the model_loading class that loads demo configurations
 and prepares mesh data for simulation.
 
-Configuration Priority:
-1. YAML files in demo_settings/ (new system - recommended)
-2. Legacy hardcoded configs (for backward compatibility)
+Configuration:
+- All configurations are loaded from YAML files in demo_settings/
+- Use `from demo_settings import list_demos` to see available demos
 
 METIS Reordering:
 - All meshes are automatically METIS-reordered during loading
@@ -143,18 +143,19 @@ class model_loading:
         Initialize model loading with demo name.
 
         Args:
-            demo: Name of the demo configuration to load
+            demo: Name of the demo configuration to load.
+                  Must be a valid YAML config in demo_settings/.
         """
-        # Try new YAML config system first
+        # Load from YAML config system
         if self._try_load_from_yaml(demo):
             return
 
-        # Try registry-based config system
+        # Try registry-based config system (for programmatic configs)
         if self._try_load_from_registry(demo):
             return
 
-        # Fall back to legacy hardcoded configs
-        self._load_legacy_config(demo)
+        # No config found - raise helpful error
+        self._raise_demo_not_found(demo)
 
     def _try_load_from_yaml(self, demo: str) -> bool:
         """

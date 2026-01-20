@@ -1,0 +1,32 @@
+# Four long noodles with IPC contact (variant 2)
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 100.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-4
+  iter_max: 60
+  dt: 0.04
+
+scene:
+  ground_height: 0.5
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/long_noodle_750/long_noodle_750.1.node
+      rotation: [0.0, 0.0, 90]
+      count: 4
+      translations:
+        - [-0.25, 0.0, 0.0]
+        - [0.25, 0.0, 0.0]
+        - [0.0, 0.0, 0.25]
+        - [0.0, 0.0, -0.25]
+  camera_position: [0.53409419, -14.25542546, -0.36805832]
+  camera_lookat: [-0.06181073, -14.54020105, -0.06550654]
+
+ipc:
+  enabled: true
+  dHat: 0.004
+  kappa: 5.0
+  ground_barrier: false

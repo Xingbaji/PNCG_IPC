@@ -1,0 +1,23 @@
+# Stiff stretching armadillo benchmark
+material:
+  E: 2.5e5
+  nu: 0.4
+  density: 1000.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-4
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 0.0
+  gravity: -49.0
+  meshes:
+    - path: ../model/mesh/armadillo_stiff/armadillo_stiff.node
+
+ipc:
+  enabled: true
+  dHat: 0.01
+  kappa: 1.0
+  ground_barrier: false

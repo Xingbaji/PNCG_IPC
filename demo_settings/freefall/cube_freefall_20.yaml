@@ -1,0 +1,17 @@
+# Cube 20 free-fall test (no collision)
+material:
+  E: 1.0e5
+  nu: 0.3
+  density: 1000.0
+  elastic_type: ARAP_SPD
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 100.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube_20/cube_20.node

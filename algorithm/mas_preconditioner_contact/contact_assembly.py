@@ -337,6 +337,7 @@ def compute_spd_edge_gradient(
     d = e.norm()
     if d > 1e-10:
         n = e / d
+        grad_scalar = 0.0
         if ti.static(use_cubic):
             grad_scalar = barrier_g_cubic(d, dHat, kappa)
         else:
@@ -370,6 +371,7 @@ def compute_spd_edge_hessian(
         3x3 PSD Hessian matrix
     """
     d = e.norm()
+    c = 0.0
     if ti.static(use_cubic):
         c = barrier_curvature_cubic(d, dHat, kappa)
     else:
@@ -433,23 +435,23 @@ def compute_friction_lambda(
     Returns:
         Non-negative friction multiplier
     """
+    lam = 0.0
+
     # Normal contact force magnitude: f_n = -n·f_contact
     # contact_force points outward (repulsive), so dot with n gives negative value
     # We want the magnitude of normal force
     f_n = -n.dot(contact_force)
     f_n = ti.max(f_n, 0.0)  # Ensure non-negative (only friction when in contact)
 
-    if mu <= 0.0 or f_n <= 0.0:
-        return 0.0
+    if mu > 0.0 and f_n > 0.0:
+        # Compute tangent displacement: P * dx
+        P = compute_friction_projection_matrix(n)
+        P_dx = P @ dx
+        P_dx_norm = P_dx.norm()
 
-    # Compute tangent displacement: P * dx
-    P = compute_friction_projection_matrix(n)
-    P_dx = P @ dx
-    P_dx_norm = P_dx.norm()
-
-    # λ = μ * f_n / max(ε, ||P*dx||)
-    denom = ti.max(min_dx, P_dx_norm)
-    lam = mu * f_n / denom
+        # λ = μ * f_n / max(ε, ||P*dx||)
+        denom = ti.max(min_dx, P_dx_norm)
+        lam = mu * f_n / denom
 
     return lam
 

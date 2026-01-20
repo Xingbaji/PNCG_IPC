@@ -1,0 +1,38 @@
+# Stiff box pipe benchmark (32 cubes in 2 layers)
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 1000.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-4
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    # Layer 0 (height 0.1): 4x4 grid
+    - path: ../model/mesh/cube_stiff/cube_stiff.node
+      scale: [0.4, 0.4, 0.4]
+      grid:
+        rows: 4
+        cols: 4
+        spacing: [0.2, 0, 0.2]
+      translation: [-0.3, 0.1, -0.3]
+    # Layer 1 (height 0.6): 4x4 grid
+    - path: ../model/mesh/cube_stiff/cube_stiff.node
+      scale: [0.4, 0.4, 0.4]
+      grid:
+        rows: 4
+        cols: 4
+        spacing: [0.2, 0, 0.2]
+      translation: [-0.3, 0.6, -0.3]
+
+ipc:
+  enabled: true
+  dHat: 0.02
+  kappa: 1.0
+  ground_barrier: true

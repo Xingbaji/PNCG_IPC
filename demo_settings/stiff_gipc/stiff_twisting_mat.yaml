@@ -1,0 +1,23 @@
+# Stiff twisting mat benchmark
+material:
+  E: 8.5e5
+  nu: 0.4
+  density: 1000.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-3
+  iter_max: 150
+  dt: 0.01
+
+scene:
+  ground_height: 0.0
+  gravity: 0.0
+  meshes:
+    - path: ../model/mesh/mat/mat.node
+
+ipc:
+  enabled: true
+  dHat: 0.005
+  kappa: 1.0
+  ground_barrier: false
