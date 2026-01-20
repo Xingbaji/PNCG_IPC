@@ -107,17 +107,34 @@ class unittest_demos(pncg_ipc_deformer):
             window.show()
             self.step()
 
+def get_unittest_demos():
+    """Get list of available unittest demos from YAML configs."""
+    try:
+        from demo_settings import list_demos
+        demos = list_demos(by_category=True)
+        return demos.get('unittest', [])
+    except ImportError:
+        # Fallback to hardcoded list
+        return ['unittest_wedge_wedge', 'unittest_wedge_spike', 'unittest_spike_spike',
+                'unittest_crack_spike', 'unittest_crack_wedge', 'unittest_edge_spike']
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Unittest Demos')
     parser.add_argument('--headless', action='store_true', help='run without GUI')
     parser.add_argument('--frames', type=int, default=10, help='number of frames per demo to run in headless mode')
+    parser.add_argument('--list', action='store_true', help='list available demos')
     args = parser.parse_args()
 
-    ti.init(arch=ti.gpu, default_fp=ti.f32,default_ip=ti.i32)#, device_memory_fraction=0.9)#, kernel_profiler=True)
-    demos = ['unittest_wedge_wedge', 'unittest_wedge_spike', 'unittest_spike_spike',
-             'unittest_crack_spike','unittest_crack_wedge','unittest_edge_spike',
-             'unittest_cube_spike2','unittest_cube_wedge','unittest_edge_cube','unittest_cliff_cube']
+    if args.list:
+        print("Available unittest demos:")
+        for demo in get_unittest_demos():
+            print(f"  - {demo}")
+        sys.exit(0)
+
+    ti.init(arch=ti.gpu, default_fp=ti.f32, default_ip=ti.i32)
+    demos = get_unittest_demos()
     for demo in demos:
         ipc_deformer = unittest_demos(demo=demo)
         ipc_deformer.init_dirichlet()

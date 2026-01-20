@@ -203,12 +203,29 @@ def add_stiffness_test_config():
     pass
 
 
+def get_mas_test_demos():
+    """Get list of available MAS test demos from YAML configs."""
+    try:
+        from demo_settings import list_demos
+        demos = list_demos(by_category=True)
+        return demos.get('mas_test', [])
+    except ImportError:
+        return ['eight_E_stiffness_test', 'eight_E_stiffness_mas']
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='MAS Stiffness Test Demo')
     parser.add_argument('--demo', type=str, default='eight_E_stiffness_test',
                         help='Demo name (default: eight_E_stiffness_test)')
+    parser.add_argument('--list', action='store_true', help='List available MAS test demos')
     args, _ = parser.parse_known_args()
+
+    if args.list:
+        print("Available MAS test demos:")
+        for demo in get_mas_test_demos():
+            print(f"  - {demo}")
+        sys.exit(0)
 
     ti.init(arch=ti.gpu, default_fp=ti.f32, device_memory_GB=4.0)
 

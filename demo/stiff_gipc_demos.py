@@ -3,19 +3,6 @@ Stiff-GIPC Demo Runner
 
 Runs demos ported from the Stiff-GIPC codebase.
 
-Available demos:
-  - stiff_octopus_stack: 4 octopuses stacked vertically
-  - stiff_single_bunny: Single bunny drop
-  - stiff_two_bunnies: Two bunnies collision
-  - stiff_stretching_armadillo: Armadillo stretched by gravity
-  - stiff_twisting_mat: Mat with twist deformation
-  - stiff_dragon_high: Large dragon mesh drop
-  - stiff_box_pipe: Grid of cubes
-  - stiff_two_cubes_drop: Stiff cube + soft cube
-  - stiff_dropping_letters: 9 letters dropping
-  - stiff_teapots: Teapots in a box
-  - stiff_two_soft_bunnies: Two soft bunnies collision
-
 Usage:
     python stiff_gipc_demos.py --demo stiff_single_bunny
     python stiff_gipc_demos.py --demo stiff_two_cubes_drop --headless --frames 50
@@ -32,20 +19,26 @@ from algorithm.pncg_base_ipc import pncg_ipc_deformer
 import taichi as ti
 
 
-# List of all Stiff-GIPC demos
-STIFF_GIPC_DEMOS = [
-    'stiff_octopus_stack',
-    'stiff_single_bunny',
-    'stiff_two_bunnies',
-    'stiff_stretching_armadillo',
-    'stiff_twisting_mat',
-    'stiff_dragon_high',
-    'stiff_box_pipe',
-    'stiff_two_cubes_drop',
-    'stiff_dropping_letters',
-    'stiff_teapots',
-    'stiff_two_soft_bunnies',
-]
+def get_stiff_gipc_demos():
+    """Get list of available Stiff-GIPC demos from YAML configs."""
+    try:
+        from demo_settings import list_demos
+        demos = list_demos(by_category=True)
+        return demos.get('stiff_gipc', [])
+    except ImportError:
+        # Fallback to hardcoded list
+        return [
+            'stiff_octopus_stack',
+            'stiff_single_bunny',
+            'stiff_two_bunnies',
+            'stiff_dragon_high',
+            'stiff_two_cubes_drop',
+            'stiff_teapots',
+        ]
+
+
+# List of all Stiff-GIPC demos (loaded dynamically)
+STIFF_GIPC_DEMOS = get_stiff_gipc_demos()
 
 
 @ti.data_oriented

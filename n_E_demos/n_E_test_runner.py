@@ -70,6 +70,15 @@ DEFAULT_FRAMES = 50
 DEFAULT_DEMO = 'eight_E_drop_demo_contact'
 
 
+def get_available_demos():
+    """Get list of available demos from YAML configs."""
+    try:
+        from demo_settings import list_demos
+        return list_demos()
+    except ImportError:
+        return [DEFAULT_DEMO]
+
+
 def run_version(version_name: str, n_frames: int, output_dir: str, demo: str = DEFAULT_DEMO) -> Dict:
     """
     Run a single test version and return metrics.
@@ -357,8 +366,18 @@ def main():
         '--report-only', action='store_true',
         help='Generate report from existing results (skip running tests)'
     )
+    parser.add_argument(
+        '--list-demos', action='store_true',
+        help='List available demos from YAML configs'
+    )
 
     args = parser.parse_args()
+
+    if args.list_demos:
+        print("Available demos:")
+        for demo in get_available_demos():
+            print(f"  - {demo}")
+        sys.exit(0)
 
     # Determine versions to run
     if args.versions == 'all':
