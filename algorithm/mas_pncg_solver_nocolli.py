@@ -17,7 +17,9 @@ from algorithm.mas_preconditioner_small import MASPreconditionerSmall, BANKSIZE
 from util.model_loading import model_loading
 
 # Constants
-RESTART_THRESHOLD = 0.3  # Powell's restart threshold (delta)
+RESTART_THRESHOLD = 0.5  # Powell's restart threshold (increased from 0.3 to reduce restart frequency)
+ENERGY_TOL = 1e-4        # Relative energy change tolerance for convergence
+STAGNANT_WINDOW = 5      # Number of iterations to check for energy stagnation
 
 
 @ti.data_oriented
@@ -109,9 +111,10 @@ class MASPNCGSolverNoCollision(base_deformer):
         self.config = model.dict
 
         # MAS Preconditioner
+        # Note: model_loading applies METIS reordering, so metis_reordered=True
         t0 = time.perf_counter()
         print('[MAS-PNCG] Initializing MAS preconditioner...')
-        self.mas_preconditioner = MASPreconditionerSmall(self.mesh)
+        self.mas_preconditioner = MASPreconditionerSmall(self.mesh, metis_reordered=True)
         t_mas = (time.perf_counter() - t0) * 1000
         print(f'[MAS-PNCG] MAS initialized with {self.mas_preconditioner.level_num} levels')
 
@@ -123,6 +126,9 @@ class MASPNCGSolverNoCollision(base_deformer):
 
         # MAS-PNCG state variables
         self.restart_threshold = RESTART_THRESHOLD
+        self.energy_tol = ENERGY_TOL
+        self.stagnant_window = STAGNANT_WINDOW
+        self.energy_history = []  # For tracking energy stagnation
 
         # Scalar fields for 2D subspace computation
         t0 = time.perf_counter()
@@ -158,7 +164,8 @@ class MASPNCGSolverNoCollision(base_deformer):
     def compute_grad(self):
         """Compute gradient for elastic + inertia."""
         # Initialize with inertia term
-        ti.mesh_local(self.mesh.verts.grad)
+        # Note: ti.mesh_local disabled due to CUDA scalarize bug in taichi 1.7.4
+        # ti.mesh_local(self.mesh.verts.grad)
         for vert in self.mesh.verts:
             vert.grad_prev = vert.grad
             vert.grad = vert.m * (vert.x - vert.x_hat)
@@ -183,7 +190,7 @@ class MASPNCGSolverNoCollision(base_deformer):
 
     def apply_preconditioner(self):
         """Apply MAS preconditioner."""
-        self.mas_preconditioner.apply('full')
+        self.mas_preconditioner.apply()
 
     # ========================================================================
     # Hessian-Vector Products
@@ -422,9 +429,38 @@ class MASPNCGSolverNoCollision(base_deformer):
     # Main Step Function
     # ========================================================================
 
+    def check_energy_stagnation(self, energy):
+        """
+        Check if energy has stagnated (relative change below tolerance).
+
+        Returns: True if converged due to energy stagnation
+        """
+        self.energy_history.append(energy)
+
+        if len(self.energy_history) < self.stagnant_window + 1:
+            return False
+
+        # Keep only recent history
+        if len(self.energy_history) > self.stagnant_window + 1:
+            self.energy_history = self.energy_history[-(self.stagnant_window + 1):]
+
+        # Check relative energy change over window
+        E_old = self.energy_history[0]
+        E_new = self.energy_history[-1]
+
+        if E_old > 1e-12:
+            rel_change = abs(E_old - E_new) / E_old
+            return rel_change < self.energy_tol
+
+        return False
+
     def step(self, verbose=False):
         """
         Main MAS-PNCG step for collision-free scenarios.
+
+        Convergence criteria:
+        1. Gradient norm: |g|_inf < epsilon
+        2. Energy stagnation: relative energy change < energy_tol over stagnant_window iters
 
         Returns: number of iterations
         """
@@ -437,6 +473,7 @@ class MASPNCGSolverNoCollision(base_deformer):
             print(f'{"-"*100}')
 
         self.assign_xn_xhat()
+        self.energy_history.clear()  # Reset energy history for this frame
 
         do_restart = True
         mu, nu = 0.0, 0.0  # Initialize for logging
@@ -449,10 +486,10 @@ class MASPNCGSolverNoCollision(base_deformer):
             # Step 2: Check convergence (at iteration start, after gradient computation)
             grad_inf = self.compute_grad_inf_norm()
 
-            # Compute energy for logging
-            if verbose:
-                energy = self.compute_energy()
+            # Compute energy (always needed for convergence check)
+            energy = self.compute_energy()
 
+            # Check gradient convergence
             if grad_inf < self.epsilon:
                 if verbose:
                     print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
@@ -460,10 +497,19 @@ class MASPNCGSolverNoCollision(base_deformer):
                     print(f'  => Converged at iter {iter}, |g|_inf={grad_inf:.2e}')
                 break
 
+            # Check energy stagnation convergence
+            if self.check_energy_stagnation(energy):
+                if verbose:
+                    print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
+                          f'{"--":>8} {"--":>3} {"--":>7} {"--":>7} {"--":>7} {"--":>7}')
+                    print(f'  => Converged at iter {iter}, energy stagnated (rel_change < {self.energy_tol:.0e})')
+                break
+
             # Step 3: Rebuild preconditioner on restart
             t_rebuild_start = time.perf_counter()
             if do_restart:
                 self.mas_preconditioner.rebuild(self)
+                ti.sync()  # Ensure GPU work completes before timing
             t_rebuild = (time.perf_counter() - t_rebuild_start) * 1000
 
             # Step 3.5: Cache z_prev BEFORE applying preconditioner (for Powell criterion)

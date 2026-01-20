@@ -22,3 +22,6 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Taichi compile cache
+.taichi_cache/

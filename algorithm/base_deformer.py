@@ -107,7 +107,7 @@ class base_deformer:
 
     @ti.kernel
     def precompute(self):
-        ti.mesh_local(self.mesh.verts.x, self.mesh.verts.m)
+        # ti.mesh_local(self.mesh.verts.x, self.mesh.verts.m)  # Disabled: CUDA scalarize bug
         for c in self.mesh.cells:
             Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1,4))])
             c.B = Ds.inverse()

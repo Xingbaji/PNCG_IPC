@@ -792,7 +792,7 @@ class model_loading:
 
         elif demo == 'eight_E_freefall':
             demo_dict = {
-                'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-6, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
@@ -801,6 +801,7 @@ class model_loading:
                 'camera_position': [2.02077697, -0.54062709, 2.59427191],
                 'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
             }
+            print('!E 1e7')
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'eight_E_freefall_mas':

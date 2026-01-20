@@ -232,18 +232,14 @@ class MASPreconditionerContact(MASPreconditionerSmall):
                 lane_j = curr_j % BANKSIZE
 
                 # Add to coarse block (symmetric storage)
+                # Note: H_ij = para0 * t⊗t^T + para * I is already symmetric,
+                # so no need for separate transpose handling on diagonal entries
                 if lane_i <= lane_j:
                     s_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
                     for di in ti.static(range(3)):
                         for dj in ti.static(range(3)):
                             ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
                                           H_ij[di, dj])
-                    # If same node (diagonal), add symmetric contribution
-                    if lane_i == lane_j:
-                        for di in ti.static(range(3)):
-                            for dj in ti.static(range(3)):
-                                ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
-                                              H_ij[dj, di])
                 else:
                     s_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
                     for di in ti.static(range(3)):

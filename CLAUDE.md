@@ -29,6 +29,20 @@ python mas_pncg_demo.py
 timeout 20s python cubic_demos.py --headless --frames 10
 ```
 
+## Taichi Compile Optimization
+
+**启用编译缓存（强烈推荐）：** 首次编译后，后续启动将直接加载缓存，速度提升10-100倍。
+
+```python
+import taichi as ti
+ti.init(arch=ti.gpu, offline_cache=True, offline_cache_file_path=".taichi_cache")
+```
+
+**注意事项：**
+- 缓存目录 `.taichi_cache` 已添加到 `.gitignore`
+- 修改Taichi kernel代码后，缓存会自动失效并重新编译
+- 如遇到奇怪的编译问题，可删除缓存目录重试：`rm -rf .taichi_cache`
+
 ## Architecture
 
 ```
