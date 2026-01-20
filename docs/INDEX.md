@@ -133,10 +133,71 @@ docs/
 
 ---
 
+## Demo配置系统 (demo_settings/)
+
+YAML配置系统用于定义模拟demo的参数。位于项目根目录下。
+
+### 目录结构
+
+| 子目录 | 描述 |
+|--------|------|
+| `basic/` | 基础demo (cube, banana, armadillo等) |
+| `contact/` | 接触/碰撞demo (IPC启用) |
+| `dirichlet/` | Dirichlet边界条件demo |
+| `stiff_gipc/` | 高刚度GIPC测试 |
+| `freefall/` | 自由落体demo |
+| `mas_test/` | MAS预条件器测试 |
+| `unittest/` | 单元测试用demo |
+
+### 使用方法
+
+```python
+# 推荐方式：使用demo名称
+from demo_settings import load_demo, load_demo_config, list_demos
+
+# 加载配置
+config = load_demo_config('cube_40')  # 返回DemoConfig对象
+demo_dict = load_demo('cube_40')       # 返回传统字典格式
+
+# 列出所有demo
+demos = list_demos()                   # 返回列表
+demos = list_demos(by_category=True)   # 按类别分组
+```
+
+### YAML配置示例
+
+```yaml
+# demo_settings/basic/cube.yaml
+material:
+  E: 1.0e4        # 杨氏模量 (支持科学计数法)
+  nu: 0.4         # 泊松比
+  density: 1000.0
+  elastic_type: ARAP_SPD
+
+solver:
+  epsilon: 1e-5
+  iter_max: 50
+  dt: 0.04
+
+scene:
+  ground_height: 0.1
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube_1/cube_1.node
+      scale: [0.5, 0.5, 0.5]
+      translation: [0.0, 0.5, 0.0]
+
+ipc:
+  enabled: false
+```
+
+---
+
 ## 快速链接
 
 - **入口文件**: [CLAUDE.md](../CLAUDE.md)
 - **项目说明**: [README.md](../README.md)
+- **Demo配置目录**: [demo_settings/](../demo_settings/)
 - **实验报告目录**: [experiment_reports/](../experiment_reports/)
 - **单元测试目录**: [unittest/](../unittest/)
 

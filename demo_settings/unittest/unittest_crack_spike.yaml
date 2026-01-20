@@ -1,0 +1,29 @@
+# Unit test: Crack and spike collision
+material:
+  E: 1.0e5
+  nu: 0.4
+  density: 100.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-6
+  iter_max: 100
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/crack/crack.node
+      translation: [0.0, 0.0, 0.0]
+    - path: ../model/mesh/spike/spike.node
+      rotation: [0.0, 0.0, 180.0]
+      translation: [0.0, 5.0, 0.0]
+  camera_position: [-0.09194252, 1.33939877, 6.36510762]
+  camera_lookat: [-0.11727148, 1.23811724, 5.3705723]
+
+ipc:
+  enabled: true
+  dHat: 0.1
+  kappa: 10.0
+  ground_barrier: false

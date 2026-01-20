@@ -1,0 +1,19 @@
+# Cube with 10x10x10 resolution
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 500.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.04
+
+scene:
+  ground_height: 5.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube_10/cube_10.node
+  camera_position: [0.44853318, 0.50973239, 0.34616475]
+  camera_lookat: [0.4503797, 0.53796244, -0.653435]

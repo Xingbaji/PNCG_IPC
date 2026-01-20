@@ -1,0 +1,28 @@
+# Twisting mat with Dirichlet boundary conditions
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 1000.0
+  elastic_type: FCR_filter
+
+solver:
+  epsilon: 1e-3
+  iter_max: 150
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: 0.0
+  meshes:
+    - path: ../model/mesh/mat150x150t40_new/mat150x150t40_new.node
+      rotation: [90.0, 0.0, 0]
+  camera_position: [-0.10322845, -0.26977274, -1.4946556]
+  camera_lookat: [-0.05233857, -0.15009736, -0.50314765]
+
+dirichlet_path: ../model/mesh/mat150x150t40_new/is_dirichlet.npy
+
+ipc:
+  enabled: true
+  dHat: 0.004
+  kappa: 0.5
+  ground_barrier: false

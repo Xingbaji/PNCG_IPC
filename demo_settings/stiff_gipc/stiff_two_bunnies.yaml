@@ -1,0 +1,28 @@
+# Stiff-GIPC Scene 2: Two Bunnies
+material:
+  E: 8.5e5
+  nu: 0.4
+  density: 1000.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-4
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 0.1
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/bunny_stiff/bunny_stiff.node
+      scale: [0.5, 0.5, 0.5]
+      translation: [0.0, 0.5, 0.0]
+    - path: ../model/mesh/bunny_stiff/bunny_stiff.node
+      scale: [0.5, 0.5, 0.5]
+      translation: [0.25, 1.2, 0.1]
+
+ipc:
+  enabled: true
+  dHat: 0.01
+  kappa: 1.0
+  ground_barrier: true

@@ -1,0 +1,33 @@
+# Four rods with twisting Dirichlet boundary conditions
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 1000.0
+  elastic_type: FCR_filter
+
+solver:
+  epsilon: 1e-3
+  iter_max: 150
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: 0.0
+  meshes:
+    - path: ../model/mesh/rod300x33/rod300x33.node
+      count: 4
+      translations:
+        - [0.0, -0.1, -0.1]
+        - [0.0, -0.1, 0.1]
+        - [0.0, 0.1, -0.1]
+        - [0.0, 0.1, 0.1]
+  camera_position: [-0.09454866, -0.05231105, -0.56085817]
+  camera_lookat: [-0.01724642, 0.03024886, 0.43272535]
+
+dirichlet_path: ../model/mesh/rod300x33/is_dirichlet.npy
+
+ipc:
+  enabled: true
+  dHat: 0.001
+  kappa: 0.1
+  ground_barrier: false

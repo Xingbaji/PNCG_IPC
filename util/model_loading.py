@@ -1,3 +1,14 @@
+"""
+Model loading module for PNCG_IPC simulations.
+
+This module provides the model_loading class that loads demo configurations
+and prepares mesh data for simulation.
+
+Configuration Priority:
+1. YAML files in demo_settings/ (new system - recommended)
+2. Legacy hardcoded configs (for backward compatibility)
+"""
+
 import numpy as np
 import taichi as ti
 np.set_printoptions(suppress=True)
@@ -31,12 +42,10 @@ def compute_auto_camera(vertices, fov_degrees=45.0, padding=1.5):
     diagonal = np.linalg.norm(bbox_size)
 
     # Compute camera distance based on FOV to fit the entire object
-    # Using the formula: distance = (diagonal/2) / tan(fov/2)
     fov_radians = np.radians(fov_degrees)
     distance = (diagonal / 2.0) / np.tan(fov_radians / 2.0) * padding
 
     # Position camera along a diagonal direction (back-right-up from center)
-    # This gives a nice 3/4 view of the object
     direction = np.array([1.0, 0.5, 1.0])
     direction = direction / np.linalg.norm(direction)
 
@@ -44,14 +53,99 @@ def compute_auto_camera(vertices, fov_degrees=45.0, padding=1.5):
 
     return camera_position.tolist(), center.tolist()
 
+
 @ti.data_oriented
 class model_loading:
+    """
+    Demo configuration loader and mesh initializer.
+
+    Usage:
+        model = model_loading(demo='cube_40')
+        # Access properties:
+        model.dict        # Full configuration dict
+        model.mu, model.la  # Lame parameters
+        model.mesh        # Loaded mesh data
+    """
+
     def __init__(self, demo):
-        # Try new config system first (if available)
+        """
+        Initialize model loading with demo name.
+
+        Args:
+            demo: Name of the demo configuration to load
+        """
+        # Try new YAML config system first
+        if self._try_load_from_yaml(demo):
+            return
+
+        # Try registry-based config system
         if self._try_load_from_registry(demo):
             return
 
-        # Fall back to legacy if-elif chain
+        # Fall back to legacy hardcoded configs
+        self._load_legacy_config(demo)
+
+    def _try_load_from_yaml(self, demo: str) -> bool:
+        """
+        Try to load configuration from YAML files in demo_settings/.
+
+        Returns True if successfully loaded, False to try next method.
+        """
+        try:
+            from demo_settings import load_demo_config
+            config = load_demo_config(demo)
+            demo_dict = config.to_legacy_dict()
+            self._load_with_dict(demo, demo_dict, config)
+            return True
+        except (ImportError, FileNotFoundError):
+            return False
+
+    def _try_load_from_registry(self, demo: str) -> bool:
+        """
+        Try to load configuration from the config registry.
+
+        Returns True if successfully loaded, False to try next method.
+        """
+        try:
+            from config import DemoRegistry
+            if not DemoRegistry.exists(demo):
+                return False
+
+            config = DemoRegistry.get(demo)
+            demo_dict = config.to_legacy_dict()
+            self._load_with_dict(demo, demo_dict, config)
+            return True
+        except ImportError:
+            return False
+
+    def _load_with_dict(self, demo: str, demo_dict: dict, config=None):
+        """
+        Load demo using the configuration dict.
+
+        Determines the appropriate load method based on config.
+        """
+        self.set_para(demo_dict)
+        self.dict = demo_dict
+
+        # Determine load method
+        has_ipc = 'kappa' in demo_dict
+        has_dirichlet = 'dirichlet_path' in demo_dict
+
+        if has_ipc:
+            if has_dirichlet:
+                self.load_demo_n_object_dirichlet(demo, demo_dict)
+            else:
+                self.load_demo_n_object(demo, demo_dict)
+        else:
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+    def _load_legacy_config(self, demo: str):
+        """Load from legacy hardcoded configurations."""
+        # ============================================================
+        # LEGACY CONFIGS - For backward compatibility only
+        # New demos should be added as YAML files in demo_settings/
+        # ============================================================
+
         if demo == 'armadillo_collision_free':
             demo_dict = {'E': 5e4, 'nu': 0.4, 'density': 1.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 5e-5, 'iter_max': 150, 'height': 1.0, 'elastic_type': 'FCR_filter',
@@ -219,7 +313,6 @@ class model_loading:
                          }
             self.load_demo_n_object(demo, demo_dict)
         elif demo == 'unittest_wedge_spike_cubic':
-            # Same as unittest_wedge_spike but using cubic barrier instead of log barrier
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
                          'dHat': 0.1, 'kappa': 5.0, 'elastic_type': 'NH', 'ground_barrier': 0,
@@ -233,7 +326,6 @@ class model_loading:
                          }
             self.load_demo_n_object(demo, demo_dict)
         elif demo == 'unittest_wedge_spike_adaptive':
-            # Cubic barrier with adaptive kappa (elasticity-inclusive dynamic stiffness)
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 0.0,
                          'dHat': 0.1, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
@@ -294,7 +386,7 @@ class model_loading:
                          'camera_lookat': [0.09392564, 2.62313459, 2.10889338],
                          }
             self.load_demo_n_object(demo, demo_dict)
-        elif demo == 'unittest_cube_spike2': # use large cube for silding test
+        elif demo == 'unittest_cube_spike2':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
                          'dHat': 0.1, 'kappa': 4.0, 'elastic_type': 'NH', 'ground_barrier': 0,
@@ -306,7 +398,7 @@ class model_loading:
                          'camera_lookat': [1.48162284, 4.04749814, 0.03541727],
                          }
             self.load_demo_n_object(demo, demo_dict)
-        elif demo == 'unittest_cube_wedge':  # use large cube for silding
+        elif demo == 'unittest_cube_wedge':
             demo_dict = {'E': 1e5, 'nu': 0.4, 'density': 100.0, 'gravity': -9.8, 'dt': 0.04,
                          'epsilon': 1e-6, 'iter_max': 100, 'height': 0.0,
                          'dHat': 0.2, 'kappa': 20.0, 'elastic_type': 'NH', 'ground_barrier': 0,
@@ -344,9 +436,6 @@ class model_loading:
             self.load_demo_n_object(demo, demo_dict)
 
         # ========== Stiff-GIPC Scenes ==========
-        # Scenes ported from /root/Stiff-GIPC/StiffGIPC/scene_setup.cu
-
-        # Scene 0: Octopus Stack - 4 octopuses stacked vertically
         elif demo == 'stiff_octopus_stack':
             meshes = []
             rotations = []
@@ -354,7 +443,7 @@ class model_loading:
             translations = []
             for i in range(4):
                 meshes.append('../model/mesh/octopus/octopus.node')
-                rotations.append([-90.0, 0.0, 0.0])  # Rotate -90 degrees around X
+                rotations.append([-90.0, 0.0, 0.0])
                 scales.append([1.0, 1.0, 1.0])
                 translations.append([0.0, 0.0, -0.65 + 0.3 * i])
             demo_dict = {
@@ -368,7 +457,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 1: Single Bunny
         elif demo == 'stiff_single_bunny':
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
@@ -381,7 +469,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 2: Two Bunnies
         elif demo == 'stiff_two_bunnies':
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
@@ -394,10 +481,9 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 3: Stretching Armadillo - gravity stretched with fixed vertices
         elif demo == 'stiff_stretching_armadillo':
             demo_dict = {
-                'E': 2.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -49.0, 'dt': 0.01,  # 5x gravity
+                'E': 2.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -49.0, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.0,
                 'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'NH', 'ground_barrier': 0,
                 'model_paths': ['../model/mesh/armadillo_stiff/armadillo_stiff.node'],
@@ -407,7 +493,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 4: Twisting Mat - requires Dirichlet BCs
         elif demo == 'stiff_twisting_mat':
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': 0.0, 'dt': 0.01,
@@ -420,7 +505,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 6: Dragon High - large dragon mesh
         elif demo == 'stiff_dragon_high':
             demo_dict = {
                 'E': 8.5e5, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.005,
@@ -433,7 +517,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 7: Box Pipe - Grid of cubes (simplified: 4x4 instead of 4x4x4 per layer)
         elif demo == 'stiff_box_pipe':
             meshes = []
             rotations = []
@@ -441,7 +524,6 @@ class model_loading:
             translations = []
             dist = 0.2
             count = 4
-            # Create 4x4 grid of cubes at different heights
             for layer in range(2):
                 height = 0.1 + layer * 0.5
                 for i in range(count):
@@ -463,7 +545,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 11: Two Cubes Drop - stiff cube + soft cube
         elif demo == 'stiff_two_cubes_drop':
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
@@ -476,7 +557,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 12: Dropping Letters - 9 letters with increasing stiffness
         elif demo == 'stiff_dropping_letters':
             meshes = []
             rotations = []
@@ -498,13 +578,11 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 13: Teapots - 32 teapots in a box (simplified: 8 teapots)
         elif demo == 'stiff_teapots':
-            meshes = ['../model/mesh/box/box.node']  # Box container
+            meshes = ['../model/mesh/box/box.node']
             rotations = [[-90.0, 0.0, 0.0]]
             scales = [[4.0, 4.0, 4.0]]
             translations = [[0.0, 0.0, 0.0]]
-            # Add teapots in a 2x4 grid
             h_space = 0.6
             x_space = 0.35
             for i in range(8):
@@ -528,7 +606,6 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # Scene 14: Two Soft Bunnies
         elif demo == 'stiff_two_soft_bunnies':
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
@@ -541,7 +618,7 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # MAS Stiffness Test: 8 E objects with varying stiffness (1e4 to 1e7)
+        # MAS Tests
         elif demo == 'eight_E_stiffness_test':
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
@@ -553,10 +630,9 @@ class model_loading:
                 'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
                 'camera_position': [2.02077697, -0.54062709, 2.59427191],
                 'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
-                'use_mas': False,  # Enable MAS preconditioner
+                'use_mas': False,
             }
             self.load_demo_n_object(demo, demo_dict)
-        # MAS Stiffness Test: 8 E objects with varying stiffness (1e4 to 1e7)
         elif demo == 'eight_E_stiffness_mas':
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
@@ -568,7 +644,7 @@ class model_loading:
                 'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
                 'camera_position': [2.02077697, -0.54062709, 2.59427191],
                 'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
-                'use_mas': True,  # Enable MAS preconditioner
+                'use_mas': True,
             }
             self.load_demo_n_object(demo, demo_dict)
         elif demo == 'eight_E_cubic':
@@ -576,9 +652,9 @@ class model_loading:
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
                 'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'ground_barrier': 1,
-                'barrier_type': 'cubic',  # Use cubic barrier function
-                'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
-                'cache_kappa': False,      # Cache kappa at iter 0, reuse in subsequent iterations
+                'barrier_type': 'cubic',
+                'adaptive_kappa': True,
+                'cache_kappa': False,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -589,14 +665,13 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
         elif demo == 'eight_E_cubic_no_cache':
-            # Same as eight_E_cubic but without kappa caching (update kappa every iteration)
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-4, 'iter_max': 100, 'height': 0.5,
                 'dHat': 0.01, 'kappa': 1.0, 'elastic_type': 'SNH', 'ground_barrier': 1,
-                'barrier_type': 'cubic',  # Use cubic barrier function
-                'adaptive_kappa': True,   # Use elasticity-inclusive dynamic stiffness (Eq. 4)
-                'cache_kappa': False,     # Update kappa every iteration (no caching)
+                'barrier_type': 'cubic',
+                'adaptive_kappa': True,
+                'cache_kappa': False,
                 'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
                 'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
                 'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
@@ -607,12 +682,8 @@ class model_loading:
             }
             self.load_demo_n_object(demo, demo_dict)
 
-        # ========== MAS Free-Fall Validation Tests ==========
-        # Collision-free demos for validating MAS solver correctness
-        # Compare with Newton's law ground truth: y(t) = y0 + v0*t + 0.5*g*t^2
-
+        # ========== Free-Fall Validation Tests ==========
         elif demo == 'cube_freefall':
-            # Basic cube free-fall test (smallest cube)
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube/cube.node'],
@@ -622,7 +693,6 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'cube_freefall_10':
-            # cube_10 free-fall test
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_10/cube_10.node'],
@@ -632,7 +702,6 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'cube_freefall_20':
-            # cube_20 free-fall test
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_20/cube_20.node'],
@@ -642,7 +711,6 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'cube_freefall_40':
-            # cube_40 free-fall test (largest cube)
             demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_40/cube_40.node'],
@@ -651,8 +719,6 @@ class model_loading:
                          }
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
-        # ========== Eight E Free-Fall Validation Tests ==========
-        # 8 E-shaped objects free-fall test (no collision)
         elif demo == 'eight_E_freefall':
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
@@ -667,7 +733,6 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'eight_E_freefall_mas':
-            # 8 E-shaped objects free-fall test with MAS preconditioner
             demo_dict = {
                 'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-6, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
@@ -681,7 +746,6 @@ class model_loading:
             }
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
-        # High-stiffness version (E=1e7) - for testing MAS benefits
         elif demo == 'eight_E_freefall_stiff':
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
@@ -696,7 +760,6 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'eight_E_freefall_stiff_mas':
-            # High-stiffness with MAS preconditioner
             demo_dict = {
                 'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
                 'epsilon': 1e-6, 'iter_max': 200, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
@@ -711,42 +774,18 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         else:
-            raise Exception('demo not found')
+            # Try to provide helpful error message
+            try:
+                from demo_settings import list_demos
+                available = list_demos()
+                raise Exception(f"Demo '{demo}' not found. Available demos: {available[:20]}...")
+            except ImportError:
+                raise Exception(f"Demo '{demo}' not found")
 
-    def _try_load_from_registry(self, demo: str) -> bool:
-        """
-        Try to load configuration from the new config registry.
-
-        Returns True if successfully loaded, False to fall back to legacy.
-        """
-        try:
-            from config import DemoRegistry
-            if not DemoRegistry.exists(demo):
-                return False
-
-            config = DemoRegistry.get(demo)
-            demo_dict = config.to_legacy_dict()
-            self.set_para(demo_dict)
-            self.dict = demo_dict
-
-            # Determine which load method to use based on config
-            if config.ipc.enabled:
-                if config.dirichlet_path:
-                    self.load_demo_n_object_dirichlet(demo, demo_dict)
-                else:
-                    self.load_demo_n_object(demo, demo_dict)
-            else:
-                self.load_demo_n_object_collision_free(demo, demo_dict)
-
-            return True
-        except ImportError:
-            # Config module not yet available, fall back to legacy
-            return False
-
-    def set_para(self,demo_dict):
+    def set_para(self, demo_dict):
         E = demo_dict['E']
         nu = demo_dict['nu']
-        self.mu, self.la =  E / (2.0 * (1.0 + nu)), E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        self.mu, self.la = E / (2.0 * (1.0 + nu)), E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
         self.density = demo_dict['density']
         self.dt = demo_dict['dt']
         self.gravity = demo_dict['gravity']
@@ -761,22 +800,18 @@ class model_loading:
             self.kappa = demo_dict['kappa']
             self.dHat = demo_dict['dHat']
             self.ground_barrier = int(demo_dict['ground_barrier'])
-            # Barrier type: 'log' (default) or 'cubic'
             if 'barrier_type' in demo_dict:
                 self.barrier_type = demo_dict['barrier_type']
             else:
                 self.barrier_type = 'log'
-            # Adaptive kappa: dynamically computed per-constraint kappa (cubic barrier only)
             if 'adaptive_kappa' in demo_dict:
                 self.adaptive_kappa = demo_dict['adaptive_kappa']
             else:
                 self.adaptive_kappa = False
-            # Cache kappa: when True, compute at iter 0 and cache for subsequent iterations
-            # When False, recompute kappa every iteration (only relevant when adaptive_kappa=True)
             if 'cache_kappa' in demo_dict:
                 self.cache_kappa = demo_dict['cache_kappa']
             else:
-                self.cache_kappa = True  # Default to caching for performance
+                self.cache_kappa = True
 
         # MAS preconditioner options
         if 'use_mas' in demo_dict:
@@ -799,19 +834,18 @@ class model_loading:
                 [0, 0, scale[2]]
             ])
             model[0] = np.dot(model[0], S)
-        if rotation != [0.,0.,0.]:
+        if rotation != [0., 0., 0.]:
             rotation = np.asarray(rotation)
             rotation = rotation * np.pi / 180.0
             rotation_matrix = Rotation.from_rotvec(rotation).as_matrix()
             model[0] = np.dot(model[0], rotation_matrix)
-        if translation != [0.,0.,0.]:
+        if translation != [0., 0., 0.]:
             model[0][:, 0] = model[0][:, 0] + translation[0]
             model[0][:, 1] = model[0][:, 1] + translation[1]
             model[0][:, 2] = model[0][:, 2] + translation[2]
         return model
 
     def load_demo_n_object_collision_free(self, demo, demo_dict):
-        # set physical paramters
         self.set_para(demo_dict)
         self.dict = demo_dict
         models = []
@@ -821,14 +855,12 @@ class model_loading:
             model_i = self.add_object(model_path=demo_dict['model_paths'][i], scale=demo_dict['scales'][i], translation=demo_dict['translations'][i], rotation=demo_dict['rotations'][i])
             models.append(model_i)
             if i == 0:
-                self.ground = np.min(model_i[0][:,1]) - demo_dict['height']
+                self.ground = np.min(model_i[0][:, 1]) - demo_dict['height']
         self.mesh = Patcher.load_mesh(models, relations=["CV"])
-        # Auto-compute camera position and lookat
         self.auto_camera_from_models(models)
         print('load finish')
 
     def load_demo_n_object(self, demo, demo_dict):
-        # set physical paramters
         self.set_para(demo_dict)
         self.dict = demo_dict
         models = []
@@ -838,17 +870,14 @@ class model_loading:
         for i in range(number):
             model_i = self.add_object(model_path=demo_dict['model_paths'][i], scale=demo_dict['scales'][i], translation=demo_dict['translations'][i], rotation=demo_dict['rotations'][i])
             models.append(model_i)
-            # print('E high ', np.max(model_i[0][:,1]) - np.min(model_i[0][:,1]))
-            ground_min = min(ground_min, np.min(model_i[0][:,1]))
+            ground_min = min(ground_min, np.min(model_i[0][:, 1]))
 
         self.ground = ground_min - demo_dict['height']
         print('load mesh')
         self.load_mesh_and_boundarys(demo, models)
-        # Auto-compute camera position and lookat
         self.auto_camera_from_models(models)
 
     def load_demo_n_object_dirichlet(self, demo, demo_dict):
-        # set physical paramters
         self.set_para(demo_dict)
         self.dict = demo_dict
         models = []
@@ -858,12 +887,11 @@ class model_loading:
         for i in range(number):
             model_i = self.add_object(model_path=demo_dict['model_paths'][i], scale=demo_dict['scales'][i], translation=demo_dict['translations'][i], rotation=demo_dict['rotations'][i])
             models.append(model_i)
-            ground_min = min(ground_min, np.min(model_i[0][:,1]))
+            ground_min = min(ground_min, np.min(model_i[0][:, 1]))
 
         self.ground = ground_min - demo_dict['height']
         print('load mesh')
         self.load_mesh_and_boundarys(demo, models)
-        # Auto-compute camera position and lookat
         self.auto_camera_from_models(models)
         self.mesh.verts.place({'is_dirichlet': ti.i32})
         dirichlet_path = demo_dict['dirichlet_path']
@@ -896,14 +924,12 @@ class model_loading:
         self.boundary_triangles.from_numpy(boundary_triangles_np)
         print('load finish')
 
-    def load_and_save_boundarys(self, demo,  models):
-        # load demo and save boundary point ,edge, triangle of demo in the path
-        # 因为meshtaichi无法在并行ele的时候还只并行surface mesh，遍历所有的surface edge 再判断是否是boundary的速度会很慢，这里把surface的信息保存下来
+    def load_and_save_boundarys(self, demo, models):
         save_path = '../demo_results/final/' + demo + '/boundary/'
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         print('assign boundarys... ')
-        self.mesh_tmp = Patcher.load_mesh(models, relations=['FC','FE','FV','EV'])
+        self.mesh_tmp = Patcher.load_mesh(models, relations=['FC', 'FE', 'FV', 'EV'])
         self.mesh_tmp.faces.place({'is_boundary': ti.i32})
         self.mesh_tmp.edges.place({'is_boundary': ti.i32})
         self.mesh_tmp.verts.place({'is_boundary': ti.i32})
@@ -954,33 +980,23 @@ class model_loading:
     def assign_relations(self):
         for f in self.mesh_tmp.faces:
             id = f.id
-            self.triangles[id,0] = f.verts[0].id
-            self.triangles[id,1] = f.verts[1].id
-            self.triangles[id,2] = f.verts[2].id
+            self.triangles[id, 0] = f.verts[0].id
+            self.triangles[id, 1] = f.verts[1].id
+            self.triangles[id, 2] = f.verts[2].id
         for e in self.mesh_tmp.edges:
             id = e.id
-            self.edges[id,0] = e.verts[0].id
-            self.edges[id,1] = e.verts[1].id
+            self.edges[id, 0] = e.verts[0].id
+            self.edges[id, 1] = e.verts[1].id
 
     def auto_camera_from_models(self, models, fov_degrees=45.0, padding=1.5):
         """
         Compute camera position and lookat from loaded models.
         Only computes if camera_position/camera_lookat not already set in demo_dict.
-
-        Args:
-            models: list of model data, each model is [vertices, cells]
-            fov_degrees: camera field of view in degrees
-            padding: multiplier for camera distance
-
-        Returns:
-            Sets self.camera_position and self.camera_lookat
         """
-        # Use manual camera settings from demo_dict if available
         if 'camera_position' in self.dict and 'camera_lookat' in self.dict:
             self.camera_position = self.dict['camera_position']
             self.camera_lookat = self.dict['camera_lookat']
         else:
-            # Auto-compute camera from mesh bounding box
             all_vertices = np.vstack([model[0] for model in models])
             self.camera_position, self.camera_lookat = compute_auto_camera(
                 all_vertices, fov_degrees, padding

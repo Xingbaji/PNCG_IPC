@@ -1,0 +1,29 @@
+# Unit test: Two wedges collision
+material:
+  E: 1.0e5
+  nu: 0.4
+  density: 100.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/wedge/wedge.node
+      translation: [0.0, 0.0, 0.0]
+    - path: ../model/mesh/wedge/wedge.node
+      rotation: [0.0, 0.0, 180.0]
+      translation: [0.0, 7.0, 0.0]
+  camera_position: [-1.378518, 3.47533885, 5.72554384]
+  camera_lookat: [-1.38104686, 3.32964677, 4.73621708]
+
+ipc:
+  enabled: true
+  dHat: 0.1
+  kappa: 4.0
+  ground_barrier: false

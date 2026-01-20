@@ -1,0 +1,17 @@
+# Basic cube free-fall test (collision-free validation)
+material:
+  E: 1.0e5
+  nu: 0.3
+  density: 1000.0
+  elastic_type: ARAP_SPD
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 100.0  # Far below to avoid collision
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube/cube.node

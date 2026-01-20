@@ -1,0 +1,19 @@
+# Basic cube demo - collision-free deformation
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 500.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-10
+  iter_max: 50
+  dt: 0.04
+
+scene:
+  ground_height: 4.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube/cube.node
+  camera_position: [0.16850185, -1.69999744, 5.03710925]
+  camera_lookat: [0.14355508, -1.50024417, 4.05758065]

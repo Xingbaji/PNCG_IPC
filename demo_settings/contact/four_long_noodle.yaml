@@ -1,0 +1,42 @@
+# Four long noodles in a bowl
+material:
+  E: 5.0e3
+  nu: 0.4
+  density: 100.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-4
+  iter_max: 30
+  dt: 0.04
+
+scene:
+  ground_height: 0
+  gravity: -9.8
+  meshes:
+    # Four noodles
+    - path: ../model/mesh/long_noodle_750/long_noodle_750.1.node
+      rotation: [0.0, 0.0, 90]
+      translation: [-0.25, 0.0, 0.0]
+    - path: ../model/mesh/long_noodle_750/long_noodle_750.1.node
+      rotation: [0.0, 0.0, 90]
+      translation: [0.25, 0.0, 0.0]
+    - path: ../model/mesh/long_noodle_750/long_noodle_750.1.node
+      rotation: [0.0, 0.0, 90]
+      translation: [0.0, 0.0, 0.25]
+    - path: ../model/mesh/long_noodle_750/long_noodle_750.1.node
+      rotation: [0.0, 0.0, 90]
+      translation: [0.0, 0.0, -0.25]
+    # Bowl container
+    - path: ../model/mesh/Bowl/Bowl.2.node
+      rotation: [90.0, 0.0, 0.0]
+      scale: [0.45, 0.45, 0.45]
+      translation: [0.0, -15.1, 0.0]
+  camera_position: [0.53409419, -14.25542546, -0.36805832]
+  camera_lookat: [-0.06181073, -14.54020105, -0.06550654]
+
+ipc:
+  enabled: true
+  dHat: 0.004
+  kappa: 1.0
+  ground_barrier: false

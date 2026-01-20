@@ -1,0 +1,51 @@
+# Stiff-GIPC Scene 13: Teapots in a box
+material:
+  E: 3.0e5
+  nu: 0.4
+  density: 1000.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-4
+  iter_max: 100
+  dt: 0.005
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    # Box container
+    - path: ../model/mesh/box/box.node
+      rotation: [-90.0, 0.0, 0.0]
+      scale: [4.0, 4.0, 4.0]
+    # 8 Teapots in 2x4 grid
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [-0.175, -0.45, 0.3]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [0.175, -0.45, 0.3]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [-0.175, -0.15, 0.39]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [0.175, -0.15, 0.39]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [-0.175, 0.15, 0.48]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [0.175, 0.15, 0.48]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [-0.175, 0.45, 0.57]
+    - path: ../model/mesh/teapot/teapot.node
+      rotation: [-90.0, 0.0, 0.0]
+      translation: [0.175, 0.45, 0.57]
+
+ipc:
+  enabled: true
+  dHat: 0.001
+  kappa: 1.0
+  ground_barrier: true

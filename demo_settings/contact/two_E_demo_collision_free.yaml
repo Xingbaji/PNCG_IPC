@@ -1,0 +1,26 @@
+# Two E-shaped objects - collision-free demo
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 50.0
+  elastic_type: SNH
+
+solver:
+  epsilon: 1e-5
+  iter_max: 50
+  dt: 0.01
+
+scene:
+  ground_height: 0.1
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/e_2/e_2.node
+      translation: [0.0, 0.0, 0.0]
+    - path: ../model/mesh/e_2/e_2.node
+      translation: [0.0, 1.5, 0.0]
+  camera_position: [2.02077697, -0.54062709, 2.59427191]
+  camera_lookat: [1.34371885, -0.79285719, 1.90291651]
+
+ipc:
+  enabled: false
+  ground_barrier: false

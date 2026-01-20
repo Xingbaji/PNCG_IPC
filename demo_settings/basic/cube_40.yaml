@@ -1,0 +1,20 @@
+# Cube with 40x40x40 resolution using SNH material
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 500.0
+  elastic_type: SNH
+
+solver:
+  epsilon: 1e-5
+  iter_max: 50
+  dt: 0.04
+
+scene:
+  ground_height: 4.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube_40/cube_40.node
+      rotation: [90, 0, 0]
+  camera_position: [0.4426824, 1.04414034, 1.44265061]
+  camera_lookat: [0.45726201, 1.19416167, 0.45407536]

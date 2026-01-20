@@ -1,0 +1,20 @@
+# Cube with 20x20x20 resolution
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 500.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-5
+  iter_max: 100
+  dt: 0.01
+
+scene:
+  ground_height: 1.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/cube_20/cube_20.node
+      rotation: [90, 0, 0]
+  camera_position: [0.44853318, 0.50973239, 0.34616475]
+  camera_lookat: [0.4503797, 0.53796244, -0.653435]

@@ -1,0 +1,31 @@
+# Four armadillos being squeezed together
+material:
+  E: 2.0e4
+  nu: 0.4
+  density: 16.0
+  elastic_type: ARAP
+
+solver:
+  epsilon: 1e-4
+  iter_max: 30
+  dt: 0.04
+
+scene:
+  ground_height: 100.0
+  gravity: 0.0
+  meshes:
+    - path: ../model/mesh/Armadillo13K/Armadillo13K.node
+      count: 4
+      translations:
+        - [0.0, 0.0, 0.0]
+        - [150.0, 0.0, 0.0]
+        - [0.0, 0.0, 150.0]
+        - [150.0, 0.0, 150.0]
+  camera_position: [233.31213006, 128.41546321, 100.97038587]
+  camera_lookat: [232.58192635, 127.73223546, 100.96884313]
+
+ipc:
+  enabled: true
+  dHat: 1.5
+  kappa: 16.0
+  ground_barrier: true

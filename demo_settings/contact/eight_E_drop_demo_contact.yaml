@@ -1,0 +1,31 @@
+# Eight E-shaped objects dropping with IPC contact
+material:
+  E: 1.0e4
+  nu: 0.4
+  density: 50.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-4
+  iter_max: 50
+  dt: 0.01
+
+scene:
+  ground_height: 0.5
+  gravity: -9.8
+  meshes:
+    # Grid of 8 E objects: 4 rows x 2 cols
+    - path: ../model/mesh/e_2/e_2.node
+      grid:
+        rows: 4
+        cols: 2
+        spacing: [1.5, 1.5, 0]
+  camera_position: [2.02077697, -0.54062709, 2.59427191]
+  camera_lookat: [1.34371885, -0.79285719, 1.90291651]
+
+ipc:
+  enabled: true
+  dHat: 0.025
+  kappa: 0.5
+  ground_barrier: true
+  barrier_type: log

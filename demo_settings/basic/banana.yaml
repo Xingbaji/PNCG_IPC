@@ -1,0 +1,19 @@
+# Banana mesh demo
+material:
+  E: 5.0e4
+  nu: 0.3
+  density: 100.0
+  elastic_type: ARAP_filter
+
+solver:
+  epsilon: 1e-7
+  iter_max: 50
+  dt: 0.01
+
+scene:
+  ground_height: 3.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/banana/banana.node
+  camera_position: [2.0, 2.0, 3.95]
+  camera_lookat: [0.5, 0.5, 0.5]

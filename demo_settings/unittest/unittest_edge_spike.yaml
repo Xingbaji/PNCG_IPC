@@ -1,0 +1,30 @@
+# Unit test: Edge and spike collision
+material:
+  E: 1.0e5
+  nu: 0.4
+  density: 100.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/internal_edges/internal_edges.node
+      scale: [4.0, 4.0, 4.0]
+      translation: [0.0, 0.0, 0.0]
+    - path: ../model/mesh/spike/spike.node
+      rotation: [0.0, 0.0, 180.0]
+      translation: [0.0, 7.0, 0.0]
+  camera_position: [0.1192546, 2.72441612, 3.10342869]
+  camera_lookat: [0.09392564, 2.62313459, 2.10889338]
+
+ipc:
+  enabled: true
+  dHat: 0.1
+  kappa: 20.0
+  ground_barrier: false

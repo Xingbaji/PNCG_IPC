@@ -1,0 +1,19 @@
+# Armadillo mesh - collision-free deformation
+material:
+  E: 5.0e4
+  nu: 0.4
+  density: 1.0
+  elastic_type: FCR_filter
+
+solver:
+  epsilon: 5e-5
+  iter_max: 150
+  dt: 0.04
+
+scene:
+  ground_height: 1.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/Armadillo13K/Armadillo13K.node
+  camera_position: [73.29204366, 65.86544759, 94.53984166]
+  camera_lookat: [72.2562863, 65.09321715, 93.25890768]

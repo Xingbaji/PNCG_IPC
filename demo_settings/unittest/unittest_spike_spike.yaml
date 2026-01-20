@@ -1,0 +1,29 @@
+# Unit test: Two spikes collision
+material:
+  E: 1.0e5
+  nu: 0.4
+  density: 100.0
+  elastic_type: NH
+
+solver:
+  epsilon: 1e-7
+  iter_max: 100
+  dt: 0.04
+
+scene:
+  ground_height: 0.0
+  gravity: -9.8
+  meshes:
+    - path: ../model/mesh/spike/spike.node
+      translation: [0.0, 0.0, 0.0]
+    - path: ../model/mesh/spike/spike.node
+      rotation: [180, 0.0, 0.0]
+      translation: [0.0, 6.5, 0.0]
+  camera_position: [0.41996257, 2.24740683, -3.86870303]
+  camera_lookat: [0.46217027, 2.22056358, -2.86995484]
+
+ipc:
+  enabled: true
+  dHat: 0.1
+  kappa: 4.0
+  ground_barrier: false
