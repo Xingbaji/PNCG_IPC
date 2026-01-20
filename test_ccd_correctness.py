@@ -13,8 +13,8 @@ import taichi as ti
 import numpy as np
 import random
 
-# Initialize Taichi with float64 for higher precision
-ti.init(arch=ti.cpu, default_fp=ti.f64)
+# Initialize Taichi with float32 for higher precision
+ti.init(arch=ti.cpu, default_fp=ti.f32)
 
 from math_utils.graphic_util import (
     point_triangle_ccd_lower_bound,
@@ -32,16 +32,16 @@ from math_utils.graphic_util import (
 
 @ti.kernel
 def compute_pt_distance_at_toc(
-    p: ti.types.vector(3, ti.f64),
-    t0: ti.types.vector(3, ti.f64),
-    t1: ti.types.vector(3, ti.f64),
-    t2: ti.types.vector(3, ti.f64),
-    dp: ti.types.vector(3, ti.f64),
-    dt0: ti.types.vector(3, ti.f64),
-    dt1: ti.types.vector(3, ti.f64),
-    dt2: ti.types.vector(3, ti.f64),
-    toc: ti.f64
-) -> ti.f64:
+    p: ti.types.vector(3, ti.f32),
+    t0: ti.types.vector(3, ti.f32),
+    t1: ti.types.vector(3, ti.f32),
+    t2: ti.types.vector(3, ti.f32),
+    dp: ti.types.vector(3, ti.f32),
+    dt0: ti.types.vector(3, ti.f32),
+    dt1: ti.types.vector(3, ti.f32),
+    dt2: ti.types.vector(3, ti.f32),
+    toc: ti.f32
+) -> ti.f32:
     """Compute the point-triangle distance at a given time of contact."""
     p_new = p + dp * toc
     t0_new = t0 + dt0 * toc
@@ -53,16 +53,16 @@ def compute_pt_distance_at_toc(
 
 @ti.kernel
 def compute_ee_distance_at_toc(
-    ea0: ti.types.vector(3, ti.f64),
-    ea1: ti.types.vector(3, ti.f64),
-    eb0: ti.types.vector(3, ti.f64),
-    eb1: ti.types.vector(3, ti.f64),
-    dea0: ti.types.vector(3, ti.f64),
-    dea1: ti.types.vector(3, ti.f64),
-    deb0: ti.types.vector(3, ti.f64),
-    deb1: ti.types.vector(3, ti.f64),
-    toc: ti.f64
-) -> ti.f64:
+    ea0: ti.types.vector(3, ti.f32),
+    ea1: ti.types.vector(3, ti.f32),
+    eb0: ti.types.vector(3, ti.f32),
+    eb1: ti.types.vector(3, ti.f32),
+    dea0: ti.types.vector(3, ti.f32),
+    dea1: ti.types.vector(3, ti.f32),
+    deb0: ti.types.vector(3, ti.f32),
+    deb1: ti.types.vector(3, ti.f32),
+    toc: ti.f32
+) -> ti.f32:
     """Compute the edge-edge distance at a given time of contact."""
     ea0_new = ea0 + dea0 * toc
     ea1_new = ea1 + dea1 * toc
@@ -74,64 +74,64 @@ def compute_ee_distance_at_toc(
 
 @ti.kernel
 def test_pt_ccd_lower_bound(
-    p: ti.types.vector(3, ti.f64),
-    t0: ti.types.vector(3, ti.f64),
-    t1: ti.types.vector(3, ti.f64),
-    t2: ti.types.vector(3, ti.f64),
-    dp: ti.types.vector(3, ti.f64),
-    dt0: ti.types.vector(3, ti.f64),
-    dt1: ti.types.vector(3, ti.f64),
-    dt2: ti.types.vector(3, ti.f64)
-) -> ti.f64:
+    p: ti.types.vector(3, ti.f32),
+    t0: ti.types.vector(3, ti.f32),
+    t1: ti.types.vector(3, ti.f32),
+    t2: ti.types.vector(3, ti.f32),
+    dp: ti.types.vector(3, ti.f32),
+    dt0: ti.types.vector(3, ti.f32),
+    dt1: ti.types.vector(3, ti.f32),
+    dt2: ti.types.vector(3, ti.f32)
+) -> ti.f32:
     """Test PT CCD lower bound and return TOC."""
     return point_triangle_ccd_lower_bound(p, t0, t1, t2, dp, dt0, dt1, dt2)
 
 
 @ti.kernel
 def test_ee_ccd_lower_bound(
-    ea0: ti.types.vector(3, ti.f64),
-    ea1: ti.types.vector(3, ti.f64),
-    eb0: ti.types.vector(3, ti.f64),
-    eb1: ti.types.vector(3, ti.f64),
-    dea0: ti.types.vector(3, ti.f64),
-    dea1: ti.types.vector(3, ti.f64),
-    deb0: ti.types.vector(3, ti.f64),
-    deb1: ti.types.vector(3, ti.f64)
-) -> ti.f64:
+    ea0: ti.types.vector(3, ti.f32),
+    ea1: ti.types.vector(3, ti.f32),
+    eb0: ti.types.vector(3, ti.f32),
+    eb1: ti.types.vector(3, ti.f32),
+    dea0: ti.types.vector(3, ti.f32),
+    dea1: ti.types.vector(3, ti.f32),
+    deb0: ti.types.vector(3, ti.f32),
+    deb1: ti.types.vector(3, ti.f32)
+) -> ti.f32:
     """Test EE CCD lower bound and return TOC."""
     return edge_edge_ccd_lower_bound(ea0, ea1, eb0, eb1, dea0, dea1, deb0, deb1)
 
 
 @ti.kernel
 def test_pt_ccd_iterative(
-    p: ti.types.vector(3, ti.f64),
-    t0: ti.types.vector(3, ti.f64),
-    t1: ti.types.vector(3, ti.f64),
-    t2: ti.types.vector(3, ti.f64),
-    dp: ti.types.vector(3, ti.f64),
-    dt0: ti.types.vector(3, ti.f64),
-    dt1: ti.types.vector(3, ti.f64),
-    dt2: ti.types.vector(3, ti.f64),
-    eta: ti.f64,
-    thickness: ti.f64
-) -> ti.f64:
+    p: ti.types.vector(3, ti.f32),
+    t0: ti.types.vector(3, ti.f32),
+    t1: ti.types.vector(3, ti.f32),
+    t2: ti.types.vector(3, ti.f32),
+    dp: ti.types.vector(3, ti.f32),
+    dt0: ti.types.vector(3, ti.f32),
+    dt1: ti.types.vector(3, ti.f32),
+    dt2: ti.types.vector(3, ti.f32),
+    eta: ti.f32,
+    thickness: ti.f32
+) -> ti.f32:
     """Test PT CCD (iterative version) and return TOC."""
     return point_triangle_ccd(p, t0, t1, t2, dp, dt0, dt1, dt2, eta, thickness)
 
 
 @ti.kernel
 def test_ee_ccd_iterative(
-    ea0: ti.types.vector(3, ti.f64),
-    ea1: ti.types.vector(3, ti.f64),
-    eb0: ti.types.vector(3, ti.f64),
-    eb1: ti.types.vector(3, ti.f64),
-    dea0: ti.types.vector(3, ti.f64),
-    dea1: ti.types.vector(3, ti.f64),
-    deb0: ti.types.vector(3, ti.f64),
-    deb1: ti.types.vector(3, ti.f64),
-    eta: ti.f64,
-    thickness: ti.f64
-) -> ti.f64:
+    ea0: ti.types.vector(3, ti.f32),
+    ea1: ti.types.vector(3, ti.f32),
+    eb0: ti.types.vector(3, ti.f32),
+    eb1: ti.types.vector(3, ti.f32),
+    dea0: ti.types.vector(3, ti.f32),
+    dea1: ti.types.vector(3, ti.f32),
+    deb0: ti.types.vector(3, ti.f32),
+    deb1: ti.types.vector(3, ti.f32),
+    eta: ti.f32,
+    thickness: ti.f32
+) -> ti.f32:
     """Test EE CCD (iterative version) and return TOC."""
     return edge_edge_ccd(ea0, ea1, eb0, eb1, dea0, dea1, deb0, deb1, eta, thickness)
 
@@ -182,14 +182,14 @@ def run_pt_ccd_test(suite, name, p, t0, t1, t2, dp, dt0, dt1, dt2, expect_collis
     3. If expect_collision, TOC < 1.0; otherwise TOC should be 1.0
     """
     # Convert to Taichi vectors
-    p_ti = ti.Vector([p[0], p[1], p[2]], dt=ti.f64)
-    t0_ti = ti.Vector([t0[0], t0[1], t0[2]], dt=ti.f64)
-    t1_ti = ti.Vector([t1[0], t1[1], t1[2]], dt=ti.f64)
-    t2_ti = ti.Vector([t2[0], t2[1], t2[2]], dt=ti.f64)
-    dp_ti = ti.Vector([dp[0], dp[1], dp[2]], dt=ti.f64)
-    dt0_ti = ti.Vector([dt0[0], dt0[1], dt0[2]], dt=ti.f64)
-    dt1_ti = ti.Vector([dt1[0], dt1[1], dt1[2]], dt=ti.f64)
-    dt2_ti = ti.Vector([dt2[0], dt2[1], dt2[2]], dt=ti.f64)
+    p_ti = ti.Vector([p[0], p[1], p[2]], dt=ti.f32)
+    t0_ti = ti.Vector([t0[0], t0[1], t0[2]], dt=ti.f32)
+    t1_ti = ti.Vector([t1[0], t1[1], t1[2]], dt=ti.f32)
+    t2_ti = ti.Vector([t2[0], t2[1], t2[2]], dt=ti.f32)
+    dp_ti = ti.Vector([dp[0], dp[1], dp[2]], dt=ti.f32)
+    dt0_ti = ti.Vector([dt0[0], dt0[1], dt0[2]], dt=ti.f32)
+    dt1_ti = ti.Vector([dt1[0], dt1[1], dt1[2]], dt=ti.f32)
+    dt2_ti = ti.Vector([dt2[0], dt2[1], dt2[2]], dt=ti.f32)
 
     # Get TOC
     toc = test_pt_ccd_lower_bound(p_ti, t0_ti, t1_ti, t2_ti, dp_ti, dt0_ti, dt1_ti, dt2_ti)
@@ -234,14 +234,14 @@ def run_ee_ccd_test(suite, name, ea0, ea1, eb0, eb1, dea0, dea1, deb0, deb1, exp
     Run a single edge-edge CCD test using CubicNoRootRegionPrecise.
     """
     # Convert to Taichi vectors
-    ea0_ti = ti.Vector([ea0[0], ea0[1], ea0[2]], dt=ti.f64)
-    ea1_ti = ti.Vector([ea1[0], ea1[1], ea1[2]], dt=ti.f64)
-    eb0_ti = ti.Vector([eb0[0], eb0[1], eb0[2]], dt=ti.f64)
-    eb1_ti = ti.Vector([eb1[0], eb1[1], eb1[2]], dt=ti.f64)
-    dea0_ti = ti.Vector([dea0[0], dea0[1], dea0[2]], dt=ti.f64)
-    dea1_ti = ti.Vector([dea1[0], dea1[1], dea1[2]], dt=ti.f64)
-    deb0_ti = ti.Vector([deb0[0], deb0[1], deb0[2]], dt=ti.f64)
-    deb1_ti = ti.Vector([deb1[0], deb1[1], deb1[2]], dt=ti.f64)
+    ea0_ti = ti.Vector([ea0[0], ea0[1], ea0[2]], dt=ti.f32)
+    ea1_ti = ti.Vector([ea1[0], ea1[1], ea1[2]], dt=ti.f32)
+    eb0_ti = ti.Vector([eb0[0], eb0[1], eb0[2]], dt=ti.f32)
+    eb1_ti = ti.Vector([eb1[0], eb1[1], eb1[2]], dt=ti.f32)
+    dea0_ti = ti.Vector([dea0[0], dea0[1], dea0[2]], dt=ti.f32)
+    dea1_ti = ti.Vector([dea1[0], dea1[1], dea1[2]], dt=ti.f32)
+    deb0_ti = ti.Vector([deb0[0], deb0[1], deb0[2]], dt=ti.f32)
+    deb1_ti = ti.Vector([deb1[0], deb1[1], deb1[2]], dt=ti.f32)
 
     # Get TOC
     toc = test_ee_ccd_lower_bound(ea0_ti, ea1_ti, eb0_ti, eb1_ti, dea0_ti, dea1_ti, deb0_ti, deb1_ti)
@@ -286,14 +286,14 @@ def run_pt_ccd_non_penetration_only(suite, name, p, t0, t1, t2, dp, dt0, dt1, dt
     Run a PT CCD test focusing ONLY on the non-penetration property.
     Does NOT check whether collision was expected - just verifies safety.
     """
-    p_ti = ti.Vector([p[0], p[1], p[2]], dt=ti.f64)
-    t0_ti = ti.Vector([t0[0], t0[1], t0[2]], dt=ti.f64)
-    t1_ti = ti.Vector([t1[0], t1[1], t1[2]], dt=ti.f64)
-    t2_ti = ti.Vector([t2[0], t2[1], t2[2]], dt=ti.f64)
-    dp_ti = ti.Vector([dp[0], dp[1], dp[2]], dt=ti.f64)
-    dt0_ti = ti.Vector([dt0[0], dt0[1], dt0[2]], dt=ti.f64)
-    dt1_ti = ti.Vector([dt1[0], dt1[1], dt1[2]], dt=ti.f64)
-    dt2_ti = ti.Vector([dt2[0], dt2[1], dt2[2]], dt=ti.f64)
+    p_ti = ti.Vector([p[0], p[1], p[2]], dt=ti.f32)
+    t0_ti = ti.Vector([t0[0], t0[1], t0[2]], dt=ti.f32)
+    t1_ti = ti.Vector([t1[0], t1[1], t1[2]], dt=ti.f32)
+    t2_ti = ti.Vector([t2[0], t2[1], t2[2]], dt=ti.f32)
+    dp_ti = ti.Vector([dp[0], dp[1], dp[2]], dt=ti.f32)
+    dt0_ti = ti.Vector([dt0[0], dt0[1], dt0[2]], dt=ti.f32)
+    dt1_ti = ti.Vector([dt1[0], dt1[1], dt1[2]], dt=ti.f32)
+    dt2_ti = ti.Vector([dt2[0], dt2[1], dt2[2]], dt=ti.f32)
 
     toc = test_pt_ccd_lower_bound(p_ti, t0_ti, t1_ti, t2_ti, dp_ti, dt0_ti, dt1_ti, dt2_ti)
     dist_at_toc = compute_pt_distance_at_toc(p_ti, t0_ti, t1_ti, t2_ti, dp_ti, dt0_ti, dt1_ti, dt2_ti, toc)
@@ -308,14 +308,14 @@ def run_ee_ccd_non_penetration_only(suite, name, ea0, ea1, eb0, eb1, dea0, dea1,
     """
     Run an EE CCD test focusing ONLY on the non-penetration property.
     """
-    ea0_ti = ti.Vector([ea0[0], ea0[1], ea0[2]], dt=ti.f64)
-    ea1_ti = ti.Vector([ea1[0], ea1[1], ea1[2]], dt=ti.f64)
-    eb0_ti = ti.Vector([eb0[0], eb0[1], eb0[2]], dt=ti.f64)
-    eb1_ti = ti.Vector([eb1[0], eb1[1], eb1[2]], dt=ti.f64)
-    dea0_ti = ti.Vector([dea0[0], dea0[1], dea0[2]], dt=ti.f64)
-    dea1_ti = ti.Vector([dea1[0], dea1[1], dea1[2]], dt=ti.f64)
-    deb0_ti = ti.Vector([deb0[0], deb0[1], deb0[2]], dt=ti.f64)
-    deb1_ti = ti.Vector([deb1[0], deb1[1], deb1[2]], dt=ti.f64)
+    ea0_ti = ti.Vector([ea0[0], ea0[1], ea0[2]], dt=ti.f32)
+    ea1_ti = ti.Vector([ea1[0], ea1[1], ea1[2]], dt=ti.f32)
+    eb0_ti = ti.Vector([eb0[0], eb0[1], eb0[2]], dt=ti.f32)
+    eb1_ti = ti.Vector([eb1[0], eb1[1], eb1[2]], dt=ti.f32)
+    dea0_ti = ti.Vector([dea0[0], dea0[1], dea0[2]], dt=ti.f32)
+    dea1_ti = ti.Vector([dea1[0], dea1[1], dea1[2]], dt=ti.f32)
+    deb0_ti = ti.Vector([deb0[0], deb0[1], deb0[2]], dt=ti.f32)
+    deb1_ti = ti.Vector([deb1[0], deb1[1], deb1[2]], dt=ti.f32)
 
     toc = test_ee_ccd_lower_bound(ea0_ti, ea1_ti, eb0_ti, eb1_ti, dea0_ti, dea1_ti, deb0_ti, deb1_ti)
     dist_at_toc = compute_ee_distance_at_toc(ea0_ti, ea1_ti, eb0_ti, eb1_ti, dea0_ti, dea1_ti, deb0_ti, deb1_ti, toc)

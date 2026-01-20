@@ -2156,10 +2156,10 @@ class MASPreconditioner:
                 # Backward substitution
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     for k in range(i + 1, BLOCK_DOF):
                         sum_val -= self.full_block_matrix[block_id, k, i] * \
-                                   ti.f64(self.full_block_inverse[block_id, k, col])
+                                   ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
@@ -2258,12 +2258,12 @@ class MASPreconditioner:
                 # Backward substitution (banded)
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     k_end = ti.min(BLOCK_DOF, i + BANDWIDTH + 1)
                     for k in range(i + 1, k_end):
                         if k - i <= BANDWIDTH:
                             sum_val -= self.full_block_matrix[block_id, k, i] * \
-                                       ti.f64(self.full_block_inverse[block_id, k, col])
+                                       ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
@@ -4526,7 +4526,7 @@ class SRBKSpMV:
         # Row and col are block (vertex) indices, not DOF indices
         self.triplet_row = ti.field(dtype=ti.i32, shape=max_triplets)
         self.triplet_col = ti.field(dtype=ti.i32, shape=max_triplets)
-        self.triplet_val = ti.Matrix.field(3, 3, dtype=ti.f64, shape=max_triplets)
+        self.triplet_val = ti.Matrix.field(3, 3, dtype=ti.f32, shape=max_triplets)
 
         # Triplet count
         self.n_triplets = ti.field(dtype=ti.i32, shape=())
@@ -4536,7 +4536,7 @@ class SRBKSpMV:
         self.row_starts = ti.field(dtype=ti.i32, shape=self.n_verts + 1)
 
         # Work buffers for reduction
-        self.y_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        self.y_buffer = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
 
         # Flag for whether triplets are sorted
         self.sorted = False
@@ -4547,7 +4547,7 @@ class SRBKSpMV:
         self.sorted = False
 
     @ti.kernel
-    def add_triplet(self, row: ti.i32, col: ti.i32, val: ti.types.matrix(3, 3, ti.f64)):
+    def add_triplet(self, row: ti.i32, col: ti.i32, val: ti.types.matrix(3, 3, ti.f32)):
         """
         Add a single 3x3 block triplet.
 
@@ -4593,7 +4593,7 @@ class SRBKSpMV:
         # Write back
         temp_rows = np.zeros(self.max_triplets, dtype=np.int32)
         temp_cols = np.zeros(self.max_triplets, dtype=np.int32)
-        temp_vals = np.zeros((self.max_triplets, 3, 3), dtype=np.float64)
+        temp_vals = np.zeros((self.max_triplets, 3, 3), dtype=np.float32)
         temp_rows[:n] = rows_sorted
         temp_cols[:n] = cols_sorted
         temp_vals[:n] = vals_sorted
@@ -4622,7 +4622,7 @@ class SRBKSpMV:
         self.sorted = True
 
     @ti.kernel
-    def spmv_naive(self, x: ti.template(), y: ti.template(), alpha: ti.f64, beta: ti.f64):
+    def spmv_naive(self, x: ti.template(), y: ti.template(), alpha: ti.f32, beta: ti.f32):
         """
         Naive symmetric SpMV: y = alpha * A * x + beta * y
 
@@ -4637,7 +4637,7 @@ class SRBKSpMV:
                 y[i] = beta * y[i]
         else:
             for i in range(n_verts):
-                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
 
         # Process each triplet
         for tid in range(n):
@@ -4657,7 +4657,7 @@ class SRBKSpMV:
                     ti.atomic_add(y[j][d], alpha * contrib_t[d])
 
     @ti.kernel
-    def spmv_row_parallel(self, x: ti.template(), y: ti.template(), alpha: ti.f64, beta: ti.f64):
+    def spmv_row_parallel(self, x: ti.template(), y: ti.template(), alpha: ti.f32, beta: ti.f32):
         """
         Row-parallel symmetric SpMV: y = alpha * A * x + beta * y
 
@@ -4674,11 +4674,11 @@ class SRBKSpMV:
                 y[i] = beta * y[i]
         else:
             for i in range(n_verts):
-                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+                y[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
 
         # Clear work buffer
         for i in range(n_verts):
-            self.y_buffer[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+            self.y_buffer[i] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
 
         # Process each row in parallel
         for row in range(n_verts):
@@ -4686,7 +4686,7 @@ class SRBKSpMV:
             end = self.row_starts[row + 1]
 
             # Accumulate row contribution locally
-            row_sum = ti.Vector([0.0, 0.0, 0.0], dt=ti.f64)
+            row_sum = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
 
             for tid in range(start, end):
                 j = self.triplet_col[tid]
@@ -4713,8 +4713,8 @@ class SRBKSpMV:
         Compute y = alpha * A * x + beta * y
 
         Args:
-            x: Input vector, ti.Vector.field(3, f64, shape=n_verts)
-            y: Output vector, ti.Vector.field(3, f64, shape=n_verts)
+            x: Input vector, ti.Vector.field(3, f32, shape=n_verts)
+            y: Output vector, ti.Vector.field(3, f32, shape=n_verts)
             alpha: Scalar multiplier for A*x
             beta: Scalar multiplier for existing y
         """

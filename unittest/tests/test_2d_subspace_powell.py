@@ -161,15 +161,15 @@ class SubspacePowellValidator:
         print(f"[Test] MAS initialized with {self.mas.level_num} levels")
 
         # Scalar fields for 2D subspace computation
-        self.z_H_z = ti.field(dtype=ti.f64, shape=())
-        self.z_H_p = ti.field(dtype=ti.f64, shape=())
-        self.p_H_p = ti.field(dtype=ti.f64, shape=())
-        self.z_g = ti.field(dtype=ti.f64, shape=())
-        self.p_g = ti.field(dtype=ti.f64, shape=())
+        self.z_H_z = ti.field(dtype=ti.f32, shape=())
+        self.z_H_p = ti.field(dtype=ti.f32, shape=())
+        self.p_H_p = ti.field(dtype=ti.f32, shape=())
+        self.z_g = ti.field(dtype=ti.f32, shape=())
+        self.p_g = ti.field(dtype=ti.f32, shape=())
 
         # Scalar fields for Powell restart
-        self.g_z_prev = ti.field(dtype=ti.f64, shape=())
-        self.g_z = ti.field(dtype=ti.f64, shape=())
+        self.g_z_prev = ti.field(dtype=ti.f32, shape=())
+        self.g_z = ti.field(dtype=ti.f32, shape=())
 
         # Ground truth tracking
         self.initial_centroid = np.zeros(3)
@@ -386,11 +386,11 @@ class SubspacePowellValidator:
             w = vert.w    # H*p
             g = vert.grad
 
-            self.z_H_z[None] += ti.f64(z.dot(Hv))
-            self.z_H_p[None] += ti.f64(z.dot(w))
-            self.p_H_p[None] += ti.f64(p.dot(w))
-            self.z_g[None] += ti.f64(z.dot(g))
-            self.p_g[None] += ti.f64(p.dot(g))
+            self.z_H_z[None] += ti.f32(z.dot(Hv))
+            self.z_H_p[None] += ti.f32(z.dot(w))
+            self.p_H_p[None] += ti.f32(p.dot(w))
+            self.z_g[None] += ti.f32(z.dot(g))
+            self.p_g[None] += ti.f32(p.dot(g))
 
     def solve_2x2_subspace(self) -> tuple:
         """
@@ -433,11 +433,11 @@ class SubspacePowellValidator:
     @ti.kernel
     def compute_init_search_direction_1d(self):
         """First iteration: 1D optimization, p = -μz where μ = z·g / z·H·z."""
-        z_g = ti.f64(0.0)
-        z_H_z = ti.f64(0.0)
+        z_g = ti.f32(0.0)
+        z_H_z = ti.f32(0.0)
         for vert in self.mesh.verts:
-            z_g += ti.f64(vert.z.dot(vert.grad))
-            z_H_z += ti.f64(vert.z.dot(vert.Hv))
+            z_g += ti.f32(vert.z.dot(vert.grad))
+            z_H_z += ti.f32(vert.z.dot(vert.Hv))
 
         mu = ti.f32(z_g / ti.max(z_H_z, 1e-12))
 
@@ -472,8 +472,8 @@ class SubspacePowellValidator:
             z = vert.z
             z_prev = vert.z_prev
 
-            self.g_z_prev[None] += ti.f64(g.dot(z_prev))
-            self.g_z[None] += ti.f64(g.dot(z))
+            self.g_z_prev[None] += ti.f32(g.dot(z_prev))
+            self.g_z[None] += ti.f32(g.dot(z))
 
     def check_powell_restart(self, verbose=False) -> bool:
         """Check Powell's restart criterion: r_k = |g·z_prev| / |g·z|."""

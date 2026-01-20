@@ -231,7 +231,7 @@ def segment_intersect_triangle_new(P0, P1, V0, V1, V2):
 # Based on GIPC.cu implementation for exact intersection testing
 
 @ti.func
-def mat3_determinant(col0: ti.template(), col1: ti.template(), col2: ti.template()) -> ti.f64:
+def mat3_determinant(col0: ti.template(), col1: ti.template(), col2: ti.template()) -> ti.f32:
     """Compute determinant of 3x3 matrix formed by column vectors."""
     return (col0[0] * (col1[1] * col2[2] - col1[2] * col2[1]) -
             col1[0] * (col0[1] * col2[2] - col0[2] * col2[1]) +

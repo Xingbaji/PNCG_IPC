@@ -63,7 +63,7 @@ def expand_sym_to_full_numpy(inv_block_sym: np.ndarray) -> np.ndarray:
     Returns:
         Full 48x48 matrix with symmetric entries filled
     """
-    full = np.zeros((BLOCK_DOF, BLOCK_DOF), dtype=np.float64)
+    full = np.zeros((BLOCK_DOF, BLOCK_DOF), dtype=np.float32)
 
     for lane_i in range(BANKSIZE):
         for lane_j in range(lane_i, BANKSIZE):  # Only upper triangle
@@ -111,10 +111,10 @@ def schwarz_local_solve_sym_numpy(inv_block_sym: np.ndarray, r: np.ndarray) -> n
 
     This mimics the exact computation in _schwarz_local_solve_conflict_free.
     """
-    z = np.zeros((BANKSIZE, 3), dtype=np.float64)
+    z = np.zeros((BANKSIZE, 3), dtype=np.float32)
 
     for lane_i in range(BANKSIZE):
-        z_i = np.zeros(3, dtype=np.float64)
+        z_i = np.zeros(3, dtype=np.float32)
 
         for lane_j in range(BANKSIZE):
             r_j = r[lane_j]
@@ -168,7 +168,7 @@ def full_to_sym_storage(full: np.ndarray) -> np.ndarray:
     """
     Convert full 48x48 matrix to symmetric block storage (136, 3, 3).
     """
-    sym = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+    sym = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
 
     for lane_i in range(BANKSIZE):
         for lane_j in range(lane_i, BANKSIZE):
@@ -215,7 +215,7 @@ class TestSymmetricExpansion(unittest.TestCase):
     def test_identity_expansion(self):
         """Test expanding identity matrix in symmetric storage."""
         # Create identity in symmetric storage
-        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane_i in range(BANKSIZE):
             sym_idx = sym_idx_numpy(lane_i, lane_i)
             sym_storage[sym_idx] = np.eye(3)
@@ -243,7 +243,7 @@ class TestBlockMatVec(unittest.TestCase):
 
     def test_identity_matvec(self):
         """Test z = I * r == r."""
-        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane_i in range(BANKSIZE):
             sym_idx = sym_idx_numpy(lane_i, lane_i)
             sym_storage[sym_idx] = np.eye(3)
@@ -257,7 +257,7 @@ class TestBlockMatVec(unittest.TestCase):
         """Test diagonal matrix-vector product."""
         diag_values = np.random.rand(BANKSIZE, 3) + 0.1  # Ensure positive
 
-        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane_i in range(BANKSIZE):
             sym_idx = sym_idx_numpy(lane_i, lane_i)
             sym_storage[sym_idx] = np.diag(diag_values[lane_i])
@@ -365,7 +365,7 @@ class TestTaichiMatVec(unittest.TestCase):
 
     def test_identity_taichi(self):
         """Test Taichi identity matvec."""
-        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        sym_storage = np.zeros((SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane_i in range(BANKSIZE):
             sym_idx = sym_idx_numpy(lane_i, lane_i)
             sym_storage[sym_idx] = np.eye(3)
@@ -392,7 +392,7 @@ class TestTaichiMatVec(unittest.TestCase):
                                    err_msg="Taichi matvec should match NumPy")
 
     def test_numerical_precision_vs_numpy(self):
-        """Compare f32 Taichi vs f64 NumPy precision."""
+        """Compare f32 Taichi vs f32 NumPy precision."""
         full = create_random_spd_block(cond=100.0)
         sym_storage = full_to_sym_storage(full)
 
@@ -409,7 +409,7 @@ class TestTaichiMatVec(unittest.TestCase):
         mean_error = np.mean(errors)
         max_error = np.max(errors)
 
-        print(f"\n  Numerical precision (f32 vs f64):")
+        print(f"\n  Numerical precision (f32 vs f32):")
         print(f"    Mean relative error: {mean_error:.2e}")
         print(f"    Max relative error:  {max_error:.2e}")
 

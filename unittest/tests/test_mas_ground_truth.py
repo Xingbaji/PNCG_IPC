@@ -47,7 +47,7 @@ def compute_dFdx_numpy(B):
     Row ordering: [F00, F10, F20, F01, F11, F21, F02, F12, F22] (column-major)
     Column ordering: [x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3]
     """
-    dFdx = np.zeros((9, 12), dtype=np.float64)
+    dFdx = np.zeros((9, 12), dtype=np.float32)
 
     m, n, o = B[0, 0], B[0, 1], B[0, 2]
     p, q, r = B[1, 0], B[1, 1], B[1, 2]
@@ -163,7 +163,7 @@ def compute_d2PsidF2_SNH_numpy(F, mu, la):
         [0, F21, -F11, 0, -F20, F10, 0, 0, 0],
         [-F21, 0, F01, F20, 0, -F00, 0, 0, 0],
         [F11, -F01, 0, -F10, F00, 0, 0, 0, 0]
-    ], dtype=np.float64)
+    ], dtype=np.float32)
 
     # d2PsidF2 = mu*I + la*g3@g3^T + (la*(J-1) - mu)*H3
     d2PsidF2 = mu * np.eye(9)
@@ -331,7 +331,7 @@ def create_single_tet_mesh():
         [1.0, 0.0, 0.0],      # v1 - x-axis
         [0.5, 0.866025, 0.0], # v2 - xy-plane (equilateral triangle base)
         [0.5, 0.288675, 0.816497],  # v3 - apex (regular tetrahedron)
-    ], dtype=np.float64)
+    ], dtype=np.float32)
 
     cells = np.array([[0, 1, 2, 3]], dtype=np.int32)
 
@@ -349,7 +349,7 @@ def create_unit_cube_mesh():
     vertices = np.array([
         [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # bottom face
         [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],  # top face
-    ], dtype=np.float64)
+    ], dtype=np.float32)
 
     # 5-tetrahedra decomposition
     cells = np.array([
@@ -376,8 +376,8 @@ def compute_tet_rest_matrices(vertices, cells):
         W_array: (n_cells,) cell volumes
     """
     n_cells = len(cells)
-    B_array = np.zeros((n_cells, 3, 3), dtype=np.float64)
-    W_array = np.zeros(n_cells, dtype=np.float64)
+    B_array = np.zeros((n_cells, 3, 3), dtype=np.float32)
+    W_array = np.zeros(n_cells, dtype=np.float32)
 
     for c in range(n_cells):
         v0, v1, v2, v3 = cells[c]
@@ -437,7 +437,7 @@ class TestDFdxGroundTruth(unittest.TestCase):
 
     def test_dFdx_identity(self):
         """Test dFdx with identity B matrix."""
-        B = np.eye(3, dtype=np.float64)
+        B = np.eye(3, dtype=np.float32)
         dFdx_numpy = compute_dFdx_numpy(B)
 
         # With B = I:
@@ -473,7 +473,7 @@ class TestDFdxGroundTruth(unittest.TestCase):
     def test_dFdx_arbitrary_B(self):
         """Test dFdx with arbitrary B matrix against Taichi."""
         np.random.seed(42)
-        B_np = np.random.randn(3, 3).astype(np.float64) * 0.5 + np.eye(3)
+        B_np = np.random.randn(3, 3).astype(np.float32) * 0.5 + np.eye(3)
 
         dFdx_numpy = compute_dFdx_numpy(B_np)
 
@@ -641,7 +641,7 @@ class TestBlockInversionGroundTruth(unittest.TestCase):
             vertices, B_array[0], W_array[0], dt, mu, la, cells[0])
 
         # Build 48x48 block matrix
-        H_block = np.zeros((48, 48), dtype=np.float64)
+        H_block = np.zeros((48, 48), dtype=np.float32)
         H_block[:12, :12] = H_e
 
         # Add inertia (M/dt^2) to diagonal
@@ -809,7 +809,7 @@ class TestEndToEndGroundTruth(unittest.TestCase):
             vertices, B_array[0], W_array[0], dt, mu, la, cells[0])
 
         # Build 48x48 block matrix
-        H_block = np.zeros((48, 48), dtype=np.float64)
+        H_block = np.zeros((48, 48), dtype=np.float32)
         H_block[:12, :12] = H_e
 
         # Add inertia
@@ -827,9 +827,9 @@ class TestEndToEndGroundTruth(unittest.TestCase):
         # Step 3: Apply to random gradient
         np.random.seed(42)
         n_verts = 4
-        gradient = np.random.randn(n_verts, 3).astype(np.float64)
+        gradient = np.random.randn(n_verts, 3).astype(np.float32)
 
-        grad_padded = np.zeros(48, dtype=np.float64)
+        grad_padded = np.zeros(48, dtype=np.float32)
         grad_padded[:12] = gradient.flatten()
 
         z_padded = H_inv @ grad_padded
@@ -855,7 +855,7 @@ class TestEndToEndGroundTruth(unittest.TestCase):
         n_verts = 8
 
         # Assemble global Hessian (24x24 for 8 vertices)
-        H_global = np.zeros((24, 24), dtype=np.float64)
+        H_global = np.zeros((24, 24), dtype=np.float32)
 
         for c in range(len(cells)):
             H_e = compute_element_hessian_numpy(

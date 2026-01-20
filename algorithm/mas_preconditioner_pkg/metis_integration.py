@@ -524,7 +524,7 @@ def compute_partition_quality(n_verts: int, partition: np.ndarray,
     edge_cut //= 2
 
     # Compute ribbon ratios per partition
-    partition_ribbon_ratios = np.zeros(n_parts, dtype=np.float64)
+    partition_ribbon_ratios = np.zeros(n_parts, dtype=np.float32)
     for p in range(n_parts):
         if partition_sizes[p] > 0:
             partition_ribbon_ratios[p] = partition_boundary_counts[p] / partition_sizes[p]

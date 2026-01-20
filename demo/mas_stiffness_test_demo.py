@@ -161,7 +161,7 @@ class MASStiffnessTestSolver(MASPNCGSolver):
                                                diagH_d2Psidx2[i * 3 + 2]])
 
     @ti.kernel
-    def compute_pHp_elastic(self) -> ti.f64:
+    def compute_pHp_elastic(self) -> ti.f32:
         """Compute p^T H p for elastic term using per-cell materials."""
         pHp = 0.0
         for c in self.mesh.cells:

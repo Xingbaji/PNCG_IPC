@@ -158,17 +158,17 @@ def test_determinant():
 
     @ti.kernel
     def test_det(
-        c0: ti.types.vector(3, ti.f64),
-        c1: ti.types.vector(3, ti.f64),
-        c2: ti.types.vector(3, ti.f64)
-    ) -> ti.f64:
+        c0: ti.types.vector(3, ti.f32),
+        c1: ti.types.vector(3, ti.f32),
+        c2: ti.types.vector(3, ti.f32)
+    ) -> ti.f32:
         return mat3_determinant(c0, c1, c2)
 
     # Test with identity matrix columns
     print("\nTest 1: Identity matrix (det = 1)")
-    c0 = ti.Vector([1.0, 0.0, 0.0], dt=ti.f64)
-    c1 = ti.Vector([0.0, 1.0, 0.0], dt=ti.f64)
-    c2 = ti.Vector([0.0, 0.0, 1.0], dt=ti.f64)
+    c0 = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
+    c1 = ti.Vector([0.0, 1.0, 0.0], dt=ti.f32)
+    c2 = ti.Vector([0.0, 0.0, 1.0], dt=ti.f32)
     result = test_det(c0, c1, c2)
     print(f"  Result: {result}")
     assert abs(result - 1.0) < 1e-10, "Expected determinant = 1"
@@ -176,9 +176,9 @@ def test_determinant():
 
     # Test with known matrix
     print("\nTest 2: Known matrix")
-    c0 = ti.Vector([1.0, 2.0, 3.0], dt=ti.f64)
-    c1 = ti.Vector([4.0, 5.0, 6.0], dt=ti.f64)
-    c2 = ti.Vector([7.0, 8.0, 9.0], dt=ti.f64)
+    c0 = ti.Vector([1.0, 2.0, 3.0], dt=ti.f32)
+    c1 = ti.Vector([4.0, 5.0, 6.0], dt=ti.f32)
+    c2 = ti.Vector([7.0, 8.0, 9.0], dt=ti.f32)
     result = test_det(c0, c1, c2)
     print(f"  Result: {result}")
     # det([[1,4,7],[2,5,8],[3,6,9]]) = 0 (linearly dependent columns)

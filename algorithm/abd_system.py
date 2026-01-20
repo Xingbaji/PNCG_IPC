@@ -50,8 +50,8 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def apply_J(x_bar: ti.types.vector(3, ti.f64),
-                q: ti.types.vector(12, ti.f64)) -> ti.types.vector(3, ti.f64):
+    def apply_J(x_bar: ti.types.vector(3, ti.f32),
+                q: ti.types.vector(12, ti.f32)) -> ti.types.vector(3, ti.f32):
         """
         Apply J @ q to get world position.
 
@@ -76,8 +76,8 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def apply_JT(x_bar: ti.types.vector(3, ti.f64),
-                 g: ti.types.vector(3, ti.f64)) -> ti.types.vector(12, ti.f64):
+    def apply_JT(x_bar: ti.types.vector(3, ti.f32),
+                 g: ti.types.vector(3, ti.f32)) -> ti.types.vector(12, ti.f32):
         """
         Apply J^T @ g to project 3D gradient to 12D state space.
 
@@ -90,7 +90,7 @@ class ABDJacobian:
         Returns:
             12D gradient in state space
         """
-        g12 = ti.Vector([0.0] * 12, dt=ti.f64)
+        g12 = ti.Vector([0.0] * 12, dt=ti.f32)
         # Translation part
         g12[0] = g[0]
         g12[1] = g[1]
@@ -109,9 +109,9 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def JT_H_J(x_bar_i: ti.types.vector(3, ti.f64),
-               H: ti.types.matrix(3, 3, ti.f64),
-               x_bar_j: ti.types.vector(3, ti.f64)) -> ti.types.matrix(12, 12, ti.f64):
+    def JT_H_J(x_bar_i: ti.types.vector(3, ti.f32),
+               H: ti.types.matrix(3, 3, ti.f32),
+               x_bar_j: ti.types.vector(3, ti.f32)) -> ti.types.matrix(12, 12, ti.f32):
         """
         Compute J_i^T @ H @ J_j for Hessian transformation.
 
@@ -125,7 +125,7 @@ class ABDJacobian:
         Returns:
             12x12 transformed Hessian
         """
-        result = ti.Matrix.zero(ti.f64, 12, 12)
+        result = ti.Matrix.zero(ti.f32, 12, 12)
 
         x = x_bar_i
         y = x_bar_j
@@ -148,7 +148,7 @@ class ABDJacobian:
                     result[3 + k * 3 + i, j] = x[i] * H[k, j]
 
         # Block (3:12, 3:12): H ⊗ (x @ y^T)
-        x_y = ti.Matrix.zero(ti.f64, 3, 3)
+        x_y = ti.Matrix.zero(ti.f32, 3, 3)
         for i in ti.static(range(3)):
             for j in ti.static(range(3)):
                 x_y[i, j] = x[i] * y[j]
@@ -177,7 +177,7 @@ class ABDDyadicMass:
 
     @staticmethod
     @ti.func
-    def compute_dyadic_mass(mass: ti.f64, x_bar: ti.types.vector(3, ti.f64)):
+    def compute_dyadic_mass(mass: ti.f32, x_bar: ti.types.vector(3, ti.f32)):
         """
         Compute dyadic mass components from point mass and rest position.
 
@@ -193,16 +193,16 @@ class ABDDyadicMass:
 
     @staticmethod
     @ti.func
-    def apply_mass(m: ti.f64,
-                   m_x_bar: ti.types.vector(3, ti.f64),
-                   m_dyadic: ti.types.matrix(3, 3, ti.f64),
-                   p: ti.types.vector(12, ti.f64)) -> ti.types.vector(12, ti.f64):
+    def apply_mass(m: ti.f32,
+                   m_x_bar: ti.types.vector(3, ti.f32),
+                   m_dyadic: ti.types.matrix(3, 3, ti.f32),
+                   p: ti.types.vector(12, ti.f32)) -> ti.types.vector(12, ti.f32):
         """
         Apply mass matrix to vector: result = M @ p
 
         Uses efficient dyadic representation.
         """
-        result = ti.Vector([0.0] * 12, dt=ti.f64)
+        result = ti.Vector([0.0] * 12, dt=ti.f32)
 
         p_p = ti.Vector([p[0], p[1], p[2]])
         p_a1 = ti.Vector([p[3], p[4], p[5]])
@@ -228,11 +228,11 @@ class ABDDyadicMass:
 
     @staticmethod
     @ti.func
-    def to_matrix(m: ti.f64,
-                  m_x_bar: ti.types.vector(3, ti.f64),
-                  m_dyadic: ti.types.matrix(3, 3, ti.f64)) -> ti.types.matrix(12, 12, ti.f64):
+    def to_matrix(m: ti.f32,
+                  m_x_bar: ti.types.vector(3, ti.f32),
+                  m_dyadic: ti.types.matrix(3, 3, ti.f32)) -> ti.types.matrix(12, 12, ti.f32):
         """Convert dyadic representation to full 12x12 matrix."""
-        M = ti.Matrix.zero(ti.f64, 12, 12)
+        M = ti.Matrix.zero(ti.f32, 12, 12)
 
         # Diagonal blocks for translation
         M[0, 0] = m
@@ -274,7 +274,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_energy(q: ti.types.vector(12, ti.f64)) -> ti.f64:
+    def compute_energy(q: ti.types.vector(12, ti.f32)) -> ti.f32:
         """
         Compute shape energy (without κv factor).
 
@@ -298,7 +298,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_gradient(q: ti.types.vector(12, ti.f64)) -> ti.types.vector(9, ti.f64):
+    def compute_gradient(q: ti.types.vector(12, ti.f32)) -> ti.types.vector(9, ti.f32):
         """
         Compute shape energy gradient w.r.t. affine part (9D).
 
@@ -310,7 +310,7 @@ class ABDShapeEnergy:
         a2 = ti.Vector([q[6], q[7], q[8]])
         a3 = ti.Vector([q[9], q[10], q[11]])
 
-        grad = ti.Vector([0.0] * 9, dt=ti.f64)
+        grad = ti.Vector([0.0] * 9, dt=ti.f32)
 
         # ∂V/∂a1 = 4(a1·a1 - 1)a1 + 4(a2·a1)a2 + 4(a3·a1)a3
         dEda1 = 4.0 * (a1.norm_sqr() - 1.0) * a1 + 4.0 * a2.dot(a1) * a2 + 4.0 * a3.dot(a1) * a3
@@ -330,7 +330,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_hessian(q: ti.types.vector(12, ti.f64)) -> ti.types.matrix(9, 9, ti.f64):
+    def compute_hessian(q: ti.types.vector(12, ti.f32)) -> ti.types.matrix(9, 9, ti.f32):
         """
         Compute shape energy Hessian w.r.t. affine part (9x9).
 
@@ -345,8 +345,8 @@ class ABDShapeEnergy:
         a2 = ti.Vector([q[6], q[7], q[8]])
         a3 = ti.Vector([q[9], q[10], q[11]])
 
-        H = ti.Matrix.zero(ti.f64, 9, 9)
-        I3 = ti.Matrix.identity(ti.f64, 3)
+        H = ti.Matrix.zero(ti.f32, 9, 9)
+        I3 = ti.Matrix.identity(ti.f32, 3)
 
         # ∂²V/∂a1² = 8a1a1ᵀ + 4(|a1|² - 1)I + 4a2a2ᵀ + 4a3a3ᵀ
         ddV_da1 = 8.0 * a1.outer_product(a1) + 4.0 * (a1.norm_sqr() - 1.0) * I3 \
@@ -389,7 +389,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def make_positive_definite(H: ti.types.matrix(9, 9, ti.f64)) -> ti.types.matrix(9, 9, ti.f64):
+    def make_positive_definite(H: ti.types.matrix(9, 9, ti.f32)) -> ti.types.matrix(9, 9, ti.f32):
         """
         Project Hessian to positive semi-definite.
 
@@ -437,42 +437,42 @@ class ABDSystem:
         self.gravity = ti.Vector([0.0, -9.8, 0.0])
 
         # Body state vectors (12D each)
-        self.q = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)           # Current state
-        self.q_prev = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)      # Previous state
-        self.q_tilde = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)     # Predicted state
-        self.q_v = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)         # Velocity
-        self.q_temp = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)      # Temp for line search
-        self.dq = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)          # Search direction
-        self.grad_q = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)      # Gradient
+        self.q = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)           # Current state
+        self.q_prev = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)      # Previous state
+        self.q_tilde = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)     # Predicted state
+        self.q_v = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)         # Velocity
+        self.q_temp = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)      # Temp for line search
+        self.dq = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)          # Search direction
+        self.grad_q = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)      # Gradient
 
         # Body properties
-        self.body_volume = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.body_kappa = ti.field(dtype=ti.f64, shape=max_bodies)             # Shape stiffness
-        self.body_total_mass = ti.field(dtype=ti.f64, shape=max_bodies)
+        self.body_volume = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.body_kappa = ti.field(dtype=ti.f32, shape=max_bodies)             # Shape stiffness
+        self.body_total_mass = ti.field(dtype=ti.f32, shape=max_bodies)
         self.boundary_type = ti.field(dtype=ti.i32, shape=max_bodies)
 
         # Motor properties (for MOTOR type bodies)
-        self.motor_speed = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.motor_strength = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.motor_axis = ti.Vector.field(3, dtype=ti.f64, shape=max_bodies)
+        self.motor_speed = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.motor_strength = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.motor_axis = ti.Vector.field(3, dtype=ti.f32, shape=max_bodies)
 
         # Mass matrix storage (12x12 per body)
-        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f64, shape=max_bodies)
-        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f64, shape=max_bodies)
+        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f32, shape=max_bodies)
+        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f32, shape=max_bodies)
 
         # Dyadic mass components for efficient computation
-        self.body_m = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.body_m_x_bar = ti.Vector.field(3, dtype=ti.f64, shape=max_bodies)
-        self.body_m_dyadic = ti.Matrix.field(3, 3, dtype=ti.f64, shape=max_bodies)
+        self.body_m = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.body_m_x_bar = ti.Vector.field(3, dtype=ti.f32, shape=max_bodies)
+        self.body_m_dyadic = ti.Matrix.field(3, 3, dtype=ti.f32, shape=max_bodies)
 
         # Gravity force in state space
-        self.abd_gravity = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
+        self.abd_gravity = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
 
         # Point data
         self.point_body_id = ti.field(dtype=ti.i32, shape=self.max_points)
-        self.x_bar = ti.Vector.field(3, dtype=ti.f64, shape=self.max_points)
+        self.x_bar = ti.Vector.field(3, dtype=ti.f32, shape=self.max_points)
         self.global_vertex_id = ti.field(dtype=ti.i32, shape=self.max_points)
-        self.point_mass = ti.field(dtype=ti.f64, shape=self.max_points)
+        self.point_mass = ti.field(dtype=ti.f32, shape=self.max_points)
 
         # Body point ranges
         self.body_point_start = ti.field(dtype=ti.i32, shape=max_bodies)
@@ -646,7 +646,7 @@ class ABDSystem:
             self.vertex_to_abd_point[vid] = i
 
     @ti.kernel
-    def compute_q_tilde(self, dt: ti.f64):
+    def compute_q_tilde(self, dt: ti.f32):
         """
         Compute predicted state q_tilde for all bodies.
 
@@ -701,7 +701,7 @@ class ABDSystem:
         """
         # Clear gradients
         for body_id in range(self.n_bodies):
-            self.grad_q[body_id] = ti.Vector([0.0] * 12, dt=ti.f64)
+            self.grad_q[body_id] = ti.Vector([0.0] * 12, dt=ti.f32)
 
         # Accumulate gradients
         for i in range(self.n_total_points):
@@ -714,13 +714,13 @@ class ABDSystem:
             global_id = self.global_vertex_id[i]
             g_x = vertex_grad[global_id]
 
-            # Convert to f64
-            g_x_f64 = ti.Vector([ti.cast(g_x[0], ti.f64),
-                                 ti.cast(g_x[1], ti.f64),
-                                 ti.cast(g_x[2], ti.f64)])
+            # Convert to f32
+            g_x_f32 = ti.Vector([ti.cast(g_x[0], ti.f32),
+                                 ti.cast(g_x[1], ti.f32),
+                                 ti.cast(g_x[2], ti.f32)])
 
             # g_q = J^T @ g_x
-            g_q = ABDJacobian.apply_JT(x_bar_i, g_x_f64)
+            g_q = ABDJacobian.apply_JT(x_bar_i, g_x_f32)
 
             # Atomic add
             for d in ti.static(range(12)):
@@ -807,7 +807,7 @@ class ABDSystem:
             dq[5] = 0.0
 
             # Motor Hessian: only affects rotation DOFs (6-11)
-            motor_grad = ti.Vector([0.0] * 12, dt=ti.f64)
+            motor_grad = ti.Vector([0.0] * 12, dt=ti.f32)
             for i in ti.static(range(6)):
                 for j in ti.static(range(6)):
                     motor_grad[6 + i] += motor_str * M[6 + i, 6 + j] * dq[6 + j]
@@ -822,7 +822,7 @@ class ABDSystem:
             self.q_temp[body_id] = self.q[body_id]
 
     @ti.kernel
-    def step_forward(self, alpha: ti.f64):
+    def step_forward(self, alpha: ti.f32):
         """
         Update state: q = q_temp - alpha * dq
 
@@ -836,7 +836,7 @@ class ABDSystem:
             self.q[body_id] = self.q_temp[body_id] - alpha * self.dq[body_id]
 
     @ti.kernel
-    def update_velocity(self, dt: ti.f64):
+    def update_velocity(self, dt: ti.f32):
         """
         Update velocity after optimization step.
 
@@ -844,7 +844,7 @@ class ABDSystem:
         """
         for body_id in range(self.n_bodies):
             if self.boundary_type[body_id] == BodyBoundaryType.FIXED:
-                self.q_v[body_id] = ti.Vector([0.0] * 12, dt=ti.f64)
+                self.q_v[body_id] = ti.Vector([0.0] * 12, dt=ti.f32)
             else:
                 self.q_v[body_id] = (self.q[body_id] - self.q_prev[body_id]) / dt
 
@@ -852,7 +852,7 @@ class ABDSystem:
             self.q_prev[body_id] = self.q[body_id]
 
     @ti.kernel
-    def compute_kinetic_energy(self) -> ti.f64:
+    def compute_kinetic_energy(self) -> ti.f32:
         """
         Compute total kinetic energy.
 
@@ -874,7 +874,7 @@ class ABDSystem:
         return K
 
     @ti.kernel
-    def compute_shape_energy(self) -> ti.f64:
+    def compute_shape_energy(self) -> ti.f32:
         """
         Compute total shape energy.
 
@@ -900,7 +900,7 @@ class ABDSystem:
         return self._compute_shape_pHp(dt)
 
     @ti.kernel
-    def _compute_shape_pHp(self, dt: ti.f64) -> ti.f64:
+    def _compute_shape_pHp(self, dt: ti.f32) -> ti.f32:
         """Kernel to compute shape Hessian contribution."""
         pHp = 0.0
         for body_id in range(self.n_bodies):
@@ -918,7 +918,7 @@ class ABDSystem:
 
             # Extract affine part of dq
             dq_affine = ti.Vector([dq[3], dq[4], dq[5], dq[6], dq[7], dq[8],
-                                   dq[9], dq[10], dq[11]], dt=ti.f64)
+                                   dq[9], dq[10], dq[11]], dt=ti.f32)
 
             # p^T @ H @ p
             Hp = H_shape @ dq_affine
@@ -931,7 +931,7 @@ class ABDSystem:
         return self._compute_motor_pHp()
 
     @ti.kernel
-    def _compute_motor_pHp(self) -> ti.f64:
+    def _compute_motor_pHp(self) -> ti.f32:
         """Kernel to compute motor Hessian contribution."""
         pHp = 0.0
         for body_id in range(self.n_bodies):
@@ -958,7 +958,7 @@ class ABDSystem:
         return self._compute_ccd_alpha(ground_y, dHat)
 
     @ti.kernel
-    def _compute_ccd_alpha(self, ground_y: ti.f64, dHat: ti.f64) -> ti.f64:
+    def _compute_ccd_alpha(self, ground_y: ti.f32, dHat: ti.f32) -> ti.f32:
         """Kernel to compute CCD step size."""
         alpha_min = 1.0
 

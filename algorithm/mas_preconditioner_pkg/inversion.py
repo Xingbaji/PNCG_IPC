@@ -429,10 +429,10 @@ class InversionMixin:
 
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     for k in range(i + 1, BLOCK_DOF):
                         sum_val -= self.full_block_matrix[block_id, k, i] * \
-                                   ti.f64(self.full_block_inverse[block_id, k, col])
+                                   ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
@@ -498,12 +498,12 @@ class InversionMixin:
 
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     k_end = ti.min(BLOCK_DOF, i + BANDWIDTH + 1)
                     for k in range(i + 1, k_end):
                         if k - i <= BANDWIDTH:
                             sum_val -= self.full_block_matrix[block_id, k, i] * \
-                                       ti.f64(self.full_block_inverse[block_id, k, col])
+                                       ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)

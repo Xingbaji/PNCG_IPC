@@ -32,18 +32,18 @@ def test_jacobian():
     print("=" * 50)
 
     # Test point
-    x_bar = ti.Vector([1.0, 2.0, 3.0], dt=ti.f64)
+    x_bar = ti.Vector([1.0, 2.0, 3.0], dt=ti.f32)
 
     # Identity state (at origin)
-    q = ti.Vector([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], dt=ti.f64)
+    q = ti.Vector([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], dt=ti.f32)
 
     @ti.kernel
-    def test_J() -> ti.types.vector(3, ti.f64):
+    def test_J() -> ti.types.vector(3, ti.f32):
         return ABDJacobian.apply_J(x_bar, q)
 
     @ti.kernel
-    def test_JT() -> ti.types.vector(12, ti.f64):
-        g = ti.Vector([1.0, 0.0, 0.0], dt=ti.f64)
+    def test_JT() -> ti.types.vector(12, ti.f32):
+        g = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
         return ABDJacobian.apply_JT(x_bar, g)
 
     # Test J * q (should equal x_bar for identity at origin)
@@ -69,7 +69,7 @@ def test_abd_system():
     cube_verts = np.array([
         [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
         [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
-    ], dtype=np.float64)
+    ], dtype=np.float32)
 
     # Uniform masses
     masses = np.ones(8) * 0.125  # Total mass = 1
@@ -136,7 +136,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
         [size, -size, size],
         [size, size, size],
         [-size, size, size]
-    ], dtype=np.float64) + center
+    ], dtype=np.float32) + center
 
     # Cube faces for rendering
     cube_faces = np.array([
@@ -191,7 +191,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
                 x_bar = abd_system.x_bar[i]
 
                 # g_q = J^T @ [0, g, 0]
-                g_vec = ti.Vector([0.0, g, 0.0], dt=ti.f64)
+                g_vec = ti.Vector([0.0, g, 0.0], dt=ti.f32)
                 g_q = ABDJacobian.apply_JT(x_bar, g_vec)
 
                 for d in ti.static(range(12)):
@@ -206,7 +206,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
             M = abd_system.abd_mass[body_id]
 
             # Clear gradient
-            abd_system.grad_q[body_id] = ti.Vector.zero(ti.f64, 12)
+            abd_system.grad_q[body_id] = ti.Vector.zero(ti.f32, 12)
 
             # Inertia: g = M @ (q - q_tilde)
             dq = q - q_tilde
@@ -225,7 +225,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
             abd_system.dq[body_id] = M_inv @ grad_q
 
     @ti.kernel
-    def compute_gTp() -> ti.f64:
+    def compute_gTp() -> ti.f32:
         """Compute g^T @ p."""
         result = 0.0
         for body_id in range(abd_system.n_bodies):
@@ -236,7 +236,7 @@ def run_falling_cube_demo(headless=False, n_frames=100):
         return result
 
     @ti.kernel
-    def compute_pHp() -> ti.f64:
+    def compute_pHp() -> ti.f32:
         """Compute p^T @ H @ p (mass matrix contribution)."""
         result = 0.0
         for body_id in range(abd_system.n_bodies):
@@ -356,7 +356,7 @@ def test_motor_body():
         [size, -size, size],
         [size, size, size],
         [-size, size, size]
-    ], dtype=np.float64) + center
+    ], dtype=np.float32) + center
 
     masses = np.ones(8) * 0.125
 
@@ -441,7 +441,7 @@ def test_fixed_body():
         [size, -size, size],
         [size, size, size],
         [-size, size, size]
-    ], dtype=np.float64) + center
+    ], dtype=np.float32) + center
 
     masses = np.ones(8) * 0.125
 

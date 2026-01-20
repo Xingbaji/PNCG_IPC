@@ -787,12 +787,12 @@ class PrecondDirectionTester:
         print(f"  z^T H z = {zHz_gt:.6e}")
 
         # Prepare buffers
-        z_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
-        Hz_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        z_buffer = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
+        Hz_buffer = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
 
         # Copy z to buffer
         z_reshaped = z_np.reshape(-1, 3)
-        z_buffer.from_numpy(z_reshaped.astype(np.float64))
+        z_buffer.from_numpy(z_reshaped.astype(np.float32))
 
         # ====================================================================
         # MAS hessian_matvec (uses triplet storage for cross-block)

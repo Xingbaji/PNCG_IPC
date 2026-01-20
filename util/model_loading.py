@@ -764,7 +764,7 @@ class model_loading:
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
         elif demo == 'cube_freefall_10':
-            demo_dict = {'E': 1e5, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
+            demo_dict = {'E': 1e6, 'nu': 0.3, 'density': 1000.0, 'gravity': -9.8, 'dt': 0.01,
                          'epsilon': 1e-7, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
                          'model_paths': ['../model/mesh/cube_10/cube_10.node'],
                          'rotations': [[0, 0, 0]],
@@ -1140,6 +1140,72 @@ class model_loading:
         np.save(save_path + 'boundary_triangles.npy', boundary_triangles)
         print('boundary size', boundary_points.shape, boundary_edges.shape, boundary_triangles.shape)
         del self.mesh_tmp, self.edges, self.triangles
+
+    def load_mesh_with_boundary_edges(self, demo, models):
+        """
+        Load mesh with boundary edges injected for mesh-for loop support.
+
+        This method loads the mesh with boundary edges as element order 1,
+        enabling mesh-for loops over boundary edges: `for e in mesh.edges`.
+
+        The mesh will have:
+        - mesh.verts: all vertices (with positions)
+        - mesh.edges: ONLY boundary edges (not all edges)
+        - mesh.cells: all tetrahedral cells
+        """
+        save_path = '../demo_results/final/' + demo + '_metis/boundary/'
+
+        # First, compute METIS reordering
+        reordered_dict, self.metis_result = _merge_and_reorder_models(models)
+
+        # Check if boundary data exists
+        if not os.path.exists(save_path + '/boundary_points.npy'):
+            self.load_and_save_boundarys_metis(demo, reordered_dict)
+
+        # Load boundary data
+        boundary_points_np = np.load(save_path + '/boundary_points.npy')
+        boundary_edges_np = np.load(save_path + '/boundary_edges.npy')
+        boundary_triangles_np = np.load(save_path + '/boundary_triangles.npy')
+
+        n_boundary_points = boundary_points_np.shape[0]
+        n_boundary_edges = boundary_edges_np.shape[0]
+        n_boundary_triangles = boundary_triangles_np.shape[0]
+        print(f'[load_mesh_with_boundary_edges] Boundary elements:')
+        print(f'  Points: {n_boundary_points}, Edges: {n_boundary_edges}, Triangles: {n_boundary_triangles}')
+
+        # Inject boundary edges into mesh dict
+        # Key 1 = edges, this tells patcher to use these edges instead of generating all edges
+        mesh_dict_with_edges = {
+            0: reordered_dict[0],  # vertices
+            1: boundary_edges_np.astype(np.int32),  # boundary edges only
+            3: reordered_dict[3],  # cells
+        }
+
+        # Load mesh with CV and EV relations
+        # Since we injected boundary edges as element 1, mesh.edges will only contain boundary edges
+        print('[load_mesh_with_boundary_edges] Loading mesh with injected boundary edges...')
+        self.mesh = Patcher.load_mesh(mesh_dict_with_edges, relations=["CV", "EV"])
+
+        print(f'[load_mesh_with_boundary_edges] Mesh loaded:')
+        print(f'  Vertices: {len(self.mesh.verts)}')
+        print(f'  Edges (boundary): {len(self.mesh.edges)}')
+        print(f'  Cells: {len(self.mesh.cells)}')
+
+        # Verify edge count matches boundary edges
+        if len(self.mesh.edges) != n_boundary_edges:
+            print(f'  WARNING: Edge count mismatch! Expected {n_boundary_edges}, got {len(self.mesh.edges)}')
+
+        # Also store boundary data in old format for compatibility
+        self.boundary_points = ti.field(ti.i32)
+        self.boundary_edges = ti.field(ti.i32)
+        self.boundary_triangles = ti.field(ti.i32)
+        ti.root.dense(ti.i, n_boundary_points).place(self.boundary_points)
+        ti.root.dense(ti.ij, (n_boundary_edges, 2)).place(self.boundary_edges)
+        ti.root.dense(ti.ij, (n_boundary_triangles, 3)).place(self.boundary_triangles)
+        self.boundary_points.from_numpy(boundary_points_np)
+        self.boundary_edges.from_numpy(boundary_edges_np)
+        self.boundary_triangles.from_numpy(boundary_triangles_np)
+        print('[load_mesh_with_boundary_edges] Done!')
 
     @ti.kernel
     def find_boundarys_tmp(self):

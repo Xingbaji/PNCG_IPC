@@ -14,7 +14,7 @@ import numpy as np
 import taichi as ti
 
 # Initialize Taichi
-ti.init(arch=ti.cpu, default_fp=ti.f64)
+ti.init(arch=ti.cpu, default_fp=ti.f32)
 
 
 class MockMesh:
@@ -38,8 +38,8 @@ class MockVertexContainer:
         self._size = n_verts
         self.x = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
         self.m = ti.field(dtype=ti.f32, shape=n_verts)
-        self.grad = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-        self.z = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+        self.grad = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+        self.z = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 
         # Initialize with default values
         for i in range(n_verts):
@@ -313,8 +313,8 @@ class TestABDHessianMatvec:
         precond.matrices_assembled = True
 
         # Create input vector
-        v = ti.Vector.field(ABD_DOF, dtype=ti.f64, shape=4)
-        result = ti.Vector.field(ABD_DOF, dtype=ti.f64, shape=4)
+        v = ti.Vector.field(ABD_DOF, dtype=ti.f32, shape=4)
+        result = ti.Vector.field(ABD_DOF, dtype=ti.f32, shape=4)
 
         test_v = np.array([1.0, 0.5, 0.3, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
         v[0] = test_v

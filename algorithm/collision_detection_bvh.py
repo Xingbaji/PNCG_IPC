@@ -98,13 +98,34 @@ class collision_detection_bvh_module(pncg_base_deformer):
         self.contact_pairs = self.pair.field(shape=self.MAX_C)
         self.n_contacts = ti.field(dtype=ti.i32, shape=())
 
+        # Detection threshold (can be larger than dHat for contact filtering)
+        # Default: same as dHat for backward compatibility
+        self._detection_dHat = self.dHat
+
         # Pre-computed BVH AABB gap for broad-phase filtering
-        self.bvh_gap = ti.sqrt(self.dHat)
+        self.bvh_gap = ti.sqrt(self._detection_dHat)
 
         self.attempt_PT = self.attempt_PT_no_adj
         self.attempt_EE = self.attempt_EE_no_adj
 
         print('BVH initialization complete.')
+
+    def set_detection_dHat(self, detection_dHat: float):
+        """
+        Set custom detection threshold for contact filtering.
+
+        This allows using a larger detection radius (e.g., 5*dHat) to cache
+        collision pairs while the actual barrier uses the original dHat.
+
+        Args:
+            detection_dHat: Detection threshold (should be >= dHat)
+        """
+        self._detection_dHat = detection_dHat
+        self.bvh_gap = ti.sqrt(detection_dHat)
+
+    def get_detection_dHat(self) -> float:
+        """Get the current detection threshold."""
+        return self._detection_dHat
 
     def build_bvh(self):
         """Build BVH trees for triangles and edges."""
@@ -295,22 +316,24 @@ class collision_detection_bvh_module(pncg_base_deformer):
     @ti.func
     def attempt_PT_no_adj(self, triangle_id, p, t0, t1, t2, xp, x0, x1, x2):
         # Note: triangle_id is unused here but kept for interface compatibility with attempt_PT_adj
-        if p != t0 and p != t1 and p != t2 and point_triangle_ccd_broadphase(xp, x0, x1, x2, self.dHat):
+        # Uses _detection_dHat for filtering (can be larger than dHat for contact caching)
+        if p != t0 and p != t1 and p != t2 and point_triangle_ccd_broadphase(xp, x0, x1, x2, self._detection_dHat):
             cord0, cord1, cord2 = dist3D_Point_Triangle(xp, x0, x1, x2)
             xt = cord0 * x0 + cord1 * x1 + cord2 * x2
             t_pt = xp - xt
             dist = t_pt.norm()
-            if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
+            if dist < self._detection_dHat and ti.abs(dist) > self.SMALL_NUM:
                 ids = ti.Vector([p, t0, t1, t2], ti.i32)
                 cord = ti.Vector([1.0, -cord0, -cord1, -cord2], float)
                 self._add_contact_pair(ids, dist, cord, t_pt)
 
     @ti.func
     def attempt_EE_no_adj(self, edge_id_0, edge_id_1, a0, a1, b0, b1, x_a0, x_a1, x_b0, x_b1):
-        if a0 != b0 and a0 != b1 and a1 != b0 and a1 != b1 and edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, self.dHat):
+        # Uses _detection_dHat for filtering (can be larger than dHat for contact caching)
+        if a0 != b0 and a0 != b1 and a1 != b0 and a1 != b1 and edge_edge_ccd_broadphase(x_a0, x_a1, x_b0, x_b1, self._detection_dHat):
             t_ee, sc, tc = dist3D_Segment_to_Segment(x_a0, x_a1, x_b0, x_b1)
             dist = t_ee.norm()
-            if dist < self.dHat and ti.abs(dist) > self.SMALL_NUM:
+            if dist < self._detection_dHat and ti.abs(dist) > self.SMALL_NUM:
                 cord = ti.Vector([sc - 1.0, -sc, 1.0 - tc, tc], float)
                 ids = ti.Vector([a0, a1, b0, b1], ti.i32)
                 self._add_contact_pair(ids, dist, cord, t_ee)

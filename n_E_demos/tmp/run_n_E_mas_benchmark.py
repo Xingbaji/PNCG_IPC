@@ -157,15 +157,15 @@ def benchmark_n_E_mas(demo_name='eight_E_drop_demo_contact', n_iterations=10,
             c.W = ti.abs(Dm.determinant()) / 6.0
 
     @ti.kernel
-    def compute_z_stats(mesh: ti.template()) -> ti.types.vector(3, ti.f64):
-        z_norm = ti.cast(0.0, ti.f64)
-        z_dot_g = ti.cast(0.0, ti.f64)
-        z_count = ti.cast(0.0, ti.f64)
+    def compute_z_stats(mesh: ti.template()) -> ti.types.vector(3, ti.f32):
+        z_norm = ti.cast(0.0, ti.f32)
+        z_dot_g = ti.cast(0.0, ti.f32)
+        z_count = ti.cast(0.0, ti.f32)
         for vert in mesh.verts:
-            z_norm += ti.cast(vert.z.norm_sqr(), ti.f64)
-            z_dot_g += ti.cast(vert.z.dot(vert.grad), ti.f64)
+            z_norm += ti.cast(vert.z.norm_sqr(), ti.f32)
+            z_dot_g += ti.cast(vert.z.dot(vert.grad), ti.f32)
             z_count += 1.0
-        return ti.Vector([ti.sqrt(z_norm), z_dot_g, z_count], dt=ti.f64)
+        return ti.Vector([ti.sqrt(z_norm), z_dot_g, z_count], dt=ti.f32)
 
     @ti.kernel
     def reset_z(mesh: ti.template()):

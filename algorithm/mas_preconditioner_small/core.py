@@ -149,6 +149,14 @@ class MASPreconditionerSmall:
         self.sorted_cells = None
         self.use_optimized_assembly = False
 
+        # Sorted triplet storage for optimized SPMV (reduces atomic conflicts)
+        self.sorted_triplet_row = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
+        self.sorted_triplet_col = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
+        self.sorted_triplet_val = ti.Matrix.field(3, 3, dtype=ti.f32, shape=max_cross_block_entries)
+        # Segment boundaries for row-wise processing
+        self.row_segment_start = ti.field(dtype=ti.i32, shape=self.n_verts + 1)
+        self.triplets_sorted = False
+
         print(f"[MAS-Small] Initialized: {self.n_verts} verts, {self.level_num} levels, "
               f"{self.total_blocks} blocks")
 
@@ -917,6 +925,7 @@ class MASPreconditionerSmall:
 
         self.matrices_assembled = True
         self.has_cross_block_data = True  # Cross-block triplets are now available
+        self.triplets_sorted = False  # Reset sorted flag when triplets change
 
     # ========================================================================
     # Block Inversion (IC(0))
@@ -1573,6 +1582,124 @@ class MASPreconditionerSmall:
         self._copy_buffer_to_grad(result_buffer)
 
     # ========================================================================
+    # Cross-block Triplet Sorting (for optimized SPMV)
+    # ========================================================================
+
+    def sort_cross_block_triplets(self):
+        """
+        Sort cross-block triplets by row index for optimized SPMV.
+
+        This reduces atomic conflicts by grouping triplets that write to the same
+        row together. After sorting, we can process each row's contributions
+        sequentially, reducing atomic operations.
+
+        Call this after assemble_block_matrices() if you plan to call
+        hessian_matvec_exact() multiple times with the same Hessian structure.
+        """
+        if not self.has_cross_block_data:
+            raise RuntimeError("Cross-block data not available. Call assemble_block_matrices first.")
+
+        n_triplets = int(self.cross_block_count[None])
+        if n_triplets == 0:
+            self.triplets_sorted = True
+            return
+
+        # Copy triplets to numpy for sorting
+        rows_np = self.cross_block_row.to_numpy()[:n_triplets]
+        cols_np = self.cross_block_col.to_numpy()[:n_triplets]
+        vals_np = self.cross_block_val.to_numpy()[:n_triplets]
+
+        # Sort by row index (stable sort to maintain order within same row)
+        sort_indices = np.argsort(rows_np, kind='stable')
+
+        sorted_rows = rows_np[sort_indices]
+        sorted_cols = cols_np[sort_indices]
+        sorted_vals = vals_np[sort_indices]
+
+        # Copy back to Taichi fields
+        self.sorted_triplet_row.from_numpy(
+            np.pad(sorted_rows, (0, self.max_cross_block_entries - n_triplets), constant_values=-1))
+        self.sorted_triplet_col.from_numpy(
+            np.pad(sorted_cols, (0, self.max_cross_block_entries - n_triplets), constant_values=-1))
+        self.sorted_triplet_val.from_numpy(
+            np.pad(sorted_vals, ((0, self.max_cross_block_entries - n_triplets), (0, 0), (0, 0))))
+
+        # Compute row segment boundaries
+        # row_segment_start[i] = first triplet index with row >= i
+        segment_start = np.zeros(self.n_verts + 1, dtype=np.int32)
+        segment_start[self.n_verts] = n_triplets  # End marker
+
+        current_row = 0
+        for t in range(n_triplets):
+            while current_row <= sorted_rows[t]:
+                segment_start[current_row] = t
+                current_row += 1
+        # Fill remaining entries
+        while current_row < self.n_verts:
+            segment_start[current_row] = n_triplets
+            current_row += 1
+
+        self.row_segment_start.from_numpy(segment_start)
+        self.triplets_sorted = True
+
+    @ti.kernel
+    def _cross_block_spmv_sorted_row(self, v: ti.template(), result: ti.template(), n_triplets: ti.i32):
+        """
+        Optimized cross-block SPMV using row-sorted triplets.
+
+        For the row contribution (result[row] += H @ v[col]), we process
+        each vertex's incoming triplets sequentially, accumulating locally
+        before a single atomic write. This reduces atomic conflicts.
+
+        For the col contribution (result[col] += H^T @ v[row]), we still
+        use atomic adds but with better cache locality due to sorted order.
+        """
+        # Process row contributions: for each vertex, accumulate its incoming triplets
+        for row_idx in range(self.n_verts):
+            start = self.row_segment_start[row_idx]
+            end = self.row_segment_start[row_idx + 1]
+
+            if start < end:
+                # Local accumulator (no atomics needed for this vertex's row contribution)
+                acc0 = ti.f32(0.0)
+                acc1 = ti.f32(0.0)
+                acc2 = ti.f32(0.0)
+
+                for t in range(start, end):
+                    col = self.sorted_triplet_col[t]
+                    if col >= 0:
+                        H_block = self.sorted_triplet_val[t]
+                        v_col = v[col]
+
+                        # H @ v contribution
+                        acc0 += H_block[0, 0] * v_col[0] + H_block[0, 1] * v_col[1] + H_block[0, 2] * v_col[2]
+                        acc1 += H_block[1, 0] * v_col[0] + H_block[1, 1] * v_col[1] + H_block[1, 2] * v_col[2]
+                        acc2 += H_block[2, 0] * v_col[0] + H_block[2, 1] * v_col[1] + H_block[2, 2] * v_col[2]
+
+                # Single atomic write per vertex (instead of multiple)
+                ti.atomic_add(result[row_idx][0], acc0)
+                ti.atomic_add(result[row_idx][1], acc1)
+                ti.atomic_add(result[row_idx][2], acc2)
+
+        # Process col contributions (symmetric): still need atomics but better locality
+        for t in range(n_triplets):
+            row = self.sorted_triplet_row[t]
+            col = self.sorted_triplet_col[t]
+
+            if row >= 0 and col >= 0 and row != col:
+                H_block = self.sorted_triplet_val[t]
+                v_row = v[row]
+
+                # H^T @ v contribution: result[col] += H_block^T @ v[row]
+                r0_col = H_block[0, 0] * v_row[0] + H_block[1, 0] * v_row[1] + H_block[2, 0] * v_row[2]
+                r1_col = H_block[0, 1] * v_row[0] + H_block[1, 1] * v_row[1] + H_block[2, 1] * v_row[2]
+                r2_col = H_block[0, 2] * v_row[0] + H_block[1, 2] * v_row[1] + H_block[2, 2] * v_row[2]
+
+                ti.atomic_add(result[col][0], r0_col)
+                ti.atomic_add(result[col][1], r1_col)
+                ti.atomic_add(result[col][2], r2_col)
+
+    # ========================================================================
     # EXACT Hessian Matrix-Vector Multiplication
     # ========================================================================
     #
@@ -1625,7 +1752,7 @@ class MASPreconditionerSmall:
                 ti.atomic_add(result[col][1], r1_col)
                 ti.atomic_add(result[col][2], r2_col)
 
-    def hessian_matvec_exact(self, v: ti.template(), result: ti.template()):
+    def hessian_matvec_exact(self, v: ti.template(), result: ti.template(), use_sorted: bool = True):
         """
         Compute result = H @ v EXACTLY using block-diagonal + cross-block triplets.
 
@@ -1639,11 +1766,17 @@ class MASPreconditionerSmall:
         Args:
             v: Input vector field with 3D vectors (indexed by vertex id)
             result: Output vector field with 3D vectors (indexed by vertex id)
+            use_sorted: If True and triplets are sorted, use optimized SPMV (default True)
 
         Example usage:
             v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
             result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
             preconditioner.hessian_matvec_exact(v, result)
+
+        For better performance with multiple calls:
+            preconditioner.sort_cross_block_triplets()  # Call once after assembly
+            for i in range(iterations):
+                preconditioner.hessian_matvec_exact(v, result)  # Uses optimized SPMV
         """
         if not self.matrices_assembled:
             raise RuntimeError("Matrices not assembled. Call assemble_block_matrices first.")
@@ -1659,7 +1792,12 @@ class MASPreconditionerSmall:
         # Step 2: Add cross-block contributions from triplet storage
         n_triplets = self.cross_block_count[None]
         if n_triplets > 0:
-            self._cross_block_spmv(v, result, n_triplets)
+            if use_sorted and self.triplets_sorted:
+                # Use optimized row-sorted SPMV (reduces atomic conflicts)
+                self._cross_block_spmv_sorted_row(v, result, n_triplets)
+            else:
+                # Use original unsorted SPMV
+                self._cross_block_spmv(v, result, n_triplets)
 
     def hessian_matvec_exact_mesh(self, z_buffer: ti.template(), result_buffer: ti.template()):
         """

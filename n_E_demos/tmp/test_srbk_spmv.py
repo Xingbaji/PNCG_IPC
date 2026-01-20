@@ -122,7 +122,7 @@ def test_srbk_spmv(n_verts=100, sparsity=0.02, verbose=True):
             A_dense[i*3:(i+1)*3, i*3:(i+1)*3] = diag_block
 
         # Convert to taichi matrix and add
-        diag_ti = ti.Matrix(diag_block.tolist(), dt=ti.f64)
+        diag_ti = ti.Matrix(diag_block.tolist(), dt=ti.f32)
         spmv.add_triplet(i, i, diag_ti)
 
     # Add off-diagonal blocks based on sparsity pattern
@@ -157,7 +157,7 @@ def test_srbk_spmv(n_verts=100, sparsity=0.02, verbose=True):
                 A_dense[j*3:(j+1)*3, i*3:(i+1)*3] = off_diag.T
 
             # Add to sparse (upper only)
-            off_diag_ti = ti.Matrix(off_diag.tolist(), dt=ti.f64)
+            off_diag_ti = ti.Matrix(off_diag.tolist(), dt=ti.f32)
             spmv.add_triplet(i, j, off_diag_ti)
 
     n_triplets = spmv.n_triplets[None]
@@ -170,9 +170,9 @@ def test_srbk_spmv(n_verts=100, sparsity=0.02, verbose=True):
         print("  Sorted triplets by row")
 
     # Create test vectors
-    x = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-    y_naive = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-    y_row = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+    x = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+    y_naive = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+    y_row = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 
     # Initialize x with random values
     x_np = np.random.randn(n_verts, 3)

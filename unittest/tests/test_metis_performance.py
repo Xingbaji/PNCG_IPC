@@ -152,8 +152,8 @@ class MetisPerformanceTester:
         self.cells_np = self.extract_cell_verts()
 
         # Temporary buffers for hessian_matvec
-        self.v_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
-        self.result_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        self.v_buffer = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
+        self.result_buffer = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
 
     def assign_elastic_type(self, elastic):
         """Set elastic type functions."""

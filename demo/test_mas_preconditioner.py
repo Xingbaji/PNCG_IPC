@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taichi as ti
 
 # Initialize Taichi
-ti.init(arch=ti.gpu, default_fp=ti.f64)
+ti.init(arch=ti.gpu, default_fp=ti.f32)
 
 from algorithm.pncg_base_ipc import pncg_ipc_deformer
 from util.model_loading import model_loading

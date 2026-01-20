@@ -112,8 +112,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
         print('MAS preconditioner initialized')
 
         # Buffer fields for hessian_matvec (used for 2D subspace minimization)
-        self.hv_input = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
-        self.hv_output = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        self.hv_input = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
+        self.hv_output = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
 
         # MAS-PNCG state variables
         self.restart_threshold = RESTART_THRESHOLD
@@ -121,13 +121,13 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.restart[None] = 1  # Start with restart=True
 
         # Scalar fields for 2D subspace computation
-        self.z_H_z = ti.field(dtype=ti.f64, shape=())  # z^T H z
-        self.z_H_p = ti.field(dtype=ti.f64, shape=())  # z^T H p
-        self.p_H_p = ti.field(dtype=ti.f64, shape=())  # p^T H p
-        self.z_g = ti.field(dtype=ti.f64, shape=())    # z^T g
-        self.p_g = ti.field(dtype=ti.f64, shape=())    # p^T g
-        self.g_z_prev = ti.field(dtype=ti.f64, shape=())  # g^T z_prev (for Powell)
-        self.g_z = ti.field(dtype=ti.f64, shape=())       # g^T z
+        self.z_H_z = ti.field(dtype=ti.f32, shape=())  # z^T H z
+        self.z_H_p = ti.field(dtype=ti.f32, shape=())  # z^T H p
+        self.p_H_p = ti.field(dtype=ti.f32, shape=())  # p^T H p
+        self.z_g = ti.field(dtype=ti.f32, shape=())    # z^T g
+        self.p_g = ti.field(dtype=ti.f32, shape=())    # p^T g
+        self.g_z_prev = ti.field(dtype=ti.f32, shape=())  # g^T z_prev (for Powell)
+        self.g_z = ti.field(dtype=ti.f32, shape=())       # g^T z
 
         # Per-subdomain step sizes for Conservative CCD
         n_subdomains = (self.n_verts + BANKSIZE - 1) // BANKSIZE
@@ -296,19 +296,19 @@ class MASPNCGSolver(collision_detection_bvh_module):
             g = vert.grad
 
             # z^T * H * z = z^T * Hv
-            self.z_H_z[None] += ti.f64(z.dot(Hv))
+            self.z_H_z[None] += ti.f32(z.dot(Hv))
 
             # z^T * H * p = z^T * w
-            self.z_H_p[None] += ti.f64(z.dot(w))
+            self.z_H_p[None] += ti.f32(z.dot(w))
 
             # p^T * H * p = p^T * w
-            self.p_H_p[None] += ti.f64(p.dot(w))
+            self.p_H_p[None] += ti.f32(p.dot(w))
 
             # z^T * g
-            self.z_g[None] += ti.f64(z.dot(g))
+            self.z_g[None] += ti.f32(z.dot(g))
 
             # p^T * g
-            self.p_g[None] += ti.f64(p.dot(g))
+            self.p_g[None] += ti.f32(p.dot(g))
 
     def solve_2x2_subspace(self) -> tuple:
         """
@@ -365,11 +365,11 @@ class MASPNCGSolver(collision_detection_bvh_module):
         mu = z·g / z·H·z
         """
         # Compute optimal mu for 1D case
-        z_g = ti.f64(0.0)
-        z_H_z = ti.f64(0.0)
+        z_g = ti.f32(0.0)
+        z_H_z = ti.f32(0.0)
         for vert in self.mesh.verts:
-            z_g += ti.f64(vert.z.dot(vert.grad))
-            z_H_z += ti.f64(vert.z.dot(vert.Hv))
+            z_g += ti.f32(vert.z.dot(vert.grad))
+            z_H_z += ti.f32(vert.z.dot(vert.Hv))
 
         mu = z_g / ti.max(z_H_z, 1e-12)
 
@@ -398,8 +398,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
             z = vert.z
             z_prev = vert.z_prev
 
-            self.g_z_prev[None] += ti.f64(g.dot(z_prev))
-            self.g_z[None] += ti.f64(g.dot(z))
+            self.g_z_prev[None] += ti.f32(g.dot(z_prev))
+            self.g_z[None] += ti.f32(g.dot(z))
 
     def check_powell_restart(self) -> bool:
         """

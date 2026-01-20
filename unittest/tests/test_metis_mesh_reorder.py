@@ -60,7 +60,7 @@ def test_mesh_reorder_basic():
 
     # Random vertex positions
     np.random.seed(42)
-    vertices = np.random.randn(n_verts, 3).astype(np.float64)
+    vertices = np.random.randn(n_verts, 3).astype(np.float32)
 
     # Random cell connectivity (valid vertex indices)
     cells = np.random.randint(0, n_verts, size=(n_cells, 4)).astype(np.int32)
@@ -144,13 +144,13 @@ def test_mesh_reorder_cube_20():
     mesh.verts.place({
         'x': ti.math.vec3,
         'x0': ti.math.vec3,
-        'm': ti.f64,
+        'm': ti.f32,
         'grad': ti.math.vec3,
         'z': ti.math.vec3,
     })
     mesh.cells.place({
         'B': ti.math.mat3,
-        'W': ti.f64,
+        'W': ti.f32,
     })
 
     print(f"  Partitions: {metis_result.n_parts}")
@@ -416,17 +416,17 @@ def _setup_mesh_fields(mesh, vertices):
     mesh.verts.place({
         'x': ti.math.vec3,
         'x0': ti.math.vec3,
-        'm': ti.f64,
+        'm': ti.f32,
         'grad': ti.math.vec3,
         'z': ti.math.vec3,
     })
     mesh.cells.place({
         'B': ti.math.mat3,
-        'W': ti.f64,
+        'W': ti.f32,
     })
 
     # Initialize positions from numpy array
-    verts_ti = ti.Vector.field(3, dtype=ti.f64, shape=len(vertices))
+    verts_ti = ti.Vector.field(3, dtype=ti.f32, shape=len(vertices))
     verts_ti.from_numpy(vertices)
 
     @ti.kernel
@@ -457,8 +457,8 @@ def _precompute_B_W(mesh, density=1000.0):
 def _init_random_grad(mesh, n_verts):
     """Initialize random gradient for testing."""
     np.random.seed(42)
-    grad_np = np.random.randn(n_verts, 3).astype(np.float64)
-    grad_ti = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+    grad_np = np.random.randn(n_verts, 3).astype(np.float32)
+    grad_ti = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
     grad_ti.from_numpy(grad_np)
 
     @ti.kernel

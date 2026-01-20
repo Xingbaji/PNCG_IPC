@@ -25,7 +25,7 @@ import taichi as ti
 
 def init_taichi():
     """Initialize Taichi with CPU backend for testing."""
-    ti.init(arch=ti.cpu, default_fp=ti.f64)
+    ti.init(arch=ti.cpu, default_fp=ti.f32)
 
 
 class TestABDJacobian:
@@ -37,15 +37,15 @@ class TestABDJacobian:
         from algorithm.abd_system import ABDJacobian
 
         @ti.kernel
-        def test_kernel() -> ti.types.vector(3, ti.f64):
+        def test_kernel() -> ti.types.vector(3, ti.f32):
             # Identity state: p=[1,2,3], A=I
             q = ti.Vector([1.0, 2.0, 3.0,  # p
                            1.0, 0.0, 0.0,  # a1
                            0.0, 1.0, 0.0,  # a2
-                           0.0, 0.0, 1.0], dt=ti.f64)  # a3
+                           0.0, 0.0, 1.0], dt=ti.f32)  # a3
 
             # Rest position
-            x_bar = ti.Vector([0.5, 0.5, 0.5], dt=ti.f64)
+            x_bar = ti.Vector([0.5, 0.5, 0.5], dt=ti.f32)
 
             # x = p + A @ x_bar = [1,2,3] + I @ [0.5,0.5,0.5] = [1.5, 2.5, 3.5]
             x = ABDJacobian.apply_J(x_bar, q)
@@ -66,7 +66,7 @@ class TestABDJacobian:
         from algorithm.abd_system import ABDJacobian
 
         @ti.kernel
-        def test_kernel() -> ti.types.vector(3, ti.f64):
+        def test_kernel() -> ti.types.vector(3, ti.f32):
             # 90-degree rotation around Z: A = [[0,-1,0],[1,0,0],[0,0,1]]
             # But in our convention A rows are stored as a1, a2, a3
             # So if we rotate [1,0,0] by 90 deg around Z, we get [0,1,0]
@@ -75,10 +75,10 @@ class TestABDJacobian:
             q = ti.Vector([0.0, 0.0, 0.0,  # p = origin
                            0.0, 1.0, 0.0,  # a1 (first row of A)
                           -1.0, 0.0, 0.0,  # a2 (second row of A)
-                           0.0, 0.0, 1.0], dt=ti.f64)  # a3
+                           0.0, 0.0, 1.0], dt=ti.f32)  # a3
 
             # Rest position on X axis
-            x_bar = ti.Vector([1.0, 0.0, 0.0], dt=ti.f64)
+            x_bar = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
 
             # x = A @ x_bar = [a1·x_bar, a2·x_bar, a3·x_bar] = [0, -1, 0]
             x = ABDJacobian.apply_J(x_bar, q)
@@ -99,9 +99,9 @@ class TestABDJacobian:
         from algorithm.abd_system import ABDJacobian
 
         @ti.kernel
-        def test_kernel() -> ti.types.vector(12, ti.f64):
-            x_bar = ti.Vector([1.0, 2.0, 3.0], dt=ti.f64)
-            g = ti.Vector([1.0, 1.0, 1.0], dt=ti.f64)
+        def test_kernel() -> ti.types.vector(12, ti.f32):
+            x_bar = ti.Vector([1.0, 2.0, 3.0], dt=ti.f32)
+            g = ti.Vector([1.0, 1.0, 1.0], dt=ti.f32)
 
             # J^T @ g = [g; x_bar * g[0]; x_bar * g[1]; x_bar * g[2]]
             # = [1,1,1, 1,2,3, 1,2,3, 1,2,3]
@@ -127,13 +127,13 @@ class TestABDJacobian:
         from algorithm.abd_system import ABDJacobian
 
         @ti.kernel
-        def test_kernel() -> ti.types.vector(2, ti.f64):
-            x_bar = ti.Vector([0.5, -0.3, 0.8], dt=ti.f64)
+        def test_kernel() -> ti.types.vector(2, ti.f32):
+            x_bar = ti.Vector([0.5, -0.3, 0.8], dt=ti.f32)
 
             # Random q and g
             q = ti.Vector([1.0, 2.0, 3.0, 0.9, 0.1, 0.0,
-                           0.1, 0.95, 0.0, 0.0, 0.05, 1.0], dt=ti.f64)
-            g = ti.Vector([0.5, -0.3, 0.7], dt=ti.f64)
+                           0.1, 0.95, 0.0, 0.0, 0.05, 1.0], dt=ti.f32)
+            g = ti.Vector([0.5, -0.3, 0.7], dt=ti.f32)
 
             # Compute J @ q
             Jq = ABDJacobian.apply_J(x_bar, q)
@@ -168,12 +168,12 @@ class TestABDShapeEnergy:
         from algorithm.abd_system import ABDShapeEnergy
 
         @ti.kernel
-        def test_kernel() -> ti.f64:
+        def test_kernel() -> ti.f32:
             # Identity state
             q = ti.Vector([0.0, 0.0, 0.0,
                            1.0, 0.0, 0.0,
                            0.0, 1.0, 0.0,
-                           0.0, 0.0, 1.0], dt=ti.f64)
+                           0.0, 0.0, 1.0], dt=ti.f32)
             return ABDShapeEnergy.compute_energy(q)
 
         E = test_kernel()
@@ -187,12 +187,12 @@ class TestABDShapeEnergy:
         from algorithm.abd_system import ABDShapeEnergy
 
         @ti.kernel
-        def test_kernel(scale: ti.f64) -> ti.f64:
+        def test_kernel(scale: ti.f32) -> ti.f32:
             # Uniform scaling: A = scale * I
             q = ti.Vector([0.0, 0.0, 0.0,
                            scale, 0.0, 0.0,
                            0.0, scale, 0.0,
-                           0.0, 0.0, scale], dt=ti.f64)
+                           0.0, 0.0, scale], dt=ti.f32)
             return ABDShapeEnergy.compute_energy(q)
 
         # Test various scales
@@ -211,11 +211,11 @@ class TestABDShapeEnergy:
         from algorithm.abd_system import ABDShapeEnergy
 
         @ti.kernel
-        def compute_energy(q: ti.types.vector(12, ti.f64)) -> ti.f64:
+        def compute_energy(q: ti.types.vector(12, ti.f32)) -> ti.f32:
             return ABDShapeEnergy.compute_energy(q)
 
         @ti.kernel
-        def compute_gradient(q: ti.types.vector(12, ti.f64)) -> ti.types.vector(9, ti.f64):
+        def compute_gradient(q: ti.types.vector(12, ti.f32)) -> ti.types.vector(9, ti.f32):
             return ABDShapeEnergy.compute_gradient(q)
 
         # Test at non-identity state
@@ -225,7 +225,7 @@ class TestABDShapeEnergy:
                          0.0, 0.1, 1.05])
 
         # Compute analytical gradient
-        q_ti = ti.Vector(q_np.tolist(), dt=ti.f64)
+        q_ti = ti.Vector(q_np.tolist(), dt=ti.f32)
         grad = compute_gradient(q_ti)
         grad_np = np.array([grad[i] for i in range(9)])
 
@@ -238,8 +238,8 @@ class TestABDShapeEnergy:
             q_plus[3 + i] += eps
             q_minus[3 + i] -= eps
 
-            E_plus = compute_energy(ti.Vector(q_plus.tolist(), dt=ti.f64))
-            E_minus = compute_energy(ti.Vector(q_minus.tolist(), dt=ti.f64))
+            E_plus = compute_energy(ti.Vector(q_plus.tolist(), dt=ti.f32))
+            E_minus = compute_energy(ti.Vector(q_minus.tolist(), dt=ti.f32))
             grad_fd[i] = (E_plus - E_minus) / (2 * eps)
 
         error = np.linalg.norm(grad_np - grad_fd)
@@ -255,11 +255,11 @@ class TestABDShapeEnergy:
         from algorithm.abd_system import ABDShapeEnergy
 
         @ti.kernel
-        def compute_gradient(q: ti.types.vector(12, ti.f64)) -> ti.types.vector(9, ti.f64):
+        def compute_gradient(q: ti.types.vector(12, ti.f32)) -> ti.types.vector(9, ti.f32):
             return ABDShapeEnergy.compute_gradient(q)
 
         @ti.kernel
-        def compute_hessian(q: ti.types.vector(12, ti.f64)) -> ti.types.matrix(9, 9, ti.f64):
+        def compute_hessian(q: ti.types.vector(12, ti.f32)) -> ti.types.matrix(9, 9, ti.f32):
             return ABDShapeEnergy.compute_hessian(q)
 
         # Test at non-identity state
@@ -269,7 +269,7 @@ class TestABDShapeEnergy:
                          0.0, 0.1, 1.05])
 
         # Compute analytical Hessian
-        q_ti = ti.Vector(q_np.tolist(), dt=ti.f64)
+        q_ti = ti.Vector(q_np.tolist(), dt=ti.f32)
         H = compute_hessian(q_ti)
         H_np = np.array([[H[i, j] for j in range(9)] for i in range(9)])
 
@@ -282,8 +282,8 @@ class TestABDShapeEnergy:
             q_plus[3 + i] += eps
             q_minus[3 + i] -= eps
 
-            grad_plus = compute_gradient(ti.Vector(q_plus.tolist(), dt=ti.f64))
-            grad_minus = compute_gradient(ti.Vector(q_minus.tolist(), dt=ti.f64))
+            grad_plus = compute_gradient(ti.Vector(q_plus.tolist(), dt=ti.f32))
+            grad_minus = compute_gradient(ti.Vector(q_minus.tolist(), dt=ti.f32))
 
             for j in range(9):
                 H_fd[j, i] = (grad_plus[j] - grad_minus[j]) / (2 * eps)
@@ -310,7 +310,7 @@ class TestABDSystem:
         rest_positions = np.array([
             [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
             [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]
-        ], dtype=np.float64)
+        ], dtype=np.float32)
         masses = np.ones(n_points)
         volume = 1.0
 
@@ -368,7 +368,7 @@ class TestABDSystem:
         point_ids = np.arange(n_points, dtype=np.int32)
         rest_positions = np.array([
             [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]
-        ], dtype=np.float64)
+        ], dtype=np.float32)
         masses = np.ones(n_points)
 
         body_id = system.add_body(point_ids, rest_positions, masses, volume=1.0)
@@ -408,7 +408,7 @@ class TestABDSystem:
         rest_positions = np.array([
             [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
             [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]
-        ], dtype=np.float64)
+        ], dtype=np.float32)
         masses = np.ones(n_points)
 
         body_id = system.add_body(point_ids, rest_positions, masses, volume=1.0)
@@ -470,7 +470,7 @@ class TestABDSystem:
         point_ids = np.arange(n_points, dtype=np.int32)
         rest_positions = np.array([
             [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]
-        ], dtype=np.float64)
+        ], dtype=np.float32)
         masses = np.ones(n_points)
 
         body_id = system.add_body(point_ids, rest_positions, masses, volume=1.0)

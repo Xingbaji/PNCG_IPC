@@ -50,7 +50,7 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def compute_jacobian(x_bar: ti.types.vector(3, ti.f64)) -> ti.types.matrix(3, 12, ti.f64):
+    def compute_jacobian(x_bar: ti.types.vector(3, ti.f32)) -> ti.types.matrix(3, 12, ti.f32):
         """
         Compute 3x12 Jacobian matrix for a point.
 
@@ -60,7 +60,7 @@ class ABDJacobian:
         Returns:
             J: 3x12 Jacobian matrix
         """
-        J = ti.Matrix.zero(ti.f64, 3, 12)
+        J = ti.Matrix.zero(ti.f32, 3, 12)
 
         # First block: identity (translation part)
         J[0, 0] = 1.0
@@ -86,8 +86,8 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def apply_J(x_bar: ti.types.vector(3, ti.f64),
-                q: ti.types.vector(12, ti.f64)) -> ti.types.vector(3, ti.f64):
+    def apply_J(x_bar: ti.types.vector(3, ti.f32),
+                q: ti.types.vector(12, ti.f32)) -> ti.types.vector(3, ti.f32):
         """
         Apply Jacobian: x = J * q (state to position).
 
@@ -116,8 +116,8 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def apply_JT(x_bar: ti.types.vector(3, ti.f64),
-                 g: ti.types.vector(3, ti.f64)) -> ti.types.vector(12, ti.f64):
+    def apply_JT(x_bar: ti.types.vector(3, ti.f32),
+                 g: ti.types.vector(3, ti.f32)) -> ti.types.vector(12, ti.f32):
         """
         Apply Jacobian transpose: g_q = J^T * g (gradient projection).
 
@@ -130,7 +130,7 @@ class ABDJacobian:
         Returns:
             g_q: 12D gradient in state space
         """
-        g_q = ti.Vector.zero(ti.f64, 12)
+        g_q = ti.Vector.zero(ti.f32, 12)
 
         # Translation part: J^T[:3, :] = I₃
         g_q[0] = g[0]
@@ -157,8 +157,8 @@ class ABDJacobian:
 
     @staticmethod
     @ti.func
-    def apply_JT_H_J(x_bar: ti.types.vector(3, ti.f64),
-                     H: ti.types.matrix(3, 3, ti.f64)) -> ti.types.matrix(12, 12, ti.f64):
+    def apply_JT_H_J(x_bar: ti.types.vector(3, ti.f32),
+                     H: ti.types.matrix(3, 3, ti.f32)) -> ti.types.matrix(12, 12, ti.f32):
         """
         Compute J^T * H * J for Hessian transformation.
 
@@ -169,7 +169,7 @@ class ABDJacobian:
         Returns:
             H_q: 12x12 Hessian in state space
         """
-        H_q = ti.Matrix.zero(ti.f64, 12, 12)
+        H_q = ti.Matrix.zero(ti.f32, 12, 12)
 
         # Build J explicitly for full transformation
         J = ABDJacobian.compute_jacobian(x_bar)
@@ -217,23 +217,23 @@ class ABDBody:
         self.point_ids = ti.field(dtype=ti.i32, shape=n_points)
         self.point_ids.from_numpy(point_ids.astype(np.int32))
 
-        self.x_bar = ti.Vector.field(3, dtype=ti.f64, shape=n_points)
+        self.x_bar = ti.Vector.field(3, dtype=ti.f32, shape=n_points)
         self.x_bar.from_numpy(x_bar)
 
-        self.point_mass = ti.field(dtype=ti.f64, shape=n_points)
+        self.point_mass = ti.field(dtype=ti.f32, shape=n_points)
         self.point_mass.from_numpy(masses)
 
         # State vectors (12D)
-        self.q = ti.Vector.field(12, dtype=ti.f64, shape=())  # Current state
-        self.q_prev = ti.Vector.field(12, dtype=ti.f64, shape=())  # Previous state
-        self.q_tilde = ti.Vector.field(12, dtype=ti.f64, shape=())  # Predicted state
-        self.q_v = ti.Vector.field(12, dtype=ti.f64, shape=())  # Velocity
-        self.dq = ti.Vector.field(12, dtype=ti.f64, shape=())  # Search direction
-        self.grad_q = ti.Vector.field(12, dtype=ti.f64, shape=())  # Gradient
+        self.q = ti.Vector.field(12, dtype=ti.f32, shape=())  # Current state
+        self.q_prev = ti.Vector.field(12, dtype=ti.f32, shape=())  # Previous state
+        self.q_tilde = ti.Vector.field(12, dtype=ti.f32, shape=())  # Predicted state
+        self.q_v = ti.Vector.field(12, dtype=ti.f32, shape=())  # Velocity
+        self.dq = ti.Vector.field(12, dtype=ti.f32, shape=())  # Search direction
+        self.grad_q = ti.Vector.field(12, dtype=ti.f32, shape=())  # Gradient
 
         # Mass matrix (12x12)
-        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f64, shape=())
-        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f64, shape=())
+        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f32, shape=())
+        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f32, shape=())
 
         # Properties
         self.total_mass = total_mass
@@ -272,7 +272,7 @@ class ABDBody:
 
         where J_i is the Jacobian for point i.
         """
-        M = ti.Matrix.zero(ti.f64, 12, 12)
+        M = ti.Matrix.zero(ti.f32, 12, 12)
 
         for i in range(self.n_points):
             m = self.point_mass[i]
@@ -351,7 +351,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_energy(q: ti.types.vector(12, ti.f64)) -> ti.f64:
+    def compute_energy(q: ti.types.vector(12, ti.f32)) -> ti.f32:
         """
         Compute shape energy (without κv scaling).
 
@@ -380,7 +380,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_gradient(q: ti.types.vector(12, ti.f64)) -> ti.types.vector(9, ti.f64):
+    def compute_gradient(q: ti.types.vector(12, ti.f32)) -> ti.types.vector(9, ti.f32):
         """
         Compute shape energy gradient w.r.t. affine part (9D).
 
@@ -405,7 +405,7 @@ class ABDShapeEnergy:
         # dE/da3
         dEda3 = 4.0 * (a3.norm_sqr() - 1.0) * a3 + 4.0 * a1.dot(a3) * a1 + 4.0 * a2.dot(a3) * a2
 
-        grad = ti.Vector.zero(ti.f64, 9)
+        grad = ti.Vector.zero(ti.f32, 9)
         grad[0], grad[1], grad[2] = dEda1[0], dEda1[1], dEda1[2]
         grad[3], grad[4], grad[5] = dEda2[0], dEda2[1], dEda2[2]
         grad[6], grad[7], grad[8] = dEda3[0], dEda3[1], dEda3[2]
@@ -414,7 +414,7 @@ class ABDShapeEnergy:
 
     @staticmethod
     @ti.func
-    def compute_hessian(q: ti.types.vector(12, ti.f64)) -> ti.types.matrix(9, 9, ti.f64):
+    def compute_hessian(q: ti.types.vector(12, ti.f32)) -> ti.types.matrix(9, 9, ti.f32):
         """
         Compute shape energy Hessian (9x9 for affine part).
 
@@ -433,8 +433,8 @@ class ABDShapeEnergy:
         a2 = ti.Vector([q[6], q[7], q[8]])
         a3 = ti.Vector([q[9], q[10], q[11]])
 
-        H = ti.Matrix.zero(ti.f64, 9, 9)
-        I3 = ti.Matrix.identity(ti.f64, 3)
+        H = ti.Matrix.zero(ti.f32, 9, 9)
+        I3 = ti.Matrix.identity(ti.f32, 3)
 
         # ∂²V/∂a1² = 8*a1*a1ᵀ + 4*(a1·a1 - 1)*I + 4*a2*a2ᵀ + 4*a3*a3ᵀ
         ddVdda1 = 8.0 * a1.outer_product(a1) + 4.0 * (a1.norm_sqr() - 1.0) * I3 \
@@ -488,8 +488,8 @@ class ABDMotor:
 
     @staticmethod
     @ti.func
-    def compute_rotation_matrix(axis: ti.types.vector(3, ti.f64),
-                                 theta: ti.f64) -> ti.types.matrix(3, 3, ti.f64):
+    def compute_rotation_matrix(axis: ti.types.vector(3, ti.f32),
+                                 theta: ti.f32) -> ti.types.matrix(3, 3, ti.f32):
         """
         Compute rotation matrix using Rodrigues' formula.
 
@@ -510,19 +510,19 @@ class ABDMotor:
             [0.0, -axis[2], axis[1]],
             [axis[2], 0.0, -axis[0]],
             [-axis[1], axis[0], 0.0]
-        ], dt=ti.f64)
+        ], dt=ti.f32)
 
-        I3 = ti.Matrix.identity(ti.f64, 3)
+        I3 = ti.Matrix.identity(ti.f32, 3)
         R = I3 + s * K + (1.0 - c) * (K @ K)
 
         return R
 
     @staticmethod
     @ti.func
-    def compute_motor_target(q_base: ti.types.vector(12, ti.f64),
-                             axis: ti.types.vector(3, ti.f64),
-                             omega: ti.f64,
-                             dt: ti.f64) -> ti.types.vector(12, ti.f64):
+    def compute_motor_target(q_base: ti.types.vector(12, ti.f32),
+                             axis: ti.types.vector(3, ti.f32),
+                             omega: ti.f32,
+                             dt: ti.f32) -> ti.types.vector(12, ti.f32):
         """
         Compute target state for motor body.
 
@@ -545,7 +545,7 @@ class ABDMotor:
             [q_base[3], q_base[6], q_base[9]],
             [q_base[4], q_base[7], q_base[10]],
             [q_base[5], q_base[8], q_base[11]]
-        ], dt=ti.f64)
+        ], dt=ti.f32)
 
         # Apply rotation: A_new = R @ A
         A_new = R @ A
@@ -597,40 +597,40 @@ class ABDSystem:
         self.n_bodies = 0
 
         # Body state vectors (batched for GPU efficiency)
-        self.q = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.q_prev = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.q_tilde = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.q_temp = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)  # For line search rollback
-        self.q_v = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.dq = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.grad_q = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)
-        self.grad_q_prev = ti.Vector.field(12, dtype=ti.f64, shape=max_bodies)  # Previous gradient for CG
+        self.q = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.q_prev = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.q_tilde = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.q_temp = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)  # For line search rollback
+        self.q_v = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.dq = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.grad_q = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)
+        self.grad_q_prev = ti.Vector.field(12, dtype=ti.f32, shape=max_bodies)  # Previous gradient for CG
 
         # Mass matrices
-        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f64, shape=max_bodies)
-        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f64, shape=max_bodies)
+        self.abd_mass = ti.Matrix.field(12, 12, dtype=ti.f32, shape=max_bodies)
+        self.abd_mass_inv = ti.Matrix.field(12, 12, dtype=ti.f32, shape=max_bodies)
 
         # Diagonal preconditioner (12x12 block per body)
-        self.abd_precond = ti.Matrix.field(12, 12, dtype=ti.f64, shape=max_bodies)
+        self.abd_precond = ti.Matrix.field(12, 12, dtype=ti.f32, shape=max_bodies)
 
         # Body properties
-        self.body_volume = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.kappa_shape = ti.field(dtype=ti.f64, shape=max_bodies)
-        self.body_total_mass = ti.field(dtype=ti.f64, shape=max_bodies)
+        self.body_volume = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.kappa_shape = ti.field(dtype=ti.f32, shape=max_bodies)
+        self.body_total_mass = ti.field(dtype=ti.f32, shape=max_bodies)
 
         # Boundary conditions
         self.boundary_type = ti.field(dtype=ti.i32, shape=max_bodies)  # BodyBoundaryType enum
 
         # Motor parameters (for MOTOR boundary type)
-        self.motor_speed = ti.field(dtype=ti.f64, shape=max_bodies)  # rad/s
-        self.motor_strength = ti.field(dtype=ti.f64, shape=max_bodies)  # Torque scaling
-        self.motor_axis = ti.Vector.field(3, dtype=ti.f64, shape=max_bodies)  # Rotation axis
+        self.motor_speed = ti.field(dtype=ti.f32, shape=max_bodies)  # rad/s
+        self.motor_strength = ti.field(dtype=ti.f32, shape=max_bodies)  # Torque scaling
+        self.motor_axis = ti.Vector.field(3, dtype=ti.f32, shape=max_bodies)  # Rotation axis
 
         # Point data (flattened storage)
         self.point_body_id = ti.field(dtype=ti.i32, shape=self.max_total_points)
         self.point_local_id = ti.field(dtype=ti.i32, shape=self.max_total_points)
-        self.x_bar = ti.Vector.field(3, dtype=ti.f64, shape=self.max_total_points)
-        self.point_mass = ti.field(dtype=ti.f64, shape=self.max_total_points)
+        self.x_bar = ti.Vector.field(3, dtype=ti.f32, shape=self.max_total_points)
+        self.point_mass = ti.field(dtype=ti.f32, shape=self.max_total_points)
 
         # Body point ranges [start, end)
         self.body_point_start = ti.field(dtype=ti.i32, shape=max_bodies + 1)
@@ -656,18 +656,18 @@ class ABDSystem:
         """Initialize fields to zero/identity."""
         for i in range(self.max_bodies):
             # Identity state
-            self.q[i] = ti.Vector([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], dt=ti.f64)
+            self.q[i] = ti.Vector([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], dt=ti.f32)
             self.q_prev[i] = self.q[i]
             self.q_tilde[i] = self.q[i]
             self.q_temp[i] = self.q[i]
-            self.q_v[i] = ti.Vector.zero(ti.f64, 12)
-            self.dq[i] = ti.Vector.zero(ti.f64, 12)
-            self.grad_q[i] = ti.Vector.zero(ti.f64, 12)
-            self.grad_q_prev[i] = ti.Vector.zero(ti.f64, 12)
+            self.q_v[i] = ti.Vector.zero(ti.f32, 12)
+            self.dq[i] = ti.Vector.zero(ti.f32, 12)
+            self.grad_q[i] = ti.Vector.zero(ti.f32, 12)
+            self.grad_q_prev[i] = ti.Vector.zero(ti.f32, 12)
 
-            self.abd_mass[i] = ti.Matrix.identity(ti.f64, 12)
-            self.abd_mass_inv[i] = ti.Matrix.identity(ti.f64, 12)
-            self.abd_precond[i] = ti.Matrix.identity(ti.f64, 12)
+            self.abd_mass[i] = ti.Matrix.identity(ti.f32, 12)
+            self.abd_mass_inv[i] = ti.Matrix.identity(ti.f32, 12)
+            self.abd_precond[i] = ti.Matrix.identity(ti.f32, 12)
 
             self.body_volume[i] = 1.0
             self.kappa_shape[i] = 1e6
@@ -846,7 +846,7 @@ class ABDSystem:
             vertices[global_id] = ti.cast(x, ti.f32)
 
     @ti.kernel
-    def compute_q_tilde(self, dt: ti.f64):
+    def compute_q_tilde(self, dt: ti.f32):
         """
         Compute predicted state: q̃ = q + dt*q_v + dt²*M⁻¹*f_ext
 
@@ -882,7 +882,7 @@ class ABDSystem:
                 total_mass = self.body_total_mass[body_id]
 
                 # External force (gravity on translation part)
-                f_ext = ti.Vector.zero(ti.f64, 12)
+                f_ext = ti.Vector.zero(ti.f32, 12)
                 f_ext[0] = total_mass * self.gravity[0]
                 f_ext[1] = total_mass * self.gravity[1]
                 f_ext[2] = total_mass * self.gravity[2]
@@ -923,7 +923,7 @@ class ABDSystem:
         # Clear gradients and save previous
         for body_id in range(self.n_bodies):
             self.grad_q_prev[body_id] = self.grad_q[body_id]
-            self.grad_q[body_id] = ti.Vector.zero(ti.f64, 12)
+            self.grad_q[body_id] = ti.Vector.zero(ti.f32, 12)
 
         # Accumulate
         for i in range(self.n_total_points):
@@ -937,7 +937,7 @@ class ABDSystem:
             x_bar = self.x_bar[i]
             global_id = self.global_vertex_id[i]
 
-            g_x = ti.cast(grad_x[global_id], ti.f64)
+            g_x = ti.cast(grad_x[global_id], ti.f32)
             g_q = ABDJacobian.apply_JT(x_bar, g_x)
 
             # Atomic add to body gradient
@@ -950,7 +950,7 @@ class ABDSystem:
 
             if btype == 1:  # FIXED
                 # Zero gradient for fixed bodies
-                self.grad_q[body_id] = ti.Vector.zero(ti.f64, 12)
+                self.grad_q[body_id] = ti.Vector.zero(ti.f32, 12)
             elif btype == 2:  # MOTOR
                 # Zero translation DOFs for motor bodies (only rotation allowed)
                 self.grad_q[body_id][0] = 0.0
@@ -971,7 +971,7 @@ class ABDSystem:
         return self._compute_shape_energy_kernel()
 
     @ti.kernel
-    def _compute_shape_energy_kernel(self) -> ti.f64:
+    def _compute_shape_energy_kernel(self) -> ti.f32:
         """Kernel for shape energy computation."""
         E_shape = 0.0
 
@@ -985,11 +985,11 @@ class ABDSystem:
                 [q[3], q[6], q[9]],
                 [q[4], q[7], q[10]],
                 [q[5], q[8], q[11]]
-            ], dt=ti.f64)
+            ], dt=ti.f32)
 
             # C = A @ A^T - I
             AAT = A @ A.transpose()
-            C = AAT - ti.Matrix.identity(ti.f64, 3)
+            C = AAT - ti.Matrix.identity(ti.f32, 3)
 
             # ||C||_F² = trace(C^T @ C)
             frob_sq = 0.0
@@ -1049,13 +1049,13 @@ class ABDSystem:
             strength = self.motor_strength[body_id]
 
             # Compute deviation from target (only rotation/affine part)
-            dq = ti.Vector.zero(ti.f64, 12)
+            dq = ti.Vector.zero(ti.f32, 12)
             for d in ti.static(range(9)):
                 dq[3 + d] = q[3 + d] - q_tilde[3 + d]
 
             # Motor force: strength * M[rot,rot] * dq[rot]
             # Use mass matrix for rotational DOFs (indices 3-11)
-            g_motor = ti.Vector.zero(ti.f64, 12)
+            g_motor = ti.Vector.zero(ti.f32, 12)
             for i in ti.static(range(9)):
                 for j in ti.static(range(9)):
                     g_motor[3 + i] += strength * M[3 + i, 3 + j] * dq[3 + j]
@@ -1065,7 +1065,7 @@ class ABDSystem:
                 self.grad_q[body_id][d] += g_motor[d]
 
     @ti.kernel
-    def compute_shape_hessian_contribution(self, dt: ti.f64) -> ti.f64:
+    def compute_shape_hessian_contribution(self, dt: ti.f32) -> ti.f32:
         """
         Compute p^T * H_shape * p contribution to pHp.
 
@@ -1094,7 +1094,7 @@ class ABDSystem:
             # In production, full EVD projection would be used
 
             # Extract affine part of dq (9D)
-            dq_affine = ti.Vector.zero(ti.f64, 9)
+            dq_affine = ti.Vector.zero(ti.f32, 9)
             for d in ti.static(range(9)):
                 dq_affine[d] = dq[3 + d]
 
@@ -1106,7 +1106,7 @@ class ABDSystem:
         return result
 
     @ti.kernel
-    def compute_motor_hessian_contribution(self) -> ti.f64:
+    def compute_motor_hessian_contribution(self) -> ti.f32:
         """
         Compute p^T * H_motor * p contribution for motor bodies.
 
@@ -1134,7 +1134,7 @@ class ABDSystem:
         return result
 
     @ti.kernel
-    def update_velocity(self, dt: ti.f64):
+    def update_velocity(self, dt: ti.f32):
         """
         Update velocity after optimization: q_v = (q - q_prev) / dt
 
@@ -1152,7 +1152,7 @@ class ABDSystem:
             q_prev = self.q_prev[body_id]
 
             if btype == 1:  # FIXED
-                self.q_v[body_id] = ti.Vector.zero(ti.f64, 12)
+                self.q_v[body_id] = ti.Vector.zero(ti.f32, 12)
             elif btype == 2:  # MOTOR
                 # Motor has prescribed rotation velocity around motor_axis
                 # The velocity is computed from the skew-symmetric matrix of omega
@@ -1170,20 +1170,20 @@ class ABDSystem:
                     [q[3], q[6], q[9]],
                     [q[4], q[7], q[10]],
                     [q[5], q[8], q[11]]
-                ], dt=ti.f64)
+                ], dt=ti.f32)
 
                 # Compute skew-symmetric matrix [axis]_x
                 omega_skew = omega * ti.Matrix([
                     [0.0, -axis[2], axis[1]],
                     [axis[2], 0.0, -axis[0]],
                     [-axis[1], axis[0], 0.0]
-                ], dt=ti.f64)
+                ], dt=ti.f32)
 
                 # dA/dt = omega_skew @ A
                 dA_dt = omega_skew @ A
 
                 # Build velocity vector
-                q_v = ti.Vector.zero(ti.f64, 12)
+                q_v = ti.Vector.zero(ti.f32, 12)
                 # Translation velocity is zero for motor (fixed pivot)
                 q_v[0] = 0.0
                 q_v[1] = 0.0
@@ -1216,7 +1216,7 @@ class ABDSystem:
         return self._compute_kinetic_energy_kernel()
 
     @ti.kernel
-    def _compute_kinetic_energy_kernel(self) -> ti.f64:
+    def _compute_kinetic_energy_kernel(self) -> ti.f32:
         """Kernel for kinetic energy computation."""
         K = 0.0
 
@@ -1277,7 +1277,7 @@ class ABDSystem:
                 self.grad_q[body_id][d] += g_inertia[d]
 
     @ti.kernel
-    def compute_preconditioner(self, dt: ti.f64):
+    def compute_preconditioner(self, dt: ti.f32):
         """
         Compute diagonal preconditioner for ABD bodies.
 
@@ -1291,7 +1291,7 @@ class ABDSystem:
 
             if btype == 1:  # FIXED
                 # Identity preconditioner for fixed bodies
-                self.abd_precond[body_id] = ti.Matrix.identity(ti.f64, 12)
+                self.abd_precond[body_id] = ti.Matrix.identity(ti.f32, 12)
                 continue
 
             # Start with mass matrix
@@ -1320,7 +1320,7 @@ class ABDSystem:
             btype = self.boundary_type[body_id]
 
             if btype == 1:  # FIXED
-                self.dq[body_id] = ti.Vector.zero(ti.f64, 12)
+                self.dq[body_id] = ti.Vector.zero(ti.f32, 12)
                 continue
 
             # Use inverse mass matrix as preconditioner (simpler and effective)
@@ -1330,7 +1330,7 @@ class ABDSystem:
             self.dq[body_id] = M_inv @ grad_q
 
     @ti.kernel
-    def step_forward(self, alpha: ti.f64):
+    def step_forward(self, alpha: ti.f32):
         """
         Take optimization step: q = q - alpha * dq
 
@@ -1371,7 +1371,7 @@ class ABDSystem:
         """
         # Clear dq
         for body_id in range(self.n_bodies):
-            self.dq[body_id] = ti.Vector.zero(ti.f64, 12)
+            self.dq[body_id] = ti.Vector.zero(ti.f32, 12)
 
         # Accumulate from vertices
         for i in range(self.n_total_points):
@@ -1384,7 +1384,7 @@ class ABDSystem:
             x_bar = self.x_bar[i]
             global_id = self.global_vertex_id[i]
 
-            p = ti.cast(vertex_p[global_id], ti.f64)
+            p = ti.cast(vertex_p[global_id], ti.f32)
             dq_contrib = ABDJacobian.apply_JT(x_bar, p)
 
             for d in ti.static(range(12)):
@@ -1411,7 +1411,7 @@ class ABDSystem:
             vertex_p[global_id] = ti.cast(p, ti.f32)
 
     @ti.kernel
-    def compute_max_vertex_displacement(self) -> ti.f64:
+    def compute_max_vertex_displacement(self) -> ti.f32:
         """
         Compute maximum vertex displacement from search direction.
 
@@ -1436,7 +1436,7 @@ class ABDSystem:
         return max_disp
 
     @ti.kernel
-    def compute_ccd_alpha_ground(self, ground_y: ti.f64, margin: ti.f64) -> ti.f64:
+    def compute_ccd_alpha_ground(self, ground_y: ti.f32, margin: ti.f32) -> ti.f32:
         """
         Compute conservative CCD step size for ground plane collision.
 
@@ -1483,7 +1483,7 @@ class ABDSystem:
         return alpha_min
 
     @ti.kernel
-    def compute_ccd_alpha_self(self, dHat: ti.f64) -> ti.f64:
+    def compute_ccd_alpha_self(self, dHat: ti.f32) -> ti.f32:
         """
         Compute conservative CCD step size for self-collision (simplified).
 

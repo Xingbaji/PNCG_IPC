@@ -66,7 +66,7 @@ def create_grid_mesh(nx: int, ny: int, nz: int, spacing: float = 1.0):
     n_verts_z = nz + 1
     n_verts = n_verts_x * n_verts_y * n_verts_z
 
-    vertices = np.zeros((n_verts, 3), dtype=np.float64)
+    vertices = np.zeros((n_verts, 3), dtype=np.float32)
 
     for iz in range(n_verts_z):
         for iy in range(n_verts_y):
@@ -125,7 +125,7 @@ def create_line_mesh(n_segments: int, spacing: float = 1.0):
     # For n_segments tets sharing vertices along a line:
     # We need n_segments + 3 vertices for a chain of tets
     n_verts = n_segments + 3
-    vertices = np.zeros((n_verts, 3), dtype=np.float64)
+    vertices = np.zeros((n_verts, 3), dtype=np.float32)
 
     # Place vertices along x-axis with small offsets for tetrahedral geometry
     for i in range(n_verts):
@@ -143,7 +143,7 @@ def create_line_mesh(n_segments: int, spacing: float = 1.0):
 
     # Create a "tube" of tetrahedra
     n_verts = 4 * n_segments  # 4 vertices per segment
-    vertices = np.zeros((n_verts, 3), dtype=np.float64)
+    vertices = np.zeros((n_verts, 3), dtype=np.float32)
 
     for seg in range(n_segments):
         base_idx = seg * 4
@@ -240,7 +240,7 @@ def compute_restriction_numpy(gradient: np.ndarray, going_next: np.ndarray,
     total_nodes = level_sizes[-1][1] + level_sizes[-1][0]
 
     # Initialize multi-level residual
-    multi_level_r = np.zeros((total_nodes, 3), dtype=np.float64)
+    multi_level_r = np.zeros((total_nodes, 3), dtype=np.float32)
 
     # Level 0: copy gradient
     multi_level_r[:n_verts] = gradient
@@ -279,7 +279,7 @@ def compute_prolongation_numpy(multi_level_z: np.ndarray,
     Returns:
         z_final: Final preconditioned direction (n_verts, 3)
     """
-    z_final = np.zeros((n_verts, 3), dtype=np.float64)
+    z_final = np.zeros((n_verts, 3), dtype=np.float32)
     n_levels = len(level_sizes)
 
     for idx in range(n_verts):
@@ -310,7 +310,7 @@ def compute_local_solve_numpy(multi_level_r: np.ndarray,
         multi_level_z: Solution at all levels (total_nodes, 3)
     """
     total_nodes = multi_level_r.shape[0]
-    multi_level_z = np.zeros((total_nodes, 3), dtype=np.float64)
+    multi_level_z = np.zeros((total_nodes, 3), dtype=np.float32)
 
     for level, (level_size, level_offset) in enumerate(level_sizes):
         n_blocks = (level_size + BANKSIZE - 1) // BANKSIZE
@@ -322,7 +322,7 @@ def compute_local_solve_numpy(multi_level_r: np.ndarray,
             nodes_in_block = block_end - block_start
 
             # Extract residual for this block
-            r_block = np.zeros(BLOCK_DOF, dtype=np.float64)
+            r_block = np.zeros(BLOCK_DOF, dtype=np.float32)
             for local_idx in range(nodes_in_block):
                 global_idx = block_start + local_idx
                 r_block[local_idx*3:(local_idx+1)*3] = multi_level_r[global_idx]
@@ -359,7 +359,7 @@ def extract_full_block_matrix_numpy(block_matrices_np, block_id):
     Returns:
         full: 48x48 dense matrix
     """
-    full = np.zeros((BLOCK_DOF, BLOCK_DOF), dtype=np.float64)
+    full = np.zeros((BLOCK_DOF, BLOCK_DOF), dtype=np.float32)
 
     for row in range(BANKSIZE):
         for col in range(row, BANKSIZE):
@@ -559,7 +559,7 @@ class TestLocalSolveGroundTruth(unittest.TestCase):
         n_blocks = 1
 
         # Create identity block matrices
-        block_matrices = np.zeros((n_blocks, SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        block_matrices = np.zeros((n_blocks, SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane in range(BANKSIZE):
             idx = sym_index(lane, lane)
             block_matrices[0, idx] = np.eye(3)
@@ -578,7 +578,7 @@ class TestLocalSolveGroundTruth(unittest.TestCase):
         n_blocks = 1
 
         # Create diagonal block matrices (scale each node by 2)
-        block_matrices = np.zeros((n_blocks, SYM_BLOCK_COUNT, 3, 3), dtype=np.float64)
+        block_matrices = np.zeros((n_blocks, SYM_BLOCK_COUNT, 3, 3), dtype=np.float32)
         for lane in range(BANKSIZE):
             idx = sym_index(lane, lane)
             block_matrices[0, idx] = 2.0 * np.eye(3)

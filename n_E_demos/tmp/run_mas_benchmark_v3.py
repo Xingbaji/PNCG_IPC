@@ -127,15 +127,15 @@ def benchmark_mas_simple(n_per_side=4, n_iterations=3, use_warp_reduction=False)
             cell_W[c] = ti.abs(Dm.determinant()) / 6.0
 
     @ti.kernel
-    def compute_z_stats() -> ti.types.vector(3, ti.f64):
-        z_norm = ti.cast(0.0, ti.f64)
-        z_dot_g = ti.cast(0.0, ti.f64)
-        z_count = ti.cast(0.0, ti.f64)
+    def compute_z_stats() -> ti.types.vector(3, ti.f32):
+        z_norm = ti.cast(0.0, ti.f32)
+        z_dot_g = ti.cast(0.0, ti.f32)
+        z_count = ti.cast(0.0, ti.f32)
         for i in range(n_verts):
-            z_norm += ti.cast(z[i].norm_sqr(), ti.f64)
-            z_dot_g += ti.cast(z[i].dot(grad[i]), ti.f64)
+            z_norm += ti.cast(z[i].norm_sqr(), ti.f32)
+            z_dot_g += ti.cast(z[i].dot(grad[i]), ti.f32)
             z_count += 1.0
-        return ti.Vector([ti.sqrt(z_norm), z_dot_g, z_count], dt=ti.f64)
+        return ti.Vector([ti.sqrt(z_norm), z_dot_g, z_count], dt=ti.f32)
 
     @ti.kernel
     def reset_z():

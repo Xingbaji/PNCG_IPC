@@ -75,7 +75,7 @@ def create_test_mesh(size: int = 3) -> tuple:
     vertices = np.array([[i, j, k]
                          for i in range(size)
                          for j in range(size)
-                         for k in range(size)], dtype=np.float64)
+                         for k in range(size)], dtype=np.float32)
 
     cells = []
     for i in range(size - 1):
@@ -852,7 +852,7 @@ class TestEdgeCases(unittest.TestCase):
         """Handle mesh with single tetrahedron."""
         from algorithm.mas_preconditioner_pkg.metis_integration import metis_reorder_mesh
         n_verts = 4
-        vertices = np.array([[0,0,0], [1,0,0], [0,1,0], [0,0,1]], dtype=np.float64)
+        vertices = np.array([[0,0,0], [1,0,0], [0,1,0], [0,0,1]], dtype=np.float32)
         cells = np.array([[0, 1, 2, 3]], dtype=np.int32)
 
         result = metis_reorder_mesh(n_verts, cells, vertices)
@@ -864,7 +864,7 @@ class TestEdgeCases(unittest.TestCase):
         """Handle mesh smaller than BANKSIZE."""
         from algorithm.mas_preconditioner_pkg.metis_integration import metis_reorder_mesh
         n_verts = self.BANKSIZE - 4  # 12 vertices
-        vertices = np.random.rand(n_verts, 3).astype(np.float64)
+        vertices = np.random.rand(n_verts, 3).astype(np.float32)
         # Create some cells
         cells = np.array([[0, 1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5]], dtype=np.int32)
 
@@ -878,7 +878,7 @@ class TestEdgeCases(unittest.TestCase):
         """Handle mesh with exactly BANKSIZE vertices."""
         from algorithm.mas_preconditioner_pkg.metis_integration import metis_reorder_mesh
         n_verts = self.BANKSIZE
-        vertices = np.random.rand(n_verts, 3).astype(np.float64)
+        vertices = np.random.rand(n_verts, 3).astype(np.float32)
         # Create a simple cell chain
         cells = np.array([[i, i+1, i+2, i+3] for i in range(n_verts - 3)], dtype=np.int32)
 

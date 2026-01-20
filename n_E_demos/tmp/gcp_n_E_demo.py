@@ -656,7 +656,7 @@ def main():
                         help='Compare with standard IPC')
     args = parser.parse_args()
 
-    ti.init(arch=ti.gpu, default_fp=ti.f64)
+    ti.init(arch=ti.gpu, default_fp=ti.f32)
 
     solver = GCPNEDemoSolver(demo=args.demo, epsilon_scale=args.epsilon_scale)
 

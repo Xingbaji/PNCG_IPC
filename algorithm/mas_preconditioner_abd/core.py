@@ -110,7 +110,7 @@ class MASPreconditionerABD:
                                                    shape=(self.total_fem_blocks, SYM_BLOCK_COUNT))
 
         # Full block matrices for IC(0) inversion
-        self.full_block_matrix = ti.field(dtype=ti.f64,
+        self.full_block_matrix = ti.field(dtype=ti.f32,
                                           shape=(self.total_fem_blocks, BLOCK_DOF, BLOCK_DOF))
         self.full_block_inverse = ti.field(dtype=ti.f32,
                                            shape=(self.total_fem_blocks, BLOCK_DOF, BLOCK_DOF))
@@ -118,9 +118,9 @@ class MASPreconditionerABD:
         # =======================================================================
         # ABD block matrices (12x12)
         # =======================================================================
-        self.abd_block_matrices = ti.Matrix.field(ABD_DOF, ABD_DOF, dtype=ti.f64,
+        self.abd_block_matrices = ti.Matrix.field(ABD_DOF, ABD_DOF, dtype=ti.f32,
                                                    shape=self.max_abd_bodies)
-        self.abd_block_inverse = ti.Matrix.field(ABD_DOF, ABD_DOF, dtype=ti.f64,
+        self.abd_block_inverse = ti.Matrix.field(ABD_DOF, ABD_DOF, dtype=ti.f32,
                                                   shape=self.max_abd_bodies)
 
         # =======================================================================
@@ -145,8 +145,8 @@ class MASPreconditionerABD:
         self.multi_level_z = ti.Vector.field(3, dtype=ti.f32, shape=self.total_fem_nodes)
 
         # ABD residual and preconditioned vectors (12D per body)
-        self.abd_r = ti.Vector.field(ABD_DOF, dtype=ti.f64, shape=self.max_abd_bodies)
-        self.abd_z = ti.Vector.field(ABD_DOF, dtype=ti.f64, shape=self.max_abd_bodies)
+        self.abd_r = ti.Vector.field(ABD_DOF, dtype=ti.f32, shape=self.max_abd_bodies)
+        self.abd_z = ti.Vector.field(ABD_DOF, dtype=ti.f32, shape=self.max_abd_bodies)
 
         # =======================================================================
         # Cross-block coupling storage (triplet format for exact Hessian matvec)
@@ -262,7 +262,7 @@ class MASPreconditionerABD:
     def _clear_abd_block_matrices(self):
         """Zero out all ABD block matrices."""
         for body_id in range(self.max_abd_bodies):
-            self.abd_block_matrices[body_id] = ti.Matrix.zero(ti.f64, ABD_DOF, ABD_DOF)
+            self.abd_block_matrices[body_id] = ti.Matrix.zero(ti.f32, ABD_DOF, ABD_DOF)
 
     @ti.kernel
     def _clear_coupling_storage(self):
@@ -468,7 +468,7 @@ class MASPreconditionerABD:
         self._assemble_abd_inertia_and_shape(dt)
 
     @ti.kernel
-    def _assemble_abd_inertia_and_shape(self, dt: ti.f64):
+    def _assemble_abd_inertia_and_shape(self, dt: ti.f32):
         """Assemble ABD inertia and shape energy Hessian."""
         for body_id in range(self.n_abd_bodies):
             if self.abd_system.boundary_type[body_id] == BodyBoundaryType.FIXED:
@@ -594,12 +594,12 @@ class MASPreconditionerABD:
 
                 for i_rev in range(BLOCK_DOF):
                     i = BLOCK_DOF - 1 - i_rev
-                    sum_val = ti.f64(self.full_block_inverse[block_id, i, col])
+                    sum_val = ti.f32(self.full_block_inverse[block_id, i, col])
                     k_end = ti.min(BLOCK_DOF, i + BANDWIDTH + 1)
                     for k in range(i + 1, k_end):
                         if k - i <= BANDWIDTH:
                             sum_val -= self.full_block_matrix[block_id, k, i] * \
-                                       ti.f64(self.full_block_inverse[block_id, k, col])
+                                       ti.f32(self.full_block_inverse[block_id, k, col])
                     L_ii = self.full_block_matrix[block_id, i, i]
                     if ti.abs(L_ii) > 1e-12:
                         self.full_block_inverse[block_id, i, col] = ti.f32(sum_val / L_ii)
@@ -627,7 +627,7 @@ class MASPreconditionerABD:
             H = self.abd_block_matrices[body_id]
 
             # Simple Cholesky decomposition for 12x12 SPD matrix
-            L = ti.Matrix.zero(ti.f64, ABD_DOF, ABD_DOF)
+            L = ti.Matrix.zero(ti.f32, ABD_DOF, ABD_DOF)
 
             for i in ti.static(range(ABD_DOF)):
                 for j in range(i + 1):
@@ -647,11 +647,11 @@ class MASPreconditionerABD:
                             L[i, j] = 0.0
 
             # Inversion via forward/backward substitution
-            H_inv = ti.Matrix.zero(ti.f64, ABD_DOF, ABD_DOF)
+            H_inv = ti.Matrix.zero(ti.f32, ABD_DOF, ABD_DOF)
 
             for col in ti.static(range(ABD_DOF)):
                 # Forward substitution: L @ y = e_col
-                y = ti.Vector.zero(ti.f64, ABD_DOF)
+                y = ti.Vector.zero(ti.f32, ABD_DOF)
                 for i in ti.static(range(ABD_DOF)):
                     sum_val = 1.0 if i == col else 0.0
                     for k in range(i):
@@ -660,7 +660,7 @@ class MASPreconditionerABD:
                         y[i] = sum_val / L[i, i]
 
                 # Backward substitution: L^T @ x = y
-                x = ti.Vector.zero(ti.f64, ABD_DOF)
+                x = ti.Vector.zero(ti.f32, ABD_DOF)
                 for i_rev in ti.static(range(ABD_DOF)):
                     i = ABD_DOF - 1 - i_rev
                     sum_val = y[i]
@@ -702,8 +702,8 @@ class MASPreconditionerABD:
     def _clear_abd_buffers(self):
         """Clear ABD buffers."""
         for i in range(self.max_abd_bodies):
-            self.abd_r[i] = ti.Vector.zero(ti.f64, ABD_DOF)
-            self.abd_z[i] = ti.Vector.zero(ti.f64, ABD_DOF)
+            self.abd_r[i] = ti.Vector.zero(ti.f32, ABD_DOF)
+            self.abd_z[i] = ti.Vector.zero(ti.f32, ABD_DOF)
 
     @ti.kernel
     def _build_multi_level_r(self):
@@ -828,7 +828,7 @@ class MASPreconditionerABD:
             r = self.abd_r[body_id]
             H_inv = self.abd_block_inverse[body_id]
 
-            z = ti.Vector.zero(ti.f64, ABD_DOF)
+            z = ti.Vector.zero(ti.f32, ABD_DOF)
             for i in ti.static(range(ABD_DOF)):
                 for j in ti.static(range(ABD_DOF)):
                     z[i] += H_inv[i, j] * r[j]
@@ -840,13 +840,13 @@ class MASPreconditionerABD:
         """Collect z from all FEM levels (prolongation)."""
         for vert in self.mesh.verts:
             idx = vert.id
-            z_total = ti.cast(self.multi_level_z[idx], ti.f64)
+            z_total = ti.cast(self.multi_level_z[idx], ti.f32)
 
             coarse_idx = self.going_next[idx]
             for _ in range(1, level_num):
                 if coarse_idx >= 0:
                     z_coarse = self.multi_level_z[coarse_idx]
-                    z_total += ti.cast(z_coarse, ti.f64)
+                    z_total += ti.cast(z_coarse, ti.f32)
                     coarse_idx = self.going_next[coarse_idx]
                 else:
                     break
@@ -891,9 +891,9 @@ class MASPreconditionerABD:
         for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
             idx_i = block_id * BANKSIZE + lane_i
             if idx_i < self.n_verts:
-                r0 = ti.f64(0.0)
-                r1 = ti.f64(0.0)
-                r2 = ti.f64(0.0)
+                r0 = ti.f32(0.0)
+                r1 = ti.f32(0.0)
+                r2 = ti.f32(0.0)
 
                 for lane_j in range(BANKSIZE):
                     idx_j = block_id * BANKSIZE + lane_j
@@ -915,7 +915,7 @@ class MASPreconditionerABD:
                             r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
                             r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
 
-                result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
+                result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f32)
 
     @ti.kernel
     def _cross_block_spmv(self, v: ti.template(), result: ti.template(), n_triplets: ti.i32):
@@ -973,7 +973,7 @@ class MASPreconditionerABD:
             H = self.abd_block_matrices[body_id]
             v_body = v[body_id]
 
-            r = ti.Vector.zero(ti.f64, ABD_DOF)
+            r = ti.Vector.zero(ti.f32, ABD_DOF)
             for i in ti.static(range(ABD_DOF)):
                 for j in ti.static(range(ABD_DOF)):
                     r[i] += H[i, j] * v_body[j]

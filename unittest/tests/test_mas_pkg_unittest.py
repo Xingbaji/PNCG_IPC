@@ -316,16 +316,16 @@ class TestSRBKSpMV(unittest.TestCase):
         spmv = self.SRBKSpMV(n_verts, n_verts * 3)
 
         # Create identity-like diagonal blocks
-        x = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-        y = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+        x = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+        y = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 
         # Set x to random values
         np.random.seed(42)
         x_np = np.random.randn(n_verts, 3)
-        x.from_numpy(x_np.astype(np.float64))
+        x.from_numpy(x_np.astype(np.float32))
 
         # Add identity diagonal blocks
-        identity_3x3 = np.eye(3, dtype=np.float64)
+        identity_3x3 = np.eye(3, dtype=np.float32)
         for i in range(n_verts):
             spmv.add_triplet(i, i, ti.Matrix(identity_3x3))
 
@@ -341,15 +341,15 @@ class TestSRBKSpMV(unittest.TestCase):
         n_verts = 4
         spmv = self.SRBKSpMV(10, n_verts * 3)
 
-        x = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-        y = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+        x = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+        y = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 
         # Add a symmetric off-diagonal entry (only upper triangle)
-        A_01 = np.array([[1, 0, 0], [0, 2, 0], [0, 0, 3]], dtype=np.float64)
+        A_01 = np.array([[1, 0, 0], [0, 2, 0], [0, 0, 3]], dtype=np.float32)
         spmv.add_triplet(0, 1, ti.Matrix(A_01))  # This should also contribute to (1,0)
 
         # Add diagonal
-        identity = np.eye(3, dtype=np.float64)
+        identity = np.eye(3, dtype=np.float32)
         for i in range(n_verts):
             spmv.add_triplet(i, i, ti.Matrix(identity))
 
@@ -372,7 +372,7 @@ class TestSRBKSpMV(unittest.TestCase):
         spmv = self.SRBKSpMV(20, n_verts * 3)
 
         # Add triplets out of order
-        identity = np.eye(3, dtype=np.float64)
+        identity = np.eye(3, dtype=np.float32)
         for i in [4, 1, 3, 0, 2]:
             spmv.add_triplet(i, i, ti.Matrix(identity))
 
@@ -860,7 +860,7 @@ class ModuleSpeedTests(unittest.TestCase):
 
         # Add random triplets
         np.random.seed(46)
-        identity = np.eye(3, dtype=np.float64)
+        identity = np.eye(3, dtype=np.float32)
         for _ in range(n_triplets):
             i = np.random.randint(0, n_verts)
             j = np.random.randint(0, n_verts)
@@ -881,7 +881,7 @@ class ModuleSpeedTests(unittest.TestCase):
         spmv = self.SRBKSpMV(n_verts * 10, n_verts * 3)
 
         # Create a sparse matrix (tridiagonal-like structure)
-        identity = np.eye(3, dtype=np.float64)
+        identity = np.eye(3, dtype=np.float32)
         for i in range(n_verts):
             spmv.add_triplet(i, i, ti.Matrix(identity))
             if i > 0:
@@ -891,11 +891,11 @@ class ModuleSpeedTests(unittest.TestCase):
 
         spmv.sort_by_row()
 
-        x = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-        y = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+        x = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+        y = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 
         np.random.seed(47)
-        x.from_numpy(np.random.randn(n_verts, 3).astype(np.float64))
+        x.from_numpy(np.random.randn(n_verts, 3).astype(np.float32))
 
         def spmv_func():
             spmv.spmv(x, y, alpha=1.0, beta=0.0)

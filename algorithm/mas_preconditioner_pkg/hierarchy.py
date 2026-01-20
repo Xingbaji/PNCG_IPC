@@ -349,7 +349,7 @@ class HierarchyMixin:
         Prolongation kernel for simple API (without mesh).
 
         Args:
-            z_out: Output vector field, ti.Vector.field(3, dtype=ti.f32/f64, shape=n_verts)
+            z_out: Output vector field, ti.Vector.field(3, dtype=ti.f32/f32, shape=n_verts)
             level_num: Number of levels in hierarchy
         """
         for idx in range(self.n_verts):

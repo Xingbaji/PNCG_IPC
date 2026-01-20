@@ -262,6 +262,7 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
     @ti.kernel
     def compute_E(self) -> float:
         E = 0.0
+        ti.mesh_local(self.mesh.verts.x, self.mesh.verts.x_hat, self.mesh.verts.m)
         for vert in self.mesh.verts:
             E += 0.5 * vert.m * (vert.x - vert.x_hat).norm_sqr()
         for c in self.mesh.cells:
@@ -400,6 +401,7 @@ class pncg_ipc_deformer(collision_detection_bvh_module):
     @ti.kernel
     def compute_pHp(self) -> float:
         ret = 0.0
+        ti.mesh_local(self.mesh.verts.x, self.mesh.verts.p, self.mesh.verts.m)
         for vert in self.mesh.verts:
             ret += vert.p.norm_sqr() * vert.m
         for c in self.mesh.cells:

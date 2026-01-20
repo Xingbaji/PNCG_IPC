@@ -78,8 +78,8 @@ class HessianMatvecMixin:
                    If False, use approximate coarse-level reconstruction.
 
         Example usage:
-            v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-            result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            v = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
+            result = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
             preconditioner.hessian_matvec(v, result)  # exact by default
             preconditioner.hessian_matvec(v, result, exact=False)  # approximate
         """
@@ -164,8 +164,8 @@ class HessianMatvecMixin:
         Compute H @ z where z comes from mesh.verts.z, result goes to mesh.verts.grad.
 
         Args:
-            z_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
-            result_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+            z_buffer: Temporary ti.Vector.field(3, ti.f32, shape=n_verts)
+            result_buffer: Temporary ti.Vector.field(3, ti.f32, shape=n_verts)
         """
         self._copy_z_to_buffer(z_buffer)
         self.hessian_matvec(z_buffer, result_buffer)
@@ -176,8 +176,8 @@ class HessianMatvecMixin:
         Compute EXACT H @ z where z comes from mesh.verts.z, result goes to mesh.verts.grad.
 
         Args:
-            z_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
-            result_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+            z_buffer: Temporary ti.Vector.field(3, ti.f32, shape=n_verts)
+            result_buffer: Temporary ti.Vector.field(3, ti.f32, shape=n_verts)
         """
         self._copy_z_to_buffer(z_buffer)
         self.hessian_matvec_exact(z_buffer, result_buffer)
@@ -210,9 +210,9 @@ class HessianMatvecMixin:
         for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
             idx_i = block_id * BANKSIZE + lane_i
             if idx_i < self.n_verts:
-                r0 = ti.f64(0.0)
-                r1 = ti.f64(0.0)
-                r2 = ti.f64(0.0)
+                r0 = ti.f32(0.0)
+                r1 = ti.f32(0.0)
+                r2 = ti.f32(0.0)
 
                 for lane_j in range(BANKSIZE):
                     idx_j = block_id * BANKSIZE + lane_j
@@ -234,7 +234,7 @@ class HessianMatvecMixin:
                             r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
                             r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
 
-                result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
+                result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f32)
 
     @ti.kernel
     def _hessian_matvec_level0_metis(self, v: ti.template(), result: ti.template()):
@@ -249,9 +249,9 @@ class HessianMatvecMixin:
                 idx_i = self.partId_map_real[part_idx_i]
 
                 if idx_i >= 0 and idx_i < self.n_verts:
-                    r0 = ti.f64(0.0)
-                    r1 = ti.f64(0.0)
-                    r2 = ti.f64(0.0)
+                    r0 = ti.f32(0.0)
+                    r1 = ti.f32(0.0)
+                    r2 = ti.f32(0.0)
 
                     for lane_j in range(BANKSIZE):
                         part_idx_j = block_id * BANKSIZE + lane_j
@@ -275,7 +275,7 @@ class HessianMatvecMixin:
                                 r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
                                 r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
 
-                    result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
+                    result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f32)
 
     # ========================================================================
     # Cross-Block SpMV Kernel
@@ -396,9 +396,9 @@ class HessianMatvecMixin:
         # For now, find fine vertices that aggregate to this coarse node
         for fine_idx in range(self.n_verts):
             if self.going_next[fine_idx] == coarse_idx:
-                ti.atomic_add(result[fine_idx][0], ti.f64(r0))
-                ti.atomic_add(result[fine_idx][1], ti.f64(r1))
-                ti.atomic_add(result[fine_idx][2], ti.f64(r2))
+                ti.atomic_add(result[fine_idx][0], ti.f32(r0))
+                ti.atomic_add(result[fine_idx][1], ti.f32(r1))
+                ti.atomic_add(result[fine_idx][2], ti.f32(r2))
 
     @ti.kernel
     def _clear_multi_level_buffers(self):

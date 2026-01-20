@@ -33,17 +33,23 @@ timeout 20s python cubic_demos.py --headless --frames 10
 
 ```
 PNCG_IPC/
-├── algorithm/              # Core solvers
-│   ├── mas_preconditioner_pkg/  # MAS preconditioner (modular)
-│   ├── mas_pncg_solver.py       # MAS-PNCG solver
-│   ├── collision_detection_bvh.py
-│   ├── gcp_contact_potential.py
-│   └── pncg_base_ipc.py
+├── algorithm/                      # Core solvers
+│   ├── mas_preconditioner_small/   # MAS preconditioner (默认，简化版)
+│   ├── mas_preconditioner_abd/     # MAS preconditioner (ABD系统集成)
+│   ├── mas_preconditioner_pkg/     # MAS preconditioner (完整版，已弃用)
+│   ├── mas_pncg_solver.py          # MAS-PNCG solver
+│   ├── base_deformer.py            # 基础变形器（网格、弹性模型）
+│   ├── pncg_base_collision_free.py # PNCG基类（无碰撞）
+│   ├── collision_detection_bvh.py  # BVH碰撞检测
+│   ├── pncg_base_ipc.py            # PNCG-IPC求解器
+│   ├── abd_system.py               # ABD仿射体动力学系统
+│   ├── pncg_abd_ipc.py             # 混合ABD-FEM求解器
+│   └── gcp_contact_potential.py    # GCP接触势能
 ├── math_utils/             # Elastic energy, matrix utilities
 ├── config/                 # Configuration system
 ├── demo/                   # Main demos
 ├── n_E_demos/              # N-body demos and benchmarks
-├── util/                   # Model loading utilities
+├── util/                   # Model loading utilities (含METIS自动重排序)
 ├── docs/                   # Documentation
 │   ├── algorithm/          # Algorithm implementation docs
 │   ├── design/             # Design & planning docs
@@ -58,12 +64,49 @@ PNCG_IPC/
 ```
 
 ### Class Hierarchy
-```
-base_deformer → collision_detection_bvh → pncg_base_ipc → Demo classes
 
-MASPreconditioner (algorithm/mas_preconditioner_pkg/)
-  - Mixin-based: core, assembly, topology, inversion, schwarz, hierarchy, woodbury, metis_integration
+**Deformer 继承链（核心物理模拟）：**
 ```
+base_deformer                      # 基类：网格加载、弹性模型、预计算
+    ↓
+pncg_base_deformer                 # PNCG求解器基类（无碰撞）
+    ↓
+collision_detection_bvh_module     # 添加BVH碰撞检测（PT/EE）
+    ↓
+pncg_ipc_deformer                  # IPC接触处理 + MAS预条件
+    ↓
+pncg_abd_ipc_deformer              # 混合ABD-FEM求解器（可选）
+    ↓
+Demo classes (cubic_demos, etc.)   # 具体场景
+```
+
+**关键类说明：**
+| 类名 | 文件 | 职责 |
+|------|------|------|
+| `base_deformer` | `algorithm/base_deformer.py` | 网格初始化、弹性能量(ARAP/SNH)、质量矩阵 |
+| `pncg_base_deformer` | `algorithm/pncg_base_collision_free.py` | PNCG优化框架、线搜索、收敛判定 |
+| `collision_detection_bvh_module` | `algorithm/collision_detection_bvh.py` | LBVH宽相、PT/EE窄相碰撞检测 |
+| `pncg_ipc_deformer` | `algorithm/pncg_base_ipc.py` | IPC势能、接触Hessian、MAS预条件器集成 |
+| `pncg_abd_ipc_deformer` | `algorithm/pncg_abd_ipc.py` | 混合ABD-FEM，支持仿射体动力学 |
+| `ABDSystem` | `algorithm/abd_system.py` | ABD仿射体：12D约化坐标、形状能量 |
+
+**MAS预条件器（三个版本）：**
+```
+mas_preconditioner_small/  (默认，推荐)
+  ├── core.py           # MASPreconditionerSmall 主类
+  └── metis_reorder.py  # METIS图划分重排序
+
+mas_preconditioner_abd/   (ABD集成)
+  └── core.py           # MASPreconditionerABD (FEM+ABD混合)
+
+mas_preconditioner_pkg/   (完整版，已弃用)
+  └── Mixin-based: core, assembly, topology, inversion, schwarz, hierarchy, woodbury
+```
+
+**METIS自动重排序：**
+- `util/model_loading.py` 在加载网格时自动应用METIS重排序
+- 顶点ID直接映射到块：`block_id = vertex_id // 16`, `lane_id = vertex_id % 16`
+- 无需运行时映射查找，apply时间 ~0.29ms
 
 ### Key Parameters
 
@@ -75,6 +118,7 @@ MASPreconditioner (algorithm/mas_preconditioner_pkg/)
 
 ## Testing
 
+构建测试时可以直接基于已有的 base_deformer
 **⚠️ CRITICAL: 修改代码后必须运行测试！**
 
 ```bash

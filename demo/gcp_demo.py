@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import taichi as ti
 
-ti.init(arch=ti.gpu, default_fp=ti.f64)
+ti.init(arch=ti.gpu, default_fp=ti.f32)
 
 from algorithm.collision_detection_bvh import collision_detection_bvh_module
 from algorithm.gcp_contact_potential import GCPModule, GCPConfig, gcp_barrier_E, gcp_barrier_g, gcp_barrier_H

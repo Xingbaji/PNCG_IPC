@@ -45,7 +45,7 @@ def test_metis_module():
     # Create a test mesh (3x3x3 grid -> 27 vertices, 40 tetrahedra)
     n_verts = 27
     vertices = np.array([[i, j, k] for i in range(3) for j in range(3) for k in range(3)],
-                        dtype=np.float64)
+                        dtype=np.float32)
 
     cells = []
     for i in range(2):
@@ -107,7 +107,7 @@ def test_metis_mas_integration():
     print("="*60)
 
     import taichi as ti
-    ti.init(arch=ti.gpu, default_fp=ti.f64)
+    ti.init(arch=ti.gpu, default_fp=ti.f32)
 
     from algorithm.mas_preconditioner_pkg import MASPreconditioner, BANKSIZE
 
@@ -153,7 +153,7 @@ def test_metis_partition_quality():
     size = 5
     n_verts = size ** 3
     vertices = np.array([[i, j, k] for i in range(size) for j in range(size) for k in range(size)],
-                        dtype=np.float64)
+                        dtype=np.float32)
 
     cells = []
     for i in range(size-1):
