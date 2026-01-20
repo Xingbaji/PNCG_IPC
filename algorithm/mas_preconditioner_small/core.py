@@ -263,11 +263,14 @@ class MASPreconditionerSmall:
 
     @ti.kernel
     def _add_inertia_contribution(self, dt: ti.f32):
-        """Add mass matrix to diagonal blocks."""
-        for idx in range(self.n_verts):
+        """Add mass matrix to diagonal blocks using MeshTaichi iterator."""
+        for vert in self.mesh.verts:
+            idx = vert.id
             warp_id = idx // BANKSIZE
             lane_id = idx % BANKSIZE
-            m = self.mesh.verts.m[idx]
+
+            # Access mass directly from vertex
+            m = vert.m
             sym_idx = sym_index(lane_id, lane_id)
             mass_val = m / (dt * dt)
             for d in ti.static(range(3)):
@@ -276,13 +279,15 @@ class MASPreconditionerSmall:
     @ti.kernel
     def _add_inertia_contribution_metis(self, dt: ti.f32):
         """Add mass matrix to diagonal blocks using METIS mapping."""
-        for idx in range(self.n_verts):
+        for vert in self.mesh.verts:
+            idx = vert.id
             # Get block and lane from METIS partition
             part_info = self.real_map_partId[idx]
             block_id = part_info // BANKSIZE
             lane_id = part_info % BANKSIZE
 
-            m = self.mesh.verts.m[idx]
+            # Access mass directly from vertex
+            m = vert.m
             sym_idx = sym_index(lane_id, lane_id)
             mass_val = m / (dt * dt)
             for d in ti.static(range(3)):
@@ -680,14 +685,47 @@ class MASPreconditionerSmall:
     @ti.kernel
     def _build_multi_level_r(self):
         """Build multi-level residual from gradient (non-METIS)."""
-        # Level 0: copy from mesh gradient
-        for i in range(self.n_verts):
-            self.multi_level_r[i] = ti.cast(self.mesh.verts.grad[i], ti.f32)
+        # Level 0: copy from mesh gradient using MeshTaichi iterator
+        for vert in self.mesh.verts:
+            idx = vert.id
+            self.multi_level_r[idx] = ti.cast(vert.grad, ti.f32)
 
         # Coarse levels: aggregate from fine via going_next
-        for i in range(self.n_verts):
-            r = self.multi_level_r[i]
-            coarse_idx = self.going_next[i]
+        for vert in self.mesh.verts:
+            idx = vert.id
+            r = self.multi_level_r[idx]
+            coarse_idx = self.going_next[idx]
+            if coarse_idx >= 0:
+                for d in ti.static(range(3)):
+                    ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
+
+        # Propagate to higher coarse levels
+        for level in range(1, self.level_num - 1):
+            level_offset = self.level_size[level][1]
+            level_size_val = self.level_size[level][0]
+
+            for i in range(level_size_val):
+                idx = level_offset + i
+                r = self.multi_level_r[idx]
+                coarse_idx = self.going_next[idx]
+                if coarse_idx >= 0:
+                    for d in ti.static(range(3)):
+                        ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
+
+    @ti.kernel
+    def _build_multi_level_r_metis(self):
+        """Build multi-level residual from gradient using METIS mapping."""
+        # Level 0: copy from mesh gradient to METIS-reordered positions
+        for vert in self.mesh.verts:
+            idx = vert.id
+            # Store at original position (METIS mapping is for blocks, not storage)
+            self.multi_level_r[idx] = ti.cast(vert.grad, ti.f32)
+
+        # Coarse levels: aggregate from fine via going_next
+        for vert in self.mesh.verts:
+            idx = vert.id
+            r = self.multi_level_r[idx]
+            coarse_idx = self.going_next[idx]
             if coarse_idx >= 0:
                 for d in ti.static(range(3)):
                     ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
@@ -879,12 +917,14 @@ class MASPreconditionerSmall:
 
         z_i = z_i^{(0)} + z_{parent(i)}^{(1)} + z_{grandparent(i)}^{(2)} + ...
         """
-        for i in range(self.n_verts):
+        # Use MeshTaichi iterator for natural mesh traversal
+        for vert in self.mesh.verts:
+            idx = vert.id
             # Start with level 0 contribution
-            z_total = ti.cast(self.multi_level_z[i], ti.f64)
+            z_total = ti.cast(self.multi_level_z[idx], ti.f64)
 
             # Traverse hierarchy to collect coarse contributions
-            coarse_idx = self.going_next[i]
+            coarse_idx = self.going_next[idx]
             for _ in range(1, level_num):
                 if coarse_idx >= 0:
                     z_coarse = self.multi_level_z[coarse_idx]
@@ -893,16 +933,18 @@ class MASPreconditionerSmall:
                 else:
                     break
 
-            self.mesh.verts.z[i] = z_total
+            # Write directly to mesh vertex field
+            vert.z = z_total
 
     def apply(self):
         """Apply MAS preconditioner: z = P * grad"""
         self._clear_multi_level_buffers()
-        self._build_multi_level_r()
 
         if self.use_metis:
+            self._build_multi_level_r_metis()
             self._schwarz_local_solve_banded_metis()
         else:
+            self._build_multi_level_r()
             self._schwarz_local_solve_banded()
 
         self._collect_final_z(self.level_num)
