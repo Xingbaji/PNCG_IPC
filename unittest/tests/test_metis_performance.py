@@ -59,6 +59,7 @@ from util.model_loading import model_loading
 from algorithm.mas_preconditioner_small import (
     MASPreconditionerSmall,
     compute_metis_reorder,
+    compute_optimized_cell_data,
     check_pymetis_available,
     BANKSIZE,
 )
@@ -429,6 +430,40 @@ class MetisPerformanceTester:
             _original_print(f"  {invert_times_metis}")
             _original_print(f"  {apply_times_metis}")
             _original_print(f"  {matvec_times_metis}")
+
+            # ====================================================================
+            # Test METIS Optimized Assembly
+            # ====================================================================
+            _original_print("\n" + "=" * 70)
+            _original_print("Testing METIS Optimized Assembly")
+            _original_print("=" * 70)
+
+            # Create preconditioner with METIS and optimized assembly
+            mas_metis_opt = MASPreconditionerSmall(self.mesh, metis_result=metis_result)
+            mas_metis_opt.init_optimized_assembly(self.cells_np)
+            mas_metis_opt.build_hierarchy()
+
+            # Benchmark optimized assemble
+            assemble_times_opt = TimingResult("assemble_optimized")
+            for i in range(warmup + n_iterations):
+                ti.sync()
+                t_start = time.perf_counter()
+                mas_metis_opt.assemble_block_matrices(self)
+                ti.sync()
+                t_end = time.perf_counter()
+                if i >= warmup:
+                    assemble_times_opt.add(t_end - t_start)
+
+            # Compare optimized vs regular METIS assembly
+            opt_speedup = assemble_times_metis.mean / assemble_times_opt.mean if assemble_times_opt.mean > 0 else 0
+            _original_print(f"  Regular METIS assemble: {assemble_times_metis.mean*1000:.3f}ms")
+            _original_print(f"  Optimized METIS assemble: {assemble_times_opt.mean*1000:.3f}ms")
+            _original_print(f"  Optimized speedup: {opt_speedup:.2f}x")
+
+            results['metis_optimized'] = {
+                'assemble': assemble_times_opt,
+            }
+
         else:
             _original_print("\n[SKIP] METIS not available - install pymetis for METIS testing")
 

@@ -107,8 +107,108 @@ class MASPreconditionerSmall:
         self.matrices_assembled = False
         self.matrices_inverted = False
 
+        # ====================================================================
+        # Cross-block coupling storage (triplet format for exact Hessian matvec)
+        # ====================================================================
+        # Estimate max cross-block entries: each tet can have up to 6 cross-block pairs
+        # (4 choose 2 = 6), each pair is a 3x3 block
+        max_cross_block_entries = self.n_cells * 6  # Upper bound
+
+        # Triplet storage: (row_vertex, col_vertex, 3x3 matrix)
+        self.cross_block_row = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
+        self.cross_block_col = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
+        self.cross_block_val = ti.Matrix.field(3, 3, dtype=ti.f32, shape=max_cross_block_entries)
+        self.cross_block_count = ti.field(dtype=ti.i32, shape=())  # Atomic counter
+        self.max_cross_block_entries = max_cross_block_entries
+        self.has_cross_block_data = False
+
+        # Optimized cell data (for METIS-optimized assembly)
+        self.optimized_cell_data = None
+        self.sorted_cells = None
+        self.use_optimized_assembly = False
+
         print(f"[MAS-Small] Initialized: {self.n_verts} verts, {self.level_num} levels, "
               f"{self.total_blocks} blocks")
+
+    def init_optimized_assembly(self, cells_np: np.ndarray):
+        """
+        Initialize optimized assembly data structures for METIS.
+
+        WARNING: This is EXPERIMENTAL and may not provide speedup on large meshes.
+        Testing shows:
+        - Small meshes (cube_20): ~1.10x speedup
+        - Large meshes (cube_40): ~0.73x (actually slower!)
+
+        The optimization precomputes:
+        1. Cell connectivity with METIS-reordered vertex IDs
+        2. Cells sorted by main partition to reduce atomic conflicts
+        3. B matrices and W values sorted by cell_order
+
+        Args:
+            cells_np: Original cell array of shape (n_cells, 4)
+
+        Call this after creating the preconditioner with METIS result.
+        Only use if benchmarking shows benefit for your specific mesh.
+        """
+        if not self.use_metis:
+            print("[MAS-Small] Optimized assembly requires METIS. Skipped.")
+            return
+
+        from .metis_reorder import compute_optimized_cell_data
+
+        self.optimized_cell_data = compute_optimized_cell_data(
+            cells_np, self.metis_result, BANKSIZE
+        )
+
+        if self.optimized_cell_data is not None:
+            # Allocate Taichi fields for sorted cells (METIS-reordered vertex IDs)
+            sorted_cells_np = self.optimized_cell_data['sorted_cells']
+            self.sorted_cells = ti.Vector.field(4, dtype=ti.i32, shape=self.n_cells)
+            self.sorted_cells.from_numpy(sorted_cells_np)
+
+            # Get cell_order for sorting B and W
+            cell_order_np = self.optimized_cell_data['cell_order'].astype(np.int32)
+
+            # Allocate and initialize sorted B matrices and W values
+            self.sorted_B = ti.Matrix.field(3, 3, dtype=ti.f64, shape=self.n_cells)
+            self.sorted_W = ti.field(dtype=ti.f64, shape=self.n_cells)
+            self.sorted_orig_cells = ti.Vector.field(4, dtype=ti.i32, shape=self.n_cells)
+
+            # Extract and sort B matrices and W values from mesh
+            self._extract_and_sort_cell_data(cell_order_np, cells_np)
+
+            self.use_optimized_assembly = True
+            ratio = self.optimized_cell_data['stats']['same_partition_ratio'] * 100
+            print(f"[MAS-Small] Optimized assembly enabled ({ratio:.1f}% same-partition cells)")
+
+    def _extract_and_sort_cell_data(self, cell_order: np.ndarray, cells_np: np.ndarray):
+        """Extract B matrices and W values from mesh and store in sorted order."""
+        # First, extract B and W data using a Taichi kernel
+        B_temp = ti.Matrix.field(3, 3, dtype=ti.f64, shape=self.n_cells)
+        W_temp = ti.field(dtype=ti.f64, shape=self.n_cells)
+
+        @ti.kernel
+        def extract_cell_data():
+            for c in self.mesh.cells:
+                c_idx = c.id
+                B_temp[c_idx] = c.B
+                W_temp[c_idx] = c.W
+
+        extract_cell_data()
+
+        # Convert to numpy for sorting
+        B_matrices = B_temp.to_numpy()
+        W_values = W_temp.to_numpy()
+
+        # Sort by cell_order
+        sorted_B = B_matrices[cell_order]
+        sorted_W = W_values[cell_order]
+        sorted_orig_cells = cells_np[cell_order]
+
+        # Copy to Taichi fields using numpy
+        self.sorted_B.from_numpy(sorted_B)
+        self.sorted_W.from_numpy(sorted_W)
+        self.sorted_orig_cells.from_numpy(sorted_orig_cells)
 
     def _compute_level_num(self, n_verts: int) -> int:
         """Compute number of hierarchy levels."""
@@ -554,13 +654,135 @@ class MASPreconditionerSmall:
                                     for dj in ti.static(range(3)):
                                         ti.atomic_add(self.block_matrices[coarse_block_c, coarse_s_idx][di, dj], mat3[dj, di])
 
+    @ti.kernel
+    def _add_elastic_contribution_arap_optimized_full(self, mu: ti.f32, la: ti.f32, dt: ti.f32):
+        """
+        Optimized ARAP elastic Hessian contribution using sorted cells.
+
+        Key optimizations:
+        1. Cells are sorted by main partition (reduces atomic conflicts)
+        2. METIS-reordered vertex IDs allow direct block/lane computation
+        3. B and W are pre-extracted and sorted, avoiding mesh cell access
+
+        This kernel uses pre-sorted data for maximum efficiency.
+        """
+        for sorted_idx in range(self.n_cells):
+            # Access pre-sorted W and B
+            W = self.sorted_W[sorted_idx]
+            para = W * dt * dt
+
+            # Get pre-computed METIS-reordered vertex IDs
+            cell = self.sorted_cells[sorted_idx]
+            new_v0, new_v1, new_v2, new_v3 = cell[0], cell[1], cell[2], cell[3]
+
+            # Block and lane computed directly from METIS-ordered IDs
+            # No need for real_map_partId lookup!
+            block_ids = ti.Vector([new_v0 // BANKSIZE, new_v1 // BANKSIZE,
+                                   new_v2 // BANKSIZE, new_v3 // BANKSIZE])
+            lane_ids = ti.Vector([new_v0 % BANKSIZE, new_v1 % BANKSIZE,
+                                  new_v2 % BANKSIZE, new_v3 % BANKSIZE])
+            v_ids = ti.Vector([new_v0, new_v1, new_v2, new_v3])
+
+            # Access pre-sorted B matrix and original vertex IDs for position access
+            B = self.sorted_B[sorted_idx]
+            orig_cell = self.sorted_orig_cells[sorted_idx]
+
+            # Get vertex positions using original vertex IDs
+            x0 = self.mesh.verts.x[orig_cell[0]]
+            x1 = self.mesh.verts.x[orig_cell[1]]
+            x2 = self.mesh.verts.x[orig_cell[2]]
+            x3 = self.mesh.verts.x[orig_cell[3]]
+
+            # Compute deformation gradient
+            Ds = ti.Matrix.cols([x1 - x0, x2 - x0, x3 - x0])
+            F = Ds @ B
+
+            # Compute element Hessian
+            dFdx = compute_dFdx(B)
+            d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
+            temp = d2PsidF2 @ dFdx
+            H_e = dFdx.transpose() @ temp
+            H_e = para * H_e
+
+            # Assemble to block matrices
+            for i in ti.static(range(4)):
+                for j in ti.static(range(i, 4)):
+                    block_i = block_ids[i]
+                    block_j = block_ids[j]
+                    lane_i = lane_ids[i]
+                    lane_j = lane_ids[j]
+
+                    if block_i == block_j:
+                        # Same METIS partition: direct assembly
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
+                        for di in ti.static(range(3)):
+                            for dj in ti.static(range(3)):
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
+                        if lane_i <= lane_j:
+                            s_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                  sub_block[di, dj])
+                        else:
+                            s_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                            for di in ti.static(range(3)):
+                                for dj in ti.static(range(3)):
+                                    ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                  sub_block[dj, di])
+                    else:
+                        # Cross-partition: propagate to coarse level
+                        vert_i = v_ids[i]
+                        vert_j = v_ids[j]
+
+                        sub_block = ti.Matrix.zero(ti.f32, 3, 3)
+                        for di in ti.static(range(3)):
+                            for dj in ti.static(range(3)):
+                                sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
+
+                        for _ in range(self.level_num - 1):
+                            vert_i = self.going_next[vert_i]
+                            vert_j = self.going_next[vert_j]
+
+                            if vert_i < 0 or vert_j < 0:
+                                break
+
+                            coarse_warp_i = vert_i // BANKSIZE
+                            coarse_warp_j = vert_j // BANKSIZE
+
+                            if coarse_warp_i == coarse_warp_j:
+                                coarse_lane_i = vert_i % BANKSIZE
+                                coarse_lane_j = vert_j % BANKSIZE
+
+                                if coarse_lane_i <= coarse_lane_j:
+                                    s_idx = BANKSIZE * coarse_lane_i - coarse_lane_i * (coarse_lane_i + 1) // 2 + coarse_lane_j
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                          sub_block[di, dj])
+                                            if coarse_lane_i == coarse_lane_j:
+                                                ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                              sub_block[dj, di])
+                                else:
+                                    s_idx = BANKSIZE * coarse_lane_j - coarse_lane_j * (coarse_lane_j + 1) // 2 + coarse_lane_i
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[coarse_warp_i, s_idx][di, dj],
+                                                          sub_block[dj, di])
+                                break
+
     def assemble_block_matrices(self, solver):
         """Assemble Hessian contributions into block matrices."""
         self._clear_block_matrices()
 
         if self.use_metis:
             self._add_inertia_contribution_metis(solver.dt)
-            self._add_elastic_contribution_arap_metis(solver.mu, solver.la, solver.dt)
+            # Use optimized assembly if available, otherwise fallback
+            if self.use_optimized_assembly and self.sorted_cells is not None:
+                self._add_elastic_contribution_arap_optimized_full(solver.mu, solver.la, solver.dt)
+            else:
+                self._add_elastic_contribution_arap_metis(solver.mu, solver.la, solver.dt)
         else:
             self._add_inertia_contribution(solver.dt)
             self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
@@ -972,7 +1194,23 @@ class MASPreconditionerSmall:
         self._collect_final_z(self.level_num)
 
     # ========================================================================
-    # Hessian Matrix-Vector Multiplication
+    # Block-Diagonal Hessian Matrix-Vector Multiplication
+    # ========================================================================
+    #
+    # IMPORTANT NOTE ON hessian_matvec:
+    # The MAS preconditioner's multi-level block matrices are designed for
+    # PRECONDITIONING, not for exact Hessian matvec.
+    #
+    # - Level 0 stores only INTRA-BLOCK coupling (entries within same 16-node block)
+    # - Cross-block coupling is stored in coarse levels, but the storage format
+    #   is designed for additive Schwarz preconditioning, NOT for exact matvec.
+    #
+    # The reference implementation (Stiff-GIPC) uses a SEPARATE triplet-format
+    # sparse matrix for exact H @ v (see spmv.cu), not the MAS block matrices.
+    #
+    # The hessian_matvec function below attempts to reconstruct H @ v from the
+    # multi-level structure, but this is an APPROXIMATION, not exact.
+    # For exact H @ v, use the original triplet-format sparse Hessian.
     # ========================================================================
 
     @ti.kernel
@@ -1110,16 +1348,21 @@ class MASPreconditionerSmall:
 
     def hessian_matvec(self, v: ti.template(), result: ti.template()):
         """
-        Compute result = H @ v where H is the full assembled Hessian matrix.
+        Compute result ≈ H @ v using the multi-level block matrices.
 
-        This includes both:
-        1. Level 0 block-diagonal contributions (intra-block coupling)
-        2. Coarse-level contributions (cross-block coupling)
+        WARNING: This is an APPROXIMATION, not exact Hessian matvec!
 
-        The full Hessian is:
-            H_full = H_level0_block_diag + sum_coarse_levels(P^T @ H_coarse @ P)
+        The MAS preconditioner stores Hessian in a multi-level block structure
+        designed for preconditioning, not for exact matvec:
+        - Level 0: intra-block coupling only (16x16 node blocks)
+        - Coarse levels: cross-block coupling (aggregated, not exact)
 
-        where P is the prolongation (restriction^T) operator.
+        This function attempts to reconstruct H @ v by:
+        1. Level 0 block-diagonal contribution
+        2. Coarse-level contributions via restriction/prolongation
+
+        For EXACT H @ v, use the original triplet-format sparse Hessian
+        (like the reference implementation's spmv.cu).
 
         Args:
             v: Input vector field with 3D vectors (indexed by vertex id)

@@ -297,3 +297,79 @@ def extract_cells_from_mesh(mesh) -> np.ndarray:
         return None
 
     return np.array(cells_list, dtype=np.int32)
+
+
+def compute_optimized_cell_data(cells: np.ndarray, metis_result: MetisReorderResult,
+                                 block_size: int = BANKSIZE) -> dict:
+    """
+    Compute optimized cell data for METIS-aware assembly.
+
+    This function precomputes:
+    1. Reordered cell connectivity (vertex IDs mapped to METIS order)
+    2. Cell processing order (sorted by main partition to reduce atomic conflicts)
+
+    Args:
+        cells: Original cell array of shape (n_cells, 4)
+        metis_result: Pre-computed MetisReorderResult
+        block_size: Block size (default: BANKSIZE=16)
+
+    Returns:
+        dict with:
+            'sorted_cells': np.ndarray of shape (n_cells, 4) with METIS-reordered vertex IDs,
+                           sorted by main partition
+            'cell_order': np.ndarray of shape (n_cells,) mapping sorted index to original index
+            'cell_main_partition': np.ndarray of shape (n_cells,) with main partition per cell
+            'stats': dict with statistics
+    """
+    if cells is None or metis_result is None:
+        return None
+
+    n_cells = len(cells)
+    old_to_new = metis_result.old_to_new
+
+    # Step 1: Reorder cell vertex IDs and compute main partition
+    reordered_cells = np.zeros((n_cells, 4), dtype=np.int32)
+    cell_main_partition = np.zeros(n_cells, dtype=np.int32)
+
+    same_partition_count = 0
+
+    for c_idx in range(n_cells):
+        parts = []
+        for i in range(4):
+            old_v = cells[c_idx, i]
+            new_v = old_to_new[old_v]
+            reordered_cells[c_idx, i] = new_v
+            parts.append(new_v // block_size)  # partition = block
+
+        # Main partition: most common among the 4 vertices
+        from collections import Counter
+        part_counts = Counter(parts)
+        cell_main_partition[c_idx] = part_counts.most_common(1)[0][0]
+
+        # Count cells with all 4 vertices in same partition
+        if len(set(parts)) == 1:
+            same_partition_count += 1
+
+    # Step 2: Sort cells by main partition (stable sort preserves original order within partition)
+    cell_order = np.argsort(cell_main_partition, kind='stable')
+
+    # Step 3: Reorder cells according to sorted order
+    sorted_cells = reordered_cells[cell_order]
+
+    # Compute statistics
+    stats = {
+        'n_cells': n_cells,
+        'same_partition_cells': same_partition_count,
+        'same_partition_ratio': same_partition_count / n_cells if n_cells > 0 else 0,
+        'n_partitions': metis_result.n_parts,
+    }
+
+    print(f"[METIS] Cell optimization:")
+    print(f"  - Same partition cells: {same_partition_count}/{n_cells} ({stats['same_partition_ratio']*100:.1f}%)")
+
+    return {
+        'sorted_cells': sorted_cells,
+        'cell_order': cell_order,
+        'cell_main_partition': cell_main_partition,
+        'stats': stats,
+    }

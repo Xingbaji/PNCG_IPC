@@ -31,6 +31,7 @@ from .core import MASPreconditionerSmall
 from .metis_reorder import (
     MetisReorderResult,
     compute_metis_reorder,
+    compute_optimized_cell_data,
     extract_cells_from_mesh,
     check_pymetis_available,
     BANKSIZE,
@@ -40,6 +41,7 @@ __all__ = [
     'MASPreconditionerSmall',
     'MetisReorderResult',
     'compute_metis_reorder',
+    'compute_optimized_cell_data',
     'extract_cells_from_mesh',
     'check_pymetis_available',
     'BANKSIZE',
