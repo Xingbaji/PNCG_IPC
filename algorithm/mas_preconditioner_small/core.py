@@ -1272,6 +1272,95 @@ class MASPreconditionerSmall:
                     self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
 
     @ti.kernel
+    def _schwarz_local_solve_banded_reordered(self):
+        """Banded solve for METIS pre-reordered mesh.
+
+        Since mesh is pre-reordered, vertex IDs directly correspond to partitions:
+        - block_id = vertex_id // BANKSIZE
+        - lane_id = vertex_id % BANKSIZE
+
+        No mapping lookup needed, but can use banded approximation since
+        vertices in the same block are topologically adjacent (METIS property).
+        """
+        NODE_BANDWIDTH = 2
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Level 0: Banded block matvec (direct indexing)
+        for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
+            idx_i = block_id * BANKSIZE + lane_i
+            if idx_i < self.n_verts:
+                z0 = ti.f32(0.0)
+                z1 = ti.f32(0.0)
+                z2 = ti.f32(0.0)
+
+                # Banded iteration: only ±NODE_BANDWIDTH neighbors
+                lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                for lane_j in range(lane_j_start, lane_j_end):
+                    idx_j = block_id * BANKSIZE + lane_j
+                    if idx_j < self.n_verts:
+                        r_j = self.multi_level_r[idx_j]
+
+                        min_lane = ti.min(lane_i, lane_j)
+                        max_lane = ti.max(lane_i, lane_j)
+                        s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                        inv_block = self.inv_block_matrices[block_id, s_idx]
+
+                        if lane_i <= lane_j:
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                            z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                            z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                        else:
+                            z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                            z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                            z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+        # Coarse levels: Banded block matvec
+        for level in range(1, self.level_num):
+            level_offset = self.level_size[level][1]
+            level_size_val = self.level_size[level][0]
+            n_coarse_blocks = (level_size_val + BANKSIZE - 1) // BANKSIZE
+
+            for local_block_id, lane_i in ti.ndrange(n_coarse_blocks, BANKSIZE):
+                first_node_in_block = level_offset + local_block_id * BANKSIZE
+                block_id = first_node_in_block // BANKSIZE
+
+                idx_i = level_offset + local_block_id * BANKSIZE + lane_i
+                if idx_i < level_offset + level_size_val:
+                    z0 = ti.f32(0.0)
+                    z1 = ti.f32(0.0)
+                    z2 = ti.f32(0.0)
+
+                    lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
+                    lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
+
+                    for lane_j in range(lane_j_start, lane_j_end):
+                        idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                        if idx_j < level_offset + level_size_val:
+                            r_j = self.multi_level_r[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            inv_block = self.inv_block_matrices[block_id, s_idx]
+
+                            if lane_i <= lane_j:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
+                                z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
+                                z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
+                            else:
+                                z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
+                                z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
+                                z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
+
+                    self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
+
+    @ti.kernel
     def _collect_final_z(self, level_num: ti.i32):
         """
         Collect z from all levels (prolongation).
@@ -1303,31 +1392,31 @@ class MASPreconditionerSmall:
     def apply(self):
         """Apply MAS preconditioner: z = P * grad
 
-        Uses FULL block matrix multiplication (not banded) to match
-        the reference CUDA implementation.
+        Three modes with different solve strategies:
+        1. No METIS: sequential blocks, full 16x16 solve (no locality guarantee)
+        2. METIS runtime mapping: banded solve with mapping lookup
+        3. METIS pre-reordered: banded solve with direct indexing (fastest)
 
-        Three modes:
-        1. No METIS: sequential blocks, direct access
-        2. METIS runtime mapping: uses partId_map_real lookup
-        3. METIS pre-reordered: mesh already in METIS order, uses direct access (same as mode 1)
+        METIS modes use banded solve because METIS partitions have topological
+        locality - vertices in the same block are mesh neighbors, so the
+        Hessian coupling is concentrated near the diagonal.
         """
         self._clear_multi_level_buffers()
 
         if self.metis_reordered:
             # Pre-reordered mode: vertex IDs are already in METIS partition order
-            # Use the same kernels as non-METIS (no mapping lookup needed!)
+            # Can use banded solve (METIS locality) + no mapping lookup needed!
             self._build_multi_level_r()
-            self._schwarz_local_solve_full()
+            self._schwarz_local_solve_banded_reordered()  # O(5) banded, no mapping
         elif self.use_metis:
             # Runtime mapping mode: need partId_map_real lookup
             self._build_multi_level_r_metis()
-            # TODO: Add _schwarz_local_solve_full_metis for METIS support
-            self._schwarz_local_solve_banded_metis()
+            self._schwarz_local_solve_banded_metis()  # O(5) banded, with mapping
         else:
-            # No METIS: sequential blocks
+            # No METIS: sequential blocks have no locality guarantee
+            # Must use full 16x16 solve for accuracy
             self._build_multi_level_r()
-            # Use FULL block matvec (not banded) to match reference impl
-            self._schwarz_local_solve_full()
+            self._schwarz_local_solve_full()  # O(16) full
 
         self._collect_final_z(self.level_num)
 
