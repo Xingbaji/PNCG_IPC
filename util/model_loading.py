@@ -651,6 +651,65 @@ class model_loading:
                          }
             self.load_demo_n_object_collision_free(demo, demo_dict)
 
+        # ========== Eight E Free-Fall Validation Tests ==========
+        # 8 E-shaped objects free-fall test (no collision)
+        elif demo == 'eight_E_freefall':
+            demo_dict = {
+                'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'epsilon': 1e-6, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
+                'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
+                'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
+                'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
+                'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
+                'camera_position': [2.02077697, -0.54062709, 2.59427191],
+                'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
+            }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        elif demo == 'eight_E_freefall_mas':
+            # 8 E-shaped objects free-fall test with MAS preconditioner
+            demo_dict = {
+                'E': 1e4, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'epsilon': 1e-6, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
+                'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
+                'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
+                'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
+                'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
+                'camera_position': [2.02077697, -0.54062709, 2.59427191],
+                'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
+                'use_mas': True,
+            }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        # High-stiffness version (E=1e7) - for testing MAS benefits
+        elif demo == 'eight_E_freefall_stiff':
+            demo_dict = {
+                'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'epsilon': 1e-6, 'iter_max': 200, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
+                'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
+                'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
+                'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
+                'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
+                'camera_position': [2.02077697, -0.54062709, 2.59427191],
+                'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
+            }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
+        elif demo == 'eight_E_freefall_stiff_mas':
+            # High-stiffness with MAS preconditioner
+            demo_dict = {
+                'E': 1e7, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
+                'epsilon': 1e-6, 'iter_max': 200, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
+                'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
+                'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
+                'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
+                'translations': [[1.5 * j, 1.5 * i, 0.0] for i in range(4) for j in range(2)],
+                'camera_position': [2.02077697, -0.54062709, 2.59427191],
+                'camera_lookat': [1.34371885, -0.79285719, 1.90291651],
+                'use_mas': True,
+            }
+            self.load_demo_n_object_collision_free(demo, demo_dict)
+
         else:
             raise Exception('demo not found')
 

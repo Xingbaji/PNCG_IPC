@@ -28,6 +28,7 @@ from .hierarchy import HierarchyMixin
 from .woodbury import WoodburyMixin
 from .metis_integration import METISMixin
 from .simple_api import SimpleAPIMixin
+from .hessian_matvec import HessianMatvecMixin
 
 
 @ti.data_oriented
@@ -39,7 +40,8 @@ class MASPreconditioner(
     HierarchyMixin,
     WoodburyMixin,
     METISMixin,
-    SimpleAPIMixin
+    SimpleAPIMixin,
+    HessianMatvecMixin
 ):
     """
     Multilevel Additive Schwarz preconditioner for PNCG optimization.
@@ -57,6 +59,7 @@ class MASPreconditioner(
     - WoodburyMixin: Sparse-Input Woodbury updates
     - METISMixin: METIS-based reordering
     - SimpleAPIMixin: Simplified API without meshtaichi
+    - HessianMatvecMixin: Hessian matrix-vector multiplication
     """
 
     def __init__(self, n_verts: int, n_cells: int, mesh, use_metis: bool = True,
@@ -244,6 +247,9 @@ class MASPreconditioner(
 
         # SharedArray optimization: cell-to-warp mapping for reduction
         self._allocate_cell_warp_mapping()
+
+        # Cross-block triplet storage for exact hessian_matvec
+        self._allocate_cross_block_storage()
 
     def _allocate_cell_warp_mapping(self):
         """

@@ -1390,161 +1390,24 @@ class MASPreconditionerSmall:
 
                 result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
 
-    @ti.kernel
-    def _restrict_v_to_coarse(self, v: ti.template(), v_coarse: ti.template(), level_num: ti.i32):
+    def hessian_matvec(self, v: ti.template(), result: ti.template()):
         """
-        Restrict input vector v to all coarse levels.
+        Compute result = H @ v EXACTLY using block-diagonal + cross-block triplets.
 
-        For each fine vertex, aggregate v to its parent in going_next hierarchy.
-        v_coarse stores aggregated values for all levels (including level 0 copy).
-        """
-        # Copy level 0
-        for i in range(self.n_verts):
-            v_coarse[i] = v[i]
-
-        # Aggregate to coarse levels
-        for i in range(self.n_verts):
-            v_i = v[i]
-            coarse_idx = self.going_next[i]
-            if coarse_idx >= 0:
-                for d in ti.static(range(3)):
-                    ti.atomic_add(v_coarse[coarse_idx][d], v_i[d])
-
-        # Propagate to higher levels
-        for level in range(1, level_num - 1):
-            level_offset = self.level_size[level][1]
-            level_size_val = self.level_size[level][0]
-
-            for i in range(level_size_val):
-                idx = level_offset + i
-                v_i = v_coarse[idx]
-                coarse_idx = self.going_next[idx]
-                if coarse_idx >= 0:
-                    for d in ti.static(range(3)):
-                        ti.atomic_add(v_coarse[coarse_idx][d], v_i[d])
-
-    @ti.kernel
-    def _hessian_matvec_coarse_levels(self, v_coarse: ti.template(), result: ti.template(), level_num: ti.i32):
-        """
-        Compute coarse-level Hessian contributions and add to result.
-
-        For each fine vertex i:
-          result[i] += sum over coarse levels of H_coarse[parent(i), :] @ v_coarse[:]
-
-        The coarse-level matrices store the cross-block coupling from the fine level.
-        """
-        # For each fine vertex, traverse hierarchy and accumulate contributions
-        for i in range(self.n_verts):
-            coarse_idx = self.going_next[i]
-
-            for level in range(1, level_num):
-                if coarse_idx < 0:
-                    break
-
-                level_offset = self.level_size[level][1]
-                level_size_val = self.level_size[level][0]
-
-                # Compute block and lane for this coarse node
-                local_idx = coarse_idx - level_offset
-                block_id = coarse_idx // BANKSIZE
-                lane_i = local_idx % BANKSIZE
-
-                r0 = ti.f64(0.0)
-                r1 = ti.f64(0.0)
-                r2 = ti.f64(0.0)
-
-                # Iterate over all nodes in the coarse block
-                local_block_id = local_idx // BANKSIZE
-
-                for lane_j in range(BANKSIZE):
-                    idx_j = level_offset + local_block_id * BANKSIZE + lane_j
-                    if idx_j < level_offset + level_size_val:
-                        v_j = v_coarse[idx_j]
-
-                        min_lane = ti.min(lane_i, lane_j)
-                        max_lane = ti.max(lane_i, lane_j)
-                        s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
-
-                        H_block = self.block_matrices[block_id, s_idx]
-
-                        if lane_i <= lane_j:
-                            r0 += H_block[0, 0] * v_j[0] + H_block[0, 1] * v_j[1] + H_block[0, 2] * v_j[2]
-                            r1 += H_block[1, 0] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[1, 2] * v_j[2]
-                            r2 += H_block[2, 0] * v_j[0] + H_block[2, 1] * v_j[1] + H_block[2, 2] * v_j[2]
-                        else:
-                            r0 += H_block[0, 0] * v_j[0] + H_block[1, 0] * v_j[1] + H_block[2, 0] * v_j[2]
-                            r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
-                            r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
-
-                # Add to result
-                result[i][0] += r0
-                result[i][1] += r1
-                result[i][2] += r2
-
-                # Move to next coarse level
-                coarse_idx = self.going_next[coarse_idx]
-
-    def hessian_matvec(self, v: ti.template(), result: ti.template(), exact: bool = True):
-        """
-        Compute result = H @ v using the MAS block matrices.
-
-        By default, uses the EXACT method with cross-block triplet storage.
-        Set exact=False to use the approximate coarse-level reconstruction.
+        This function computes the EXACT Hessian matrix-vector product by:
+        1. Level 0 block-diagonal contribution (intra-block coupling)
+        2. Cross-block coupling from triplet storage
 
         Args:
             v: Input vector field with 3D vectors (indexed by vertex id)
             result: Output vector field with 3D vectors (indexed by vertex id)
-            exact: If True (default), use exact cross-block triplets.
-                   If False, use approximate coarse-level reconstruction.
 
         Example usage:
             v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
             result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-            preconditioner.hessian_matvec(v, result)  # exact by default
-            preconditioner.hessian_matvec(v, result, exact=False)  # approximate
+            preconditioner.hessian_matvec(v, result)
         """
-        if exact:
-            self.hessian_matvec_exact(v, result)
-        else:
-            self.hessian_matvec_approx(v, result)
-
-    def hessian_matvec_approx(self, v: ti.template(), result: ti.template()):
-        """
-        Compute result ≈ H @ v using approximate coarse-level reconstruction.
-
-        WARNING: This is an APPROXIMATION, not exact Hessian matvec!
-
-        The MAS preconditioner stores Hessian in a multi-level block structure
-        designed for preconditioning, not for exact matvec:
-        - Level 0: intra-block coupling only (16x16 node blocks)
-        - Coarse levels: cross-block coupling (aggregated, not exact)
-
-        This function attempts to reconstruct H @ v by:
-        1. Level 0 block-diagonal contribution
-        2. Coarse-level contributions via restriction/prolongation
-
-        For EXACT H @ v, use hessian_matvec() or hessian_matvec_exact().
-
-        Args:
-            v: Input vector field with 3D vectors (indexed by vertex id)
-            result: Output vector field with 3D vectors (indexed by vertex id)
-        """
-        if not self.matrices_assembled:
-            raise RuntimeError("Matrices not assembled. Call assemble_block_matrices first.")
-
-        # Step 1: Compute level 0 block-diagonal contribution
-        if self.use_metis:
-            self._hessian_matvec_level0_metis(v, result)
-        else:
-            self._hessian_matvec_level0_block_diag(v, result)
-
-        # Step 2: Add coarse-level contributions (cross-block coupling)
-        if self.level_num > 1:
-            # Restrict v to coarse levels
-            self._clear_multi_level_buffers()  # Reuse multi_level_r as v_coarse buffer
-            self._restrict_v_to_coarse(v, self.multi_level_r, self.level_num)
-            # Compute and add coarse contributions
-            self._hessian_matvec_coarse_levels(self.multi_level_r, result, self.level_num)
+        self.hessian_matvec_exact(v, result)
 
     @ti.kernel
     def _hessian_matvec_level0_metis(self, v: ti.template(), result: ti.template()):

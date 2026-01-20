@@ -17,6 +17,7 @@ The implementation is split into several modules for better organization:
 - simple_api.py: Simplified API without meshtaichi
 - spmv.py: SRBK SpMV implementation
 - warp_utils.py: Bit manipulation and warp reduction utilities
+- hessian_matvec.py: Exact Hessian matrix-vector multiplication
 
 Usage:
     from algorithm.mas_preconditioner_pkg import MASPreconditioner
@@ -78,8 +79,11 @@ from .metis_integration import (
     greedy_partition,
 )
 
+# Hessian matvec mixin
+from .hessian_matvec import HessianMatvecMixin
+
 # Module version
-__version__ = "1.1.0"  # Added partition quality metrics and greedy partition
+__version__ = "1.2.0"  # Added HessianMatvecMixin for exact hessian matvec
 
 # All public exports
 __all__ = [
@@ -98,6 +102,7 @@ __all__ = [
     # Utilities
     "SRBKSpMV",
     "WarpReductionHelper",
+    "HessianMatvecMixin",
 
     # METIS integration
     "metis_reorder_mesh",

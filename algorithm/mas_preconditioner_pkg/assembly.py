@@ -186,7 +186,7 @@ class AssemblyMixin:
                                     ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj],
                                                   sub_block[dj, di])
                     else:
-                        # Cross-warp: propagate to coarse level via goingNext
+                        # Cross-warp: store in triplet format AND propagate to coarse level
                         vert_i = v_ids[i]
                         vert_j = v_ids[j]
 
@@ -195,6 +195,23 @@ class AssemblyMixin:
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
 
+                        # Store cross-block entry in triplet format for exact Hessian matvec
+                        orig_i = v_ids[i]
+                        orig_j = v_ids[j]
+                        triplet_idx = ti.atomic_add(self.cross_block_count[None], 1)
+                        if triplet_idx < self.max_cross_block_entries:
+                            if orig_i <= orig_j:
+                                self.cross_block_row[triplet_idx] = orig_i
+                                self.cross_block_col[triplet_idx] = orig_j
+                                self.cross_block_val[triplet_idx] = sub_block
+                            else:
+                                self.cross_block_row[triplet_idx] = orig_j
+                                self.cross_block_col[triplet_idx] = orig_i
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        self.cross_block_val[triplet_idx][di, dj] = sub_block[dj, di]
+
+                        # Also propagate to coarse levels for preconditioning
                         for _ in range(self.level_num - 1):
                             vert_i = self.going_next[vert_i]
                             vert_j = self.going_next[vert_j]
@@ -301,7 +318,7 @@ class AssemblyMixin:
                                 for dj in ti.static(range(3)):
                                     ti.atomic_add(self.block_matrices[warp_i, sym_idx][di, dj], sub_block[dj, di])
                     else:
-                        # Cross-warp: propagate to coarse level via goingNext
+                        # Cross-warp: store in triplet format AND propagate to coarse level
                         vert_i = vi
                         vert_j = vj
 
@@ -310,6 +327,21 @@ class AssemblyMixin:
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
 
+                        # Store cross-block entry in triplet format for exact Hessian matvec
+                        triplet_idx = ti.atomic_add(self.cross_block_count[None], 1)
+                        if triplet_idx < self.max_cross_block_entries:
+                            if vi <= vj:
+                                self.cross_block_row[triplet_idx] = vi
+                                self.cross_block_col[triplet_idx] = vj
+                                self.cross_block_val[triplet_idx] = sub_block
+                            else:
+                                self.cross_block_row[triplet_idx] = vj
+                                self.cross_block_col[triplet_idx] = vi
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        self.cross_block_val[triplet_idx][di, dj] = sub_block[dj, di]
+
+                        # Also propagate to coarse levels for preconditioning
                         for _ in range(self.level_num - 1):
                             vert_i = self.going_next[vert_i]
                             vert_j = self.going_next[vert_j]
@@ -607,8 +639,9 @@ class AssemblyMixin:
         """
         print("[MAS] Assembling block matrices...")
 
-        # Clear matrices
+        # Clear matrices and cross-block storage
         self._clear_block_matrices()
+        self._clear_cross_block_storage()
 
         # Add inertia contribution (mass matrix)
         self._add_inertia_contribution(solver.dt)
@@ -647,4 +680,5 @@ class AssemblyMixin:
             # self._add_regularization_coarse(1e-3, self.actual_levels)
 
         self.matrices_assembled = True
+        self.has_cross_block_data = True
         print("[MAS] Block matrices assembled")

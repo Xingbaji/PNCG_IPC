@@ -17,8 +17,7 @@ import taichi as ti
 import numpy as np
 from algorithm.collision_detection_bvh import *
 from util.model_loading import *
-from algorithm.mas_preconditioner_pkg import MASPreconditioner, BANKSIZE
-from math_utils.matrix_util import compute_dFdx_p, compute_dFdxT_p
+from algorithm.mas_preconditioner_small import MASPreconditionerSmall, BANKSIZE
 
 # Constants
 RESTART_THRESHOLD = 0.3  # Powell's restart threshold (delta)
@@ -64,7 +63,6 @@ class MASPNCGSolver(collision_detection_bvh_module):
             'grad': ti.types.vector(3, float),       # Gradient
             'grad_prev': ti.types.vector(3, float),  # Previous gradient
             'p': ti.types.vector(3, float),          # Search direction
-            'diagH': ti.types.vector(3, float),      # Diagonal Hessian approx
             'z': ti.types.vector(3, float),          # Preconditioned gradient P*g
             'z_prev': ti.types.vector(3, float),     # Previous z (for Powell criterion)
             'w': ti.types.vector(3, float),          # H*p (Hessian-vector product)
@@ -108,10 +106,14 @@ class MASPNCGSolver(collision_detection_bvh_module):
         self.config['dHat'] = self.dHat
         self.config['kappa'] = self.kappa
 
-        # MAS Preconditioner
-        print('Initializing MAS preconditioner...')
-        self.mas_preconditioner = MASPreconditioner(self.n_verts, self.n_cells, self.mesh)
+        # MAS Preconditioner (simplified version)
+        print('Initializing MAS preconditioner (small)...')
+        self.mas_preconditioner = MASPreconditionerSmall(self.mesh)
         print('MAS preconditioner initialized')
+
+        # Buffer fields for hessian_matvec (used for 2D subspace minimization)
+        self.hv_input = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        self.hv_output = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
 
         # MAS-PNCG state variables
         self.restart_threshold = RESTART_THRESHOLD
@@ -130,11 +132,6 @@ class MASPNCGSolver(collision_detection_bvh_module):
         # Per-subdomain step sizes for Conservative CCD
         n_subdomains = (self.n_verts + BANKSIZE - 1) // BANKSIZE
         self.subdomain_alpha = ti.field(dtype=ti.f32, shape=n_subdomains)
-
-        # Base contact state for Woodbury updates
-        self.base_contact_count = 0
-        # We'll store base contact info in numpy arrays for flexibility
-        self._base_contacts = {}  # dict: (contact_key) -> (stiffness, normal)
 
     # ========================================================================
     # Barrier Functions (Cubic)
@@ -179,19 +176,18 @@ class MASPNCGSolver(collision_detection_bvh_module):
         return self.barrier_H(d)
 
     # ========================================================================
-    # Gradient and Hessian Computation
+    # Gradient Computation
     # ========================================================================
 
     @ti.kernel
-    def compute_grad_and_diagH(self):
-        """Compute gradient and diagonal Hessian approximation."""
+    def compute_grad(self):
+        """Compute gradient of the total energy."""
         # Inertia potential
         ti.mesh_local(self.mesh.verts.grad)
         for vert in self.mesh.verts:
             m = vert.m
             vert.grad_prev = vert.grad
             vert.grad = m * (vert.x - vert.x_hat)
-            vert.diagH = m * ti.Vector.one(float, 3)
 
         # Elastic potential
         for c in self.mesh.cells:
@@ -200,12 +196,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
             F = Ds @ B
             para = c.W * self.dt ** 2
             dPsidx = para * self.compute_dPsidx(F, B, self.mu, self.la)
-            diagH_d2Psidx2 = para * self.compute_diag_d2Psidx2(F, B, self.mu, self.la)
             for i in range(4):
                 c.verts[i].grad += ti.Vector([dPsidx[3 * i], dPsidx[3 * i + 1], dPsidx[3 * i + 2]], float)
-                tmp = ti.Vector([diagH_d2Psidx2[3 * i], diagH_d2Psidx2[3 * i + 1], diagH_d2Psidx2[3 * i + 2]])
-                tmp = ti.max(tmp, 0.0)
-                c.verts[i].diagH += tmp
 
         # IPC potential
         for k, j in self.cid:
@@ -214,24 +206,17 @@ class MASPNCGSolver(collision_detection_bvh_module):
             dist = pair.b
             cord = pair.c
             t = pair.d
-            dist2 = dist ** 2
 
             bg = self.get_barrier_g(dist)
-            bH = self.get_barrier_H(dist)
-
             para = bg / dist
-            para0 = (bH - para) / dist2
             for i in range(4):
                 CORD = cord[i]
                 ID = ids[i]
                 self.mesh.verts.grad[ID] += para * CORD * t
-                diag_tmp = CORD * CORD * (para0 * t * t + para * ti.Vector.one(float, 3))
-                diag_tmp_spd = ti.max(diag_tmp, 0.0)
-                self.mesh.verts.diagH[ID] += diag_tmp_spd
 
     @ti.kernel
-    def add_grad_and_diagH_ground_barrier(self):
-        """Add ground barrier contribution."""
+    def add_grad_ground_barrier(self):
+        """Add ground barrier gradient contribution."""
         min_dist = 1e-2 * self.dHat
         for i in range(self.n_boundary_points):
             p = self.boundary_points[i]
@@ -242,158 +227,46 @@ class MASPNCGSolver(collision_detection_bvh_module):
                     self.mesh.verts.x[p][1] = self.ground + min_dist
                     dist = min_dist
                 self.mesh.verts.grad[p][1] += self.get_barrier_g(dist)
-                self.mesh.verts.diagH[p][1] += self.get_barrier_H(dist)
 
     # ========================================================================
-    # Hessian-Vector Product (for 2D Subspace Minimization)
+    # Hessian-Vector Product (using MAS preconditioner)
     # ========================================================================
 
     @ti.kernel
-    def compute_Hv(self, use_z: ti.template()):
-        """
-        Compute Hessian-vector product: Hv = H * v
-        where v is either z (use_z=True) or p (use_z=False)
-
-        This computes Hv without explicitly forming the full Hessian.
-        Result stored in either self.mesh.verts.Hv (for z) or self.mesh.verts.w (for p)
-        """
-        # Clear output
+    def _copy_z_to_buffer(self):
+        """Copy mesh.verts.z to hv_input buffer."""
         for vert in self.mesh.verts:
-            if ti.static(use_z):
-                vert.Hv = ti.Vector.zero(float, 3)
-            else:
-                vert.w = ti.Vector.zero(float, 3)
+            self.hv_input[vert.id] = vert.z
 
-        # Inertia contribution: M * v
+    @ti.kernel
+    def _copy_p_to_buffer(self):
+        """Copy mesh.verts.p to hv_input buffer."""
         for vert in self.mesh.verts:
-            m = vert.m
-            if ti.static(use_z):
-                vert.Hv += m * vert.z
-            else:
-                vert.w += m * vert.p
+            self.hv_input[vert.id] = vert.p
 
-        # Elastic contribution: H_elastic * v
-        for c in self.mesh.cells:
-            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
-            B = c.B
-            F = Ds @ B
-            para = c.W * self.dt ** 2
+    @ti.kernel
+    def _copy_buffer_to_Hv(self):
+        """Copy hv_output buffer to mesh.verts.Hv."""
+        for vert in self.mesh.verts:
+            vert.Hv = self.hv_output[vert.id]
 
-            # Get direction vector
-            d = ti.Vector.zero(float, 12)
-            if ti.static(use_z):
-                d[0:3] = c.verts[0].z
-                d[3:6] = c.verts[1].z
-                d[6:9] = c.verts[2].z
-                d[9:12] = c.verts[3].z
-            else:
-                d[0:3] = c.verts[0].p
-                d[3:6] = c.verts[1].p
-                d[6:9] = c.verts[2].p
-                d[9:12] = c.verts[3].p
+    @ti.kernel
+    def _copy_buffer_to_w(self):
+        """Copy hv_output buffer to mesh.verts.w."""
+        for vert in self.mesh.verts:
+            vert.w = self.hv_output[vert.id]
 
-            # Compute H*d (approximate with diagonal for efficiency)
-            Hd = para * self.compute_H_d(F, B, d, self.mu, self.la)
+    def compute_Hv_z(self):
+        """Compute Hv = H * z using preconditioner's hessian_matvec."""
+        self._copy_z_to_buffer()
+        self.mas_preconditioner.hessian_matvec(self.hv_input, self.hv_output)
+        self._copy_buffer_to_Hv()
 
-            for i in range(4):
-                Hd_i = ti.Vector([Hd[3*i], Hd[3*i+1], Hd[3*i+2]], float)
-                if ti.static(use_z):
-                    c.verts[i].Hv += Hd_i
-                else:
-                    c.verts[i].w += Hd_i
-
-        # IPC contribution: H_contact * v
-        for k, j in self.cid:
-            pair = self.cid[k, j]
-            ids = pair.a
-            dist = pair.b
-            cord = pair.c
-            t = pair.d
-            dist2 = dist * dist
-
-            bg = self.get_barrier_g(dist)
-            bH = self.get_barrier_H(dist)
-
-            para1 = bg / dist
-            para0 = (bH - para1) / dist2
-
-            # Get direction vector
-            v_tmp = ti.Vector.zero(float, 12)
-            if ti.static(use_z):
-                v_tmp[0:3] = self.mesh.verts.z[ids[0]]
-                v_tmp[3:6] = self.mesh.verts.z[ids[1]]
-                v_tmp[6:9] = self.mesh.verts.z[ids[2]]
-                v_tmp[9:12] = self.mesh.verts.z[ids[3]]
-            else:
-                v_tmp[0:3] = self.mesh.verts.p[ids[0]]
-                v_tmp[3:6] = self.mesh.verts.p[ids[1]]
-                v_tmp[6:9] = self.mesh.verts.p[ids[2]]
-                v_tmp[9:12] = self.mesh.verts.p[ids[3]]
-
-            # Compute H*v contribution
-            dtdx_t = compute_dtdx_t(t, cord)
-            v_dot_dtdx = v_tmp.dot(dtdx_t)
-
-            for i in range(4):
-                # Rank-1 term: para0 * (cord[i]*t) * (dtdx_t^T * v)
-                Hv_i = para0 * cord[i] * t * v_dot_dtdx
-
-                # Diagonal term: para1 * cord[i]^2 * v[i]
-                vi = ti.Vector.zero(float, 3)
-                if ti.static(use_z):
-                    vi = self.mesh.verts.z[ids[i]]
-                else:
-                    vi = self.mesh.verts.p[ids[i]]
-                Hv_i += para1 * cord[i] * cord[i] * vi
-
-                if ti.static(use_z):
-                    self.mesh.verts.Hv[ids[i]] += Hv_i
-                else:
-                    self.mesh.verts.w[ids[i]] += Hv_i
-
-    @ti.func
-    def compute_H_d(self, F: ti.math.mat3, B: ti.math.mat3, d: ti.types.vector(12, float),
-                    mu: float, la: float) -> ti.types.vector(12, float):
-        """
-        Compute H * d where H is the elastic Hessian.
-        Uses diagonal approximation for efficiency.
-        """
-        # Get diagonal Hessian
-        diagH = self.compute_diag_d2Psidx2(F, B, mu, la)
-
-        # Apply diagonal
-        result = ti.Vector.zero(float, 12)
-        for i in ti.static(range(12)):
-            result[i] = ti.max(diagH[i], 0.0) * d[i]
-
-        return result
-
-    @ti.func
-    def compute_H_d_full(self, F: ti.math.mat3, B: ti.math.mat3, d: ti.types.vector(12, float),
-                         mu: float, la: float) -> ti.types.vector(12, float):
-        """
-        Compute H * d where H is the full elastic Hessian (not diagonal approximation).
-
-        The Hessian in x-space is: H_x = dFdx^T @ d2PsidF2 @ dFdx
-        So H_x @ d = dFdx^T @ (d2PsidF2 @ (dFdx @ d))
-
-        This is more accurate than the diagonal version but more expensive.
-        """
-        # Step 1: Compute dFdx @ d (9x12 @ 12x1 = 9x1)
-        # dFdx maps vertex displacements to deformation gradient changes
-        dFdx_d = compute_dFdx_p(B, d)  # 9x1 vector
-
-        # Step 2: Get the full 9x9 Hessian in F-space
-        d2PsidF2 = self.compute_d2PsidF2(F, mu, la)  # 9x9 matrix
-
-        # Step 3: Compute d2PsidF2 @ (dFdx @ d) (9x9 @ 9x1 = 9x1)
-        H_F_dFdx_d = d2PsidF2 @ dFdx_d  # 9x1 vector
-
-        # Step 4: Compute dFdx^T @ result (12x9 @ 9x1 = 12x1)
-        # Use compute_dFdxT_p which computes dFdx^T @ p
-        result = compute_dFdxT_p(B, H_F_dFdx_d)  # 12x1 vector
-
-        return result
+    def compute_Hv_p(self):
+        """Compute w = H * p using preconditioner's hessian_matvec."""
+        self._copy_p_to_buffer()
+        self.mas_preconditioner.hessian_matvec(self.hv_input, self.hv_output)
+        self._copy_buffer_to_w()
 
     # ========================================================================
     # 2D Subspace Minimization (Section 3.2)
@@ -762,7 +635,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
         Main MAS-PNCG step implementing Algorithm 1 from the paper.
 
         Key features:
-        - MAS preconditioner with Sparse-Input Woodbury updates between restarts
+        - MAS preconditioner (simplified version without Woodbury updates)
         - Optimal 2D subspace minimization for search direction
         - Powell's restart criterion to detect conjugacy loss
         - Conservative CCD for penetration-free motion
@@ -770,9 +643,8 @@ class MASPNCGSolver(collision_detection_bvh_module):
         print(f'Frame {self.frame}')
         self.assign_xn_xhat()
 
-        # Initialize restart flag and Woodbury structures
+        # Initialize restart flag
         do_restart = True
-        use_woodbury = False  # Track if we can use Woodbury updates
 
         for iter in range(self.iter_max):
             # Step 1: Find contacts
@@ -783,31 +655,12 @@ class MASPNCGSolver(collision_detection_bvh_module):
             if self.ground_barrier == 1:
                 self.add_grad_and_diagH_ground_barrier()
 
-            # Step 3: Preconditioner (rebuild or Woodbury update)
+            # Step 3: Rebuild preconditioner on restart
             if do_restart:
-                # Full rebuild of MAS preconditioner
                 self.mas_preconditioner.rebuild(self)
 
-                # Initialize Woodbury structures if needed
-                if not hasattr(self.mas_preconditioner, 'woodbury_initialized') or \
-                   not self.mas_preconditioner.woodbury_initialized:
-                    self.mas_preconditioner.init_woodbury_structures()
-
-                # Save current contact state as base for Woodbury
-                self.mas_preconditioner.save_base_contact_state(self)
-                use_woodbury = True  # Enable Woodbury for subsequent iterations
-            else:
-                # Sparse-Input Woodbury update (Section 3.1)
-                if use_woodbury:
-                    self.mas_preconditioner.woodbury_update(self)
-
             # Step 4: Apply preconditioner: z = P * g
-            if do_restart or not use_woodbury:
-                # Use standard apply after rebuild
-                self.mas_preconditioner.apply()
-            else:
-                # Use Woodbury-updated preconditioner
-                self.mas_preconditioner.apply_with_woodbury()
+            self.mas_preconditioner.apply()
 
             # Step 5: Compute Hessian-vector product Hv = H * z
             self.compute_Hv(True)
