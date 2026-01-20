@@ -1,6 +1,6 @@
 # 文档索引
 
-> 最后更新: 2026-01-19
+> 最后更新: 2026-01-20
 
 ## 目录结构
 
@@ -52,12 +52,26 @@ docs/
 
 ## 参考实现 (reference/)
 
-外部参考实现的分析文档。
+外部参考实现的分析文档。代码路径: `/root/Stiff-GIPC_init/`
 
-| 文档 | 描述 |
-|------|------|
-| [STIFFGIPC_IMPLEMENTATION_DETAILS.md](reference/STIFFGIPC_IMPLEMENTATION_DETAILS.md) | Stiff-GIPC实现分析 |
-| [STIFFGIPC_OPTIMIZATION_SUMMARY.md](reference/STIFFGIPC_OPTIMIZATION_SUMMARY.md) | Stiff-GIPC优化总结 |
+### Stiff-GIPC 核心文档
+
+| 文档 | 描述 | 状态 |
+|------|------|------|
+| [STIFFGIPC_MAS_REFERENCE.md](reference/STIFFGIPC_MAS_REFERENCE.md) | **MAS预条件器CUDA参考实现详解** | ✅ 新增 |
+| [STIFFGIPC_PROJECT_STRUCTURE.md](reference/STIFFGIPC_PROJECT_STRUCTURE.md) | 项目结构和模块概览 | ✅ 新增 |
+| [STIFFGIPC_IMPLEMENTATION_DETAILS.md](reference/STIFFGIPC_IMPLEMENTATION_DETAILS.md) | 算法实现细节 | ✅ 活跃 |
+| [STIFFGIPC_OPTIMIZATION_SUMMARY.md](reference/STIFFGIPC_OPTIMIZATION_SUMMARY.md) | 优化策略总结 | ✅ 活跃 |
+
+### 关键参考文件
+
+| 文件路径 | 行数 | 描述 |
+|----------|------|------|
+| `StiffGIPC/MASPreconditioner.cu` | 2,361 | MAS 完整 CUDA 实现 |
+| `StiffGIPC/MASPreconditioner.cuh` | 103 | MAS 类声明 |
+| `StiffGIPC/eigen_data.h` | 206 | 核心数据结构定义 |
+| `StiffGIPC/linear_system/` | - | 线性系统框架 |
+| `MeshProcess/metis_partition/` | - | METIS 网格分区工具 |
 
 ---
 
