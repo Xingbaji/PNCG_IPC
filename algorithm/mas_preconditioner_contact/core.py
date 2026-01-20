@@ -364,6 +364,25 @@ class MASPreconditionerContact(MASPreconditionerSmall):
         if n_contact_triplets > 0:
             self._contact_cross_block_spmv(v, result, n_contact_triplets)
 
+    def hessian_matvec_exact(self, v: ti.template(), result: ti.template()):
+        """
+        Override parent method to include contact contributions.
+
+        Compute result = H @ v EXACTLY including:
+        1. Level 0 block-diagonal contribution
+        2. Elastic cross-block triplets
+        3. Contact cross-block triplets
+        """
+        self.hessian_matvec_with_contacts(v, result)
+
+    def hessian_matvec(self, v: ti.template(), result: ti.template()):
+        """
+        Override parent method to include contact contributions.
+
+        Alias for hessian_matvec_exact with contact support.
+        """
+        self.hessian_matvec_with_contacts(v, result)
+
     def rebuild_with_contacts(self, solver):
         """
         Full rebuild of preconditioner with contact support.
