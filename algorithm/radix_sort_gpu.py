@@ -338,29 +338,34 @@ class RadixSortGPU_Optimized:
     # ========== Common kernels ==========
 
     @ti.kernel
-    def _prefix_sum_pass(self, n_blocks: ti.i32):
-        """Compute global and per-block prefix sums."""
+    def _sum_histograms(self, n_blocks: ti.i32):
+        """Sum histograms across blocks for each digit (parallel over digits)."""
         RADIX_SIZE = 256
-
-        # Sum across blocks for each digit
         for digit in range(RADIX_SIZE):
             total = 0
             for bid in range(n_blocks):
                 total += self.block_histograms[bid * RADIX_SIZE + digit]
             self.global_prefix[digit] = total
 
-        ti.sync()
+    def _exclusive_prefix_sum_host(self):
+        """Compute exclusive prefix sum on global counts (on CPU)."""
+        # Read global_prefix to numpy
+        counts = self.global_prefix.to_numpy()
 
-        # Exclusive prefix sum on global counts
+        # Exclusive prefix sum
+        prefix = np.zeros(256, dtype=np.int32)
         running = 0
-        for digit in range(RADIX_SIZE):
-            count = self.global_prefix[digit]
-            self.global_prefix[digit] = running
-            running += count
+        for i in range(256):
+            prefix[i] = running
+            running += counts[i]
 
-        ti.sync()
+        # Write back
+        self.global_prefix.from_numpy(prefix)
 
-        # Per-block prefix sums
+    @ti.kernel
+    def _compute_block_offsets(self, n_blocks: ti.i32):
+        """Compute per-block prefix sums (parallel over digits)."""
+        RADIX_SIZE = 256
         for digit in range(RADIX_SIZE):
             offset = self.global_prefix[digit]
             for bid in range(n_blocks):
@@ -384,6 +389,12 @@ class RadixSortGPU_Optimized:
         for i in range(n):
             keys[i] = self.keys_b[i]
             values[i] = self.vals_b[i]
+
+    def _prefix_sum_pass(self, n_blocks: int):
+        """Compute prefix sums: histogram -> exclusive prefix -> block offsets."""
+        self._sum_histograms(n_blocks)
+        self._exclusive_prefix_sum_host()  # CPU for sequential prefix sum
+        self._compute_block_offsets(n_blocks)
 
     def sort(self, keys: ti.Field, values: ti.Field, n: int):
         """Sort keys with associated values."""
