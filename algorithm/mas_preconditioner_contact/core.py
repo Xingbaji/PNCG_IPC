@@ -29,6 +29,16 @@ from .contact_assembly import (
     barrier_H_log,
     barrier_g_cubic,
     barrier_H_cubic,
+    # SPD barrier/friction functions (PPF-Contact-Solver style)
+    barrier_curvature_cubic,
+    barrier_curvature_log,
+    compute_spd_contact_hessian_3x3,
+    compute_spd_edge_hessian,
+    compute_spd_edge_gradient,
+    compute_friction_projection_matrix,
+    compute_friction_lambda,
+    compute_friction_hessian,
+    compute_spd_contact_friction_hessian,
 )
 
 
@@ -204,6 +214,130 @@ class MASPreconditionerContact(MASPreconditionerSmall):
                                 # Propagate to coarse levels for preconditioning
                                 self._propagate_contact_to_coarse(vi, vj, H_ij)
 
+    @ti.kernel
+    def _add_contact_contribution_spd(
+        self,
+        contact_pairs: ti.template(),
+        n_contacts: ti.i32,
+        dHat: ti.f32,
+        kappa: ti.f32,
+        dt: ti.f32,
+        mu: ti.f32,
+        friction_eps: ti.f32,
+        use_cubic_barrier: ti.template(),
+        x0: ti.template(),
+        x: ti.template(),
+    ):
+        """
+        Add contact Hessian contributions using SPD formulation (PPF-Contact-Solver style).
+
+        This version uses the guaranteed-PSD Hessian formula:
+            H_contact = curvature * (e ⊗ e^T) / ||e||²
+            H_friction = λ * P  (P = I - n⊗n^T projection matrix)
+
+        Both components are PSD by construction, no eigenvalue clamping needed.
+
+        Args:
+            contact_pairs: Contact pair data
+            n_contacts: Number of active contacts
+            dHat: Distance threshold
+            kappa: Barrier stiffness
+            dt: Time step
+            mu: Friction coefficient (0 to disable)
+            friction_eps: Minimum displacement for friction regularization
+            use_cubic_barrier: Use cubic barrier (otherwise log)
+            x0: Previous positions (for friction displacement)
+            x: Current positions
+        """
+        for idx in range(n_contacts):
+            pair = contact_pairs[idx]
+            ids_raw = pair.a
+            ids = ti.Vector([ti.i32(ids_raw[0]), ti.i32(ids_raw[1]),
+                            ti.i32(ids_raw[2]), ti.i32(ids_raw[3])])
+            dist = pair.b
+            cord = pair.c
+            t = pair.d  # Direction vector (contact edge direction)
+
+            if dist >= dHat or dist < 1e-10:
+                continue
+
+            # Compute contact edge vector e = sum_i(cord[i] * x[ids[i]])
+            # This is the weighted position that gives the contact point
+            e = ti.Vector.zero(ti.f32, 3)
+            e0 = ti.Vector.zero(ti.f32, 3)
+            for i in ti.static(range(4)):
+                e += cord[i] * x[ids[i]]
+                e0 += cord[i] * x0[ids[i]]
+
+            # Relative displacement for friction
+            dx = e - e0
+
+            # Scale factor
+            scale = dt * dt
+
+            # Compute SPD 3x3 Hessian (barrier + optional friction)
+            H_3x3 = ti.Matrix.zero(ti.f32, 3, 3)
+            if ti.static(use_cubic_barrier):
+                H_3x3 = compute_spd_contact_friction_hessian(
+                    e, dx, dHat, kappa, mu, friction_eps, True
+                )
+            else:
+                H_3x3 = compute_spd_contact_friction_hessian(
+                    e, dx, dHat, kappa, mu, friction_eps, False
+                )
+
+            # Scale by dt^2
+            H_3x3 = scale * H_3x3
+
+            # Assemble to block matrices (16 vertex pairs)
+            for i in ti.static(range(4)):
+                for j in ti.static(range(4)):
+                    vi = ids[i]
+                    vj = ids[j]
+
+                    coeff = cord[i] * cord[j]
+
+                    if vi >= 0 and vj >= 0 and vi < self.n_verts and vj < self.n_verts:
+                        if ti.abs(coeff) >= 1e-12:
+                            block_i = vi // BANKSIZE
+                            block_j = vj // BANKSIZE
+                            lane_i = vi % BANKSIZE
+                            lane_j = vj % BANKSIZE
+
+                            # Compute 3x3 sub-block: H_ij = coeff * H_3x3
+                            H_ij = coeff * H_3x3
+
+                            if block_i == block_j:
+                                # Same block: direct assembly
+                                if lane_i <= lane_j:
+                                    s_idx = BANKSIZE * lane_i - lane_i * (lane_i + 1) // 2 + lane_j
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                          H_ij[di, dj])
+                                else:
+                                    s_idx = BANKSIZE * lane_j - lane_j * (lane_j + 1) // 2 + lane_i
+                                    for di in ti.static(range(3)):
+                                        for dj in ti.static(range(3)):
+                                            ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
+                                                          H_ij[dj, di])
+                            else:
+                                # Cross-block: store in triplet format
+                                triplet_idx = ti.atomic_add(self.contact_triplet_count[None], 1)
+                                if triplet_idx < self.max_contact_triplets:
+                                    if vi <= vj:
+                                        self.contact_triplet_row[triplet_idx] = vi
+                                        self.contact_triplet_col[triplet_idx] = vj
+                                        self.contact_triplet_val[triplet_idx] = H_ij
+                                    else:
+                                        self.contact_triplet_row[triplet_idx] = vj
+                                        self.contact_triplet_col[triplet_idx] = vi
+                                        for di in ti.static(range(3)):
+                                            for dj in ti.static(range(3)):
+                                                self.contact_triplet_val[triplet_idx][di, dj] = H_ij[dj, di]
+
+                                self._propagate_contact_to_coarse(vi, vj, H_ij)
+
     @ti.func
     def _propagate_contact_to_coarse(self, vi: ti.i32, vj: ti.i32, H_ij: ti.template()):
         """
@@ -298,6 +432,83 @@ class MASPreconditionerContact(MASPreconditionerSmall):
         if n_contacts > 0:
             print(f"[MAS-Contact] Assembled: {n_contacts} contacts, "
                   f"{n_contact_triplets} contact triplets, {n_elastic_triplets} elastic triplets")
+
+    def assemble_with_contacts_spd(self, solver, mu: float = 0.0, friction_eps: float = 1e-4):
+        """
+        Assemble block matrices using SPD contact Hessian formulation.
+
+        This version uses the guaranteed-PSD contact Hessian from PPF-Contact-Solver:
+        - Barrier Hessian: H = curvature * (e⊗e^T) / ||e||²
+        - Friction Hessian: H = λ * P (projection matrix)
+
+        Both components are PSD by construction, ensuring numerical stability.
+
+        Args:
+            solver: The IPC solver object with contact_pairs, dHat, kappa, dt
+            mu: Friction coefficient (0 to disable friction)
+            friction_eps: Minimum displacement for friction regularization
+        """
+        # 1. Clear all storage
+        self._clear_block_matrices()
+        self._clear_cross_block_storage()
+        self._clear_contact_triplets()
+
+        # 2. Add inertia contribution
+        self._add_inertia_contribution(solver.dt)
+
+        # 3. Add elastic contribution (from parent class)
+        self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
+
+        # 4. Add contact contributions using SPD formulation
+        n_contacts = solver.n_contacts[None]
+        if n_contacts > 0:
+            use_cubic = getattr(solver, 'barrier_type', 'log') == 'cubic'
+            self._add_contact_contribution_spd(
+                solver.contact_pairs,
+                n_contacts,
+                solver.dHat,
+                solver.kappa,
+                solver.dt,
+                mu,
+                friction_eps,
+                use_cubic,
+                solver.mesh.verts.x_n,  # Previous positions
+                solver.mesh.verts.x,     # Current positions
+            )
+
+        # 5. Aggregate to coarse levels
+        if self.hierarchy_built and self.level_num > 1:
+            self._aggregate_fine_to_coarse()
+
+        self.matrices_assembled = True
+        self.has_cross_block_data = True
+        self.has_contact_data = n_contacts > 0
+
+        # Print statistics
+        n_contact_triplets = int(self.contact_triplet_count[None])
+        n_elastic_triplets = int(self.cross_block_count[None])
+        if n_contacts > 0:
+            friction_str = f", μ={mu}" if mu > 0 else ""
+            print(f"[MAS-Contact-SPD] Assembled: {n_contacts} contacts, "
+                  f"{n_contact_triplets} contact triplets, {n_elastic_triplets} elastic triplets{friction_str}")
+
+    def rebuild_with_contacts_spd(self, solver, mu: float = 0.0, friction_eps: float = 1e-4):
+        """
+        Full rebuild of preconditioner using SPD contact Hessian formulation.
+
+        This is the recommended method for contact simulations with friction.
+        Uses the guaranteed-PSD formulation from PPF-Contact-Solver.
+
+        Args:
+            solver: The IPC solver object with contact data
+            mu: Friction coefficient (0 to disable friction)
+            friction_eps: Minimum displacement for friction regularization
+        """
+        if not self.hierarchy_built:
+            self.build_hierarchy()
+
+        self.assemble_with_contacts_spd(solver, mu, friction_eps)
+        self.invert_block_matrices()
 
     @ti.kernel
     def _contact_cross_block_spmv(self, v: ti.template(), result: ti.template(), n_triplets: ti.i32):

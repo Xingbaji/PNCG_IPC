@@ -1,13 +1,13 @@
 # Eight E-shaped objects free-fall test (no collision)
 material:
-  E: 1.0e4
+  E: 1.0e7
   nu: 0.4
   density: 50.0
   elastic_type: ARAP_SPD
 
 solver:
   epsilon: 1e-6
-  iter_max: 100
+  iter_max: 50
   dt: 0.01
 
 scene:
