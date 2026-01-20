@@ -118,6 +118,14 @@ class MASPNCGSolverNoCollision(base_deformer):
         t_mas = (time.perf_counter() - t0) * 1000
         print(f'[MAS-PNCG] MAS initialized with {self.mas_preconditioner.level_num} levels')
 
+        # Multi-level preconditioner control
+        # For scenes with multiple disconnected objects, disable multilevel to avoid
+        # incorrect cross-object coupling in coarse levels
+        n_objects = model.dict.get('n_objects', 1)
+        self.use_multilevel = (n_objects == 1)  # Only use multilevel for single object
+        if not self.use_multilevel:
+            print(f'[MAS-PNCG] Multi-object scene ({n_objects} objects): using level-0 only')
+
         # Buffer fields for hessian_matvec
         t0 = time.perf_counter()
         self.hv_input = ti.Vector.field(3, dtype=ti.f32, shape=self.n_verts)
@@ -190,7 +198,7 @@ class MASPNCGSolverNoCollision(base_deformer):
 
     def apply_preconditioner(self):
         """Apply MAS preconditioner."""
-        self.mas_preconditioner.apply()
+        self.mas_preconditioner.apply(use_multilevel=self.use_multilevel)
 
     # ========================================================================
     # Hessian-Vector Products

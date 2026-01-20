@@ -938,12 +938,18 @@ class MASPreconditionerSmall:
             # Write directly to mesh vertex field
             vert.z = z_total
 
-    def apply(self):
+    def apply(self, use_multilevel: bool = True):
         """Apply MAS preconditioner: z = P * grad
 
         Uses banded solve for METIS pre-reordered mesh where vertex IDs
         directly correspond to partitions, enabling fast direct indexing
         with topological locality (METIS property).
+
+        Args:
+            use_multilevel: If True (default), use all levels for preconditioning.
+                           If False, only use level 0 (block-diagonal only).
+                           Set to False for scenes with multiple disconnected objects
+                           to avoid incorrect cross-object coupling in coarse levels.
         """
         self._clear_multi_level_buffers()
 
@@ -952,7 +958,11 @@ class MASPreconditionerSmall:
         self._build_multi_level_r()
         self._schwarz_local_solve_banded()
 
-        self._collect_final_z(self.level_num)
+        if use_multilevel:
+            self._collect_final_z(self.level_num)
+        else:
+            # Only use level 0 (no coarse level contribution)
+            self._collect_final_z(1)
 
     # ========================================================================
     # Block-Diagonal Hessian Matrix-Vector Multiplication
