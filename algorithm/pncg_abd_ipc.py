@@ -464,6 +464,9 @@ class pncg_abd_ipc_deformer(pncg_ipc_deformer):
         Args:
             alpha: Step size
         """
+        # Save ABD state for line search rollback
+        self.abd_system.copy_q_to_temp()
+
         # FEM vertices
         self._update_fem_vertices(alpha)
 
