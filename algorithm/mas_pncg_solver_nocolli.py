@@ -115,7 +115,13 @@ class MASPNCGSolverNoCollision(base_deformer):
         # MAS Preconditioner
         # Note: model_loading applies METIS reordering, so metis_reordered=True
         t0 = time.perf_counter()
-        print('[MAS-PNCG] Initializing MAS preconditioner...')
+
+        # Use custom preconditioner class if provided, otherwise use default
+        if preconditioner_class is None:
+            preconditioner_class = MASPreconditionerSmall
+        self.preconditioner_class = preconditioner_class
+
+        print(f'[MAS-PNCG] Initializing MAS preconditioner ({preconditioner_class.__name__})...')
 
         # Get actual partition count from METIS result (may differ from ceil(n_verts/BANKSIZE)
         # due to component-aware partitioning)
@@ -127,7 +133,7 @@ class MASPNCGSolverNoCollision(base_deformer):
             if hasattr(model.metis_result, 'sorted_to_partition'):
                 metis_sorted_to_partition = model.metis_result.sorted_to_partition
 
-        self.mas_preconditioner = MASPreconditionerSmall(
+        self.mas_preconditioner = preconditioner_class(
             self.mesh,
             metis_reordered=True,
             metis_n_parts=metis_n_parts
