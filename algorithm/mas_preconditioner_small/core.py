@@ -340,6 +340,44 @@ class MASPreconditionerSmall:
             for i in range(last_size):
                 self.going_next[last_offset + i] = -1
 
+    @ti.kernel
+    def _build_going_next_metis_reordered(self, level_num: ti.i32):
+        """
+        Build going_next mapping for METIS pre-reordered mesh.
+
+        When mesh is pre-reordered, vertex IDs directly correspond to partitions:
+        - partition_id = vertex_id // BANKSIZE
+        No mapping lookup needed!
+        """
+        if level_num == 1:
+            for i in range(self.n_verts):
+                self.going_next[i] = -1
+        else:
+            # Level 0: vertices map to coarse based on position (direct calculation)
+            for i in range(self.n_verts):
+                # In pre-reordered mode, partition = vertex_id // BANKSIZE
+                part_id = i // BANKSIZE
+                # Coarse node index = level_1_offset + partition_id
+                coarse_idx = self.level_size[1][1] + part_id
+                self.going_next[i] = coarse_idx
+
+            # Higher levels: sequential mapping (same as non-METIS)
+            for level in range(1, level_num - 1):
+                level_offset = self.level_size[level][1]
+                level_size_val = self.level_size[level][0]
+                next_offset = self.level_size[level + 1][1]
+
+                for i in range(level_size_val):
+                    idx = level_offset + i
+                    coarse_idx = next_offset + i // BANKSIZE
+                    self.going_next[idx] = coarse_idx
+
+            # Last level: map to -1
+            last_offset = self.level_size[level_num - 1][1]
+            last_size = self.level_size[level_num - 1][0]
+            for i in range(last_size):
+                self.going_next[last_offset + i] = -1
+
     def build_hierarchy(self):
         """Build the multi-level hierarchy."""
         if self.use_metis:
@@ -364,9 +402,17 @@ class MASPreconditionerSmall:
             for i in range(len(sizes)):
                 self.level_size[i] = ti.Vector([sizes[i], offsets[i]])
 
-            self._build_going_next_metis(self.level_num)
-            print(f"[MAS-Small] METIS hierarchy built: {self.level_num} levels, "
-                  f"L0={self.n_verts}, L1={level_1_size}")
+            # Use appropriate kernel based on mode
+            if self.metis_reordered:
+                # Pre-reordered mode: direct partition calculation
+                self._build_going_next_metis_reordered(self.level_num)
+                print(f"[MAS-Small] METIS pre-reordered hierarchy built: {self.level_num} levels, "
+                      f"L0={self.n_verts}, L1={level_1_size}")
+            else:
+                # Runtime mapping mode: use mapping lookup
+                self._build_going_next_metis(self.level_num)
+                print(f"[MAS-Small] METIS hierarchy built: {self.level_num} levels, "
+                      f"L0={self.n_verts}, L1={level_1_size}")
         else:
             self._build_going_next(self.level_num)
             print(f"[MAS-Small] Hierarchy built: {self.level_num} levels")

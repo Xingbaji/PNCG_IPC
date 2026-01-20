@@ -338,7 +338,7 @@ def reorder_mesh_data_metis(
         verts, cells, metis_result = reorder_mesh_data_metis(raw_verts, raw_cells)
 
         # Create mesh with reordered data
-        mesh = Patcher.load_mesh([(verts, cells)], relations=["CV"])
+        mesh = Patcher.load_mesh([{0: verts, 3: cells}], relations=["CV"])
 
         # Create preconditioner (no mapping needed!)
         precond = MASPreconditionerSmall(mesh, metis_reordered=True)

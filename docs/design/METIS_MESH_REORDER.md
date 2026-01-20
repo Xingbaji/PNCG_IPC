@@ -219,16 +219,65 @@ class MASPreconditionerSmall:
 
 ## 实现计划
 
-1. [ ] 在 `metis_reorder.py` 中添加 `reorder_mesh_data_metis()` 函数
-2. [ ] 添加 `merge_models()` 和 `split_models()` 工具函数
-3. [ ] 修改 `model_loading.py` 支持 mesh 级别重排序
-4. [ ] 简化 `MASPreconditionerSmall`，添加 `metis_reordered` 模式
-5. [ ] 更新测试用例
-6. [ ] 性能对比测试
+1. [x] 在 `metis_reorder.py` 中添加 `reorder_mesh_data_metis()` 函数
+2. [x] 添加 `merge_models()` 工具函数
+3. [ ] 修改 `model_loading.py` 支持 mesh 级别重排序 (未完成)
+4. [x] 简化 `MASPreconditionerSmall`，添加 `metis_reordered` 模式
+5. [x] 更新测试用例 (`unittest/tests/test_metis_mesh_reorder.py`)
+6. [x] 性能对比测试
 
 ---
 
-## 预期收益
+## 实验结果 (2026-01-20)
+
+### cube_20 (2931 verts, 13200 cells)
+
+| 模式 | Assemble (ms) | Apply (ms) | Total (ms) | 相对 No-METIS |
+|------|--------------|------------|------------|---------------|
+| No METIS | 0.566 | 0.670 | 1.236 | 1.00x (baseline) |
+| METIS Runtime Mapping | 0.942 | 0.341 | 1.283 | 0.96x |
+| **METIS Pre-Reordered** | 0.970 | 0.550 | 1.519 | **0.81x (slower)** |
+
+### 分析
+
+**出乎意料的结果**: Pre-reordered 模式并没有比 Runtime mapping 更快，反而更慢！
+
+**原因分析**:
+
+1. **Apply 性能下降**:
+   - Runtime mapping (0.341ms) 比 Pre-reordered (0.550ms) 快 1.6x
+   - Runtime mapping 使用 `_schwarz_local_solve_banded_metis` (基于 METIS 分区优化的 banded solve)
+   - Pre-reordered 使用与 No-METIS 相同的 `_schwarz_local_solve_full` (full matrix solve)
+   - **问题**: Pre-reordered 没有利用 METIS 分区的 cache 局部性优势
+
+2. **Assemble 性能**:
+   - Pre-reordered (0.970ms) 和 Runtime mapping (0.942ms) 相近
+   - 预期的 "消除映射查找" 优势没有体现
+   - 可能原因: 映射查找开销相比其他计算很小
+
+3. **真正的 METIS 优势在于 Apply**:
+   - Runtime mapping 的 `_schwarz_local_solve_banded_metis` 利用了 METIS 分区的 cache 优化
+   - 这才是 METIS 带来 2x apply 加速的真正原因
+
+### 结论
+
+**Pre-reordered 模式目前不推荐使用**:
+
+- 理论上应该更快（消除映射查找）
+- 实际上更慢，因为没有使用针对 METIS 优化的 apply kernel
+- **下一步**: 需要为 Pre-reordered 模式实现专门的 `_schwarz_local_solve_full_metis_reordered` kernel
+
+### 推荐使用方式
+
+目前建议继续使用 **METIS Runtime Mapping** 模式:
+```python
+metis_result = compute_metis_reorder(n_verts, cells)
+precond = MASPreconditionerSmall(mesh, metis_result=metis_result)
+```
+
+---
+
+## 预期收益 (理论值，实际待优化)
 
 | 指标 | 预期改善 |
 |------|---------|
@@ -244,3 +293,4 @@ class MASPreconditionerSmall:
 1. **兼容性**: 需要保持非 METIS 模式的兼容性
 2. **单次计算**: METIS 重排序仍然只在模拟开始时计算一次
 3. **顺序敏感**: 任何依赖原始顶点顺序的代码都需要检查
+4. **Apply kernel**: Pre-reordered 模式需要专门优化的 apply kernel 才能发挥优势

@@ -134,8 +134,9 @@ def test_mesh_reorder_cube_20():
     assert np.all(reordered_cells < n_verts)
 
     # Create mesh with reordered data
+    # Note: Patcher.load_mesh expects dict format: {0: vertices, 3: cells}
     t_start = time.perf_counter()
-    mesh = Patcher.load_mesh([(reordered_verts, reordered_cells)], relations=["CV"])
+    mesh = Patcher.load_mesh([{0: reordered_verts, 3: reordered_cells}], relations=["CV"])
     t_mesh = time.perf_counter() - t_start
     print(f"  Mesh creation time: {t_mesh*1000:.2f}ms")
 
@@ -192,7 +193,7 @@ def test_preconditioner_modes_comparison():
 
     # === Mode 1: No METIS ===
     print("\n  Mode 1: No METIS")
-    mesh1 = Patcher.load_mesh([(vertices, cells)], relations=["CV"])
+    mesh1 = Patcher.load_mesh([{0: vertices, 3: cells}], relations=["CV"])
     _setup_mesh_fields(mesh1, vertices)
     _precompute_B_W(mesh1)
 
@@ -202,7 +203,7 @@ def test_preconditioner_modes_comparison():
 
     # === Mode 2: METIS runtime mapping ===
     print("\n  Mode 2: METIS Runtime Mapping")
-    mesh2 = Patcher.load_mesh([(vertices, cells)], relations=["CV"])
+    mesh2 = Patcher.load_mesh([{0: vertices, 3: cells}], relations=["CV"])
     _setup_mesh_fields(mesh2, vertices)
     _precompute_B_W(mesh2)
 
@@ -217,7 +218,7 @@ def test_preconditioner_modes_comparison():
     reordered_verts, reordered_cells, metis_result3 = reorder_mesh_data_metis(
         vertices, cells, BANKSIZE
     )
-    mesh3 = Patcher.load_mesh([(reordered_verts, reordered_cells)], relations=["CV"])
+    mesh3 = Patcher.load_mesh([{0: reordered_verts, 3: reordered_cells}], relations=["CV"])
     _setup_mesh_fields(mesh3, reordered_verts)
     _precompute_B_W(mesh3)
 
@@ -280,7 +281,7 @@ def test_preconditioner_benchmark():
 
     # === Mode 1: No METIS ===
     print("\n  Benchmarking Mode 1: No METIS...")
-    mesh1 = Patcher.load_mesh([(vertices, cells)], relations=["CV"])
+    mesh1 = Patcher.load_mesh([{0: vertices, 3: cells}], relations=["CV"])
     _setup_mesh_fields(mesh1, vertices)
     _precompute_B_W(mesh1)
     _init_random_grad(mesh1, n_verts)
@@ -314,7 +315,7 @@ def test_preconditioner_benchmark():
 
     # === Mode 2: METIS runtime mapping ===
     print("  Benchmarking Mode 2: METIS Runtime Mapping...")
-    mesh2 = Patcher.load_mesh([(vertices, cells)], relations=["CV"])
+    mesh2 = Patcher.load_mesh([{0: vertices, 3: cells}], relations=["CV"])
     _setup_mesh_fields(mesh2, vertices)
     _precompute_B_W(mesh2)
     _init_random_grad(mesh2, n_verts)
@@ -351,7 +352,7 @@ def test_preconditioner_benchmark():
     reordered_verts, reordered_cells, _ = reorder_mesh_data_metis(
         vertices, cells, BANKSIZE
     )
-    mesh3 = Patcher.load_mesh([(reordered_verts, reordered_cells)], relations=["CV"])
+    mesh3 = Patcher.load_mesh([{0: reordered_verts, 3: reordered_cells}], relations=["CV"])
     _setup_mesh_fields(mesh3, reordered_verts)
     _precompute_B_W(mesh3)
     _init_random_grad(mesh3, n_verts)
