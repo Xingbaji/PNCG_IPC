@@ -45,6 +45,7 @@ Notes:
 """
 
 from .core import MASPreconditionerSmall
+from .core_f64 import MASPreconditionerSmallF64
 from .metis_reorder import (
     MetisReorderResult,
     compute_metis_reorder,
@@ -57,6 +58,7 @@ from .metis_reorder import (
 
 __all__ = [
     'MASPreconditionerSmall',
+    'MASPreconditionerSmallF64',
     'MetisReorderResult',
     'compute_metis_reorder',
     'extract_cells_from_mesh',

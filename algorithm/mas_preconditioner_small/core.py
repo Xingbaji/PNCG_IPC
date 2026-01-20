@@ -3,6 +3,8 @@ MAS Preconditioner Small - Core implementation.
 
 Simplified single-file implementation with METIS support.
 METIS reordering is computed ONCE at initialization and reused.
+
+Supports configurable precision (float32/float64) via use_f64 parameter.
 """
 
 import taichi as ti
@@ -17,6 +19,9 @@ MAX_LEVELS = 6
 # Import ARAP Hessian computation
 from math_utils.matrix_util import compute_dFdx
 from math_utils.elastic_util import compute_d2PsidF2_ARAP_filter
+
+# Global precision type (will be set by create_mas_preconditioner)
+_REAL_TYPE = ti.f32
 
 
 @ti.func
@@ -38,10 +43,11 @@ class MASPreconditionerSmall:
     - IC(0) inversion
     - Banded local solve
     - Correct prolongation using going_next hierarchy
+    - Configurable precision (float32/float64)
     """
 
     def __init__(self, mesh, metis_reordered: bool = True, max_verts: int = None,
-                 metis_n_parts: int = None):
+                 metis_n_parts: int = None, use_f64: bool = False):
         """
         Initialize MAS Preconditioner.
 
@@ -57,6 +63,9 @@ class MASPreconditionerSmall:
                           instead of computing from n_verts. This is important for
                           component-aware METIS where partition count may differ
                           from ceil(n_verts / BANKSIZE).
+            use_f64: Use float64 precision for internal computations.
+                    Recommended for high stiffness (E > 1e5) to avoid numerical issues.
+                    Default: False (use float32)
 
         Note: Non-METIS and runtime mapping modes have been removed for compile optimization.
               Use util/model_loading.py which applies METIS reordering automatically.
@@ -64,6 +73,11 @@ class MASPreconditionerSmall:
         if not metis_reordered:
             raise ValueError("MASPreconditionerSmall requires metis_reordered=True. "
                            "Use util/model_loading.py which applies METIS reordering automatically.")
+
+        # Set precision type
+        self.use_f64 = use_f64
+        self.real_type = ti.f64 if use_f64 else ti.f32
+        self.real_np = np.float64 if use_f64 else np.float32
 
         self.mesh = mesh
         self.n_verts = len(mesh.verts)
@@ -95,24 +109,24 @@ class MASPreconditionerSmall:
         self.level_size = ti.Vector.field(2, dtype=ti.i32, shape=MAX_LEVELS)
         self._init_level_sizes()
 
-        # Block matrices (symmetric storage)
-        self.block_matrices = ti.Matrix.field(3, 3, dtype=ti.f32,
+        # Block matrices (symmetric storage) - use configured precision
+        self.block_matrices = ti.Matrix.field(3, 3, dtype=self.real_type,
                                               shape=(self.total_blocks, SYM_BLOCK_COUNT))
-        self.inv_block_matrices = ti.Matrix.field(3, 3, dtype=ti.f32,
+        self.inv_block_matrices = ti.Matrix.field(3, 3, dtype=self.real_type,
                                                    shape=(self.total_blocks, SYM_BLOCK_COUNT))
 
-        # Full block matrices for inversion
-        self.full_block_matrix = ti.field(dtype=ti.f32,
+        # Full block matrices for inversion - use configured precision
+        self.full_block_matrix = ti.field(dtype=self.real_type,
                                           shape=(self.total_blocks, BLOCK_DOF, BLOCK_DOF))
-        self.full_block_inverse = ti.field(dtype=ti.f32,
+        self.full_block_inverse = ti.field(dtype=self.real_type,
                                            shape=(self.total_blocks, BLOCK_DOF, BLOCK_DOF))
 
         # Hierarchy mapping
         self.going_next = ti.field(dtype=ti.i32, shape=self.total_nodes_all_levels)
 
-        # Multi-level buffers
-        self.multi_level_r = ti.Vector.field(3, dtype=ti.f32, shape=self.total_nodes_all_levels)
-        self.multi_level_z = ti.Vector.field(3, dtype=ti.f32, shape=self.total_nodes_all_levels)
+        # Multi-level buffers - use configured precision
+        self.multi_level_r = ti.Vector.field(3, dtype=self.real_type, shape=self.total_nodes_all_levels)
+        self.multi_level_z = ti.Vector.field(3, dtype=self.real_type, shape=self.total_nodes_all_levels)
 
         # Pre-reordered mode: no runtime mapping needed
         # Vertex IDs directly map to partitions: block_id = vertex_id // BANKSIZE
@@ -136,16 +150,17 @@ class MASPreconditionerSmall:
         # (4 choose 2 = 6), each pair is a 3x3 block
         max_cross_block_entries = self.n_cells * 6  # Upper bound
 
-        # Triplet storage: (row_vertex, col_vertex, 3x3 matrix)
+        # Triplet storage: (row_vertex, col_vertex, 3x3 matrix) - use configured precision
         self.cross_block_row = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
         self.cross_block_col = ti.field(dtype=ti.i32, shape=max_cross_block_entries)
-        self.cross_block_val = ti.Matrix.field(3, 3, dtype=ti.f32, shape=max_cross_block_entries)
+        self.cross_block_val = ti.Matrix.field(3, 3, dtype=self.real_type, shape=max_cross_block_entries)
         self.cross_block_count = ti.field(dtype=ti.i32, shape=())  # Atomic counter
         self.max_cross_block_entries = max_cross_block_entries
         self.has_cross_block_data = False
 
+        precision_str = "f64" if use_f64 else "f32"
         print(f"[MAS-Small] Initialized: {self.n_verts} verts, {self.level_num} levels, "
-              f"{self.total_blocks} blocks")
+              f"{self.total_blocks} blocks, precision={precision_str}")
 
     def _compute_level_num(self, n_verts: int) -> int:
         """Compute number of hierarchy levels (legacy, uses n_verts)."""

@@ -24,27 +24,46 @@ import os
 # Import METIS reordering utilities
 try:
     from algorithm.mas_preconditioner_small import (
-        reorder_mesh_data_metis,
+        reorder_mesh_data_metis as reorder_mesh_data_metis_16,
         check_pymetis_available,
-        BANKSIZE,
+        BANKSIZE as BANKSIZE_16,
     )
     _METIS_AVAILABLE = check_pymetis_available()
 except ImportError:
     _METIS_AVAILABLE = False
-    BANKSIZE = 16
+    BANKSIZE_16 = 16
 
-    def reorder_mesh_data_metis(vertices, cells, block_size=16):
+    def reorder_mesh_data_metis_16(vertices, cells, block_size=16):
         """Fallback: return data unchanged if METIS not available."""
         return vertices, cells, None
 
+# Import BANKSIZE=8 METIS reordering utilities
+try:
+    from algorithm.mas_preconditioner_8 import (
+        reorder_mesh_data_metis as reorder_mesh_data_metis_8,
+        BANKSIZE as BANKSIZE_8,
+    )
+    _METIS_8_AVAILABLE = True
+except ImportError:
+    _METIS_8_AVAILABLE = False
+    BANKSIZE_8 = 8
 
-def _merge_and_reorder_models(models, use_metis=True):
+    def reorder_mesh_data_metis_8(vertices, cells, block_size=8):
+        """Fallback: return data unchanged if METIS-8 not available."""
+        return vertices, cells, None
+
+# Default BANKSIZE for backward compatibility
+BANKSIZE = BANKSIZE_16
+
+
+def _merge_and_reorder_models(models, use_metis=True, banksize=16):
     """
     Merge multiple models and apply METIS reordering.
 
     Args:
         models: List of model data from add_object (each is a list: [vertices, ...cells...])
         use_metis: Whether to apply METIS reordering (default: True)
+        banksize: Block size for METIS partitioning (8 or 16, default: 16)
 
     Returns:
         Tuple of (reordered_models_dict, metis_result)
@@ -72,10 +91,15 @@ def _merge_and_reorder_models(models, use_metis=True):
     # Apply METIS reordering if available
     metis_result = None
     if use_metis and _METIS_AVAILABLE:
-        print(f"[model_loading] Applying METIS reordering to {len(merged_vertices)} vertices...")
-        reordered_verts, reordered_cells, metis_result = reorder_mesh_data_metis(
-            merged_vertices, merged_cells, BANKSIZE
-        )
+        print(f"[model_loading] Applying METIS reordering to {len(merged_vertices)} vertices (BANKSIZE={banksize})...")
+        if banksize == 8 and _METIS_8_AVAILABLE:
+            reordered_verts, reordered_cells, metis_result = reorder_mesh_data_metis_8(
+                merged_vertices, merged_cells, banksize
+            )
+        else:
+            reordered_verts, reordered_cells, metis_result = reorder_mesh_data_metis_16(
+                merged_vertices, merged_cells, banksize
+            )
     else:
         if use_metis and not _METIS_AVAILABLE:
             print("[model_loading] WARNING: METIS not available, using original vertex ordering")
@@ -138,14 +162,17 @@ class model_loading:
         model.mesh        # Loaded mesh data
     """
 
-    def __init__(self, demo):
+    def __init__(self, demo, banksize=16):
         """
         Initialize model loading with demo name.
 
         Args:
             demo: Name of the demo configuration to load.
                   Must be a valid YAML config in demo_settings/.
+            banksize: Block size for METIS partitioning (8 or 16, default: 16)
         """
+        self.banksize = banksize
+
         # Load from YAML config system
         if self._try_load_from_yaml(demo):
             return
@@ -306,7 +333,7 @@ class model_loading:
         self.dict['n_objects'] = number
 
         # Apply METIS reordering for optimal MAS preconditioner performance
-        reordered_dict, self.metis_result = _merge_and_reorder_models(models)
+        reordered_dict, self.metis_result = _merge_and_reorder_models(models, banksize=self.banksize)
         self.mesh = Patcher.load_mesh(reordered_dict, relations=["CV"])
         self.auto_camera_from_models(models)
         print('load finish')

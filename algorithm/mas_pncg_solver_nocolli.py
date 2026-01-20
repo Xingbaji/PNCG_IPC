@@ -31,12 +31,14 @@ class MASPNCGSolverNoCollision(base_deformer):
     Optimized for elastic + inertia simulations without contact handling.
     """
 
-    def __init__(self, demo='cube_freefall_10'):
+    def __init__(self, demo='cube_freefall_10', preconditioner_class=None):
         """
         Initialize solver.
 
         Args:
             demo: Demo configuration name
+            preconditioner_class: Optional custom preconditioner class (default: MASPreconditionerSmall).
+                                 Use MASPreconditionerSmallF64 for float64 precision.
         """
         init_start = time.perf_counter()
 

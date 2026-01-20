@@ -6,8 +6,8 @@ material:
   elastic_type: ARAP_SPD
 
 solver:
-  epsilon: 1e-7
-  iter_max: 100
+  epsilon: 1e-5
+  iter_max: 200
   dt: 0.01
 
 scene:
