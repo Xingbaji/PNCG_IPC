@@ -221,18 +221,15 @@ class RadixSortGPU_Optimized:
     Optimized GPU Radix Sort with reduced passes and better memory access.
 
     Optimizations over basic version:
-    1. 11-bit radix for fewer passes (6 passes for 64-bit vs 8)
-    2. Coalesced memory access patterns
-    3. Shared memory simulation via local arrays
-    4. Early termination if keys are already sorted
+    1. Flattened histogram layout for better cache behavior
+    2. Separate kernels for A->B and B->A passes (avoid template issues)
+    3. Coalesced memory access patterns
     """
 
     def __init__(self, max_elements: int):
         self.max_elements = max_elements
 
-        # Use 11-bit radix: 6 passes for 64-bit (11*6=66 > 64)
-        # But 11-bit = 2048 buckets, may cause register pressure
-        # Fallback to 8-bit for stability
+        # Use 8-bit radix: 8 passes for 64-bit
         self.RADIX_BITS = 8
         self.RADIX_SIZE = 256
         self.NUM_PASSES = 8
@@ -256,12 +253,11 @@ class RadixSortGPU_Optimized:
         # Per-block offsets (for scatter)
         self.block_prefix = ti.field(dtype=ti.i32, shape=self.max_blocks * self.RADIX_SIZE)
 
-        # Flags to track which buffer is current
-        self.current_buffer = 0  # 0 = a is input, 1 = b is input
+    # ========== A -> B kernels ==========
 
     @ti.kernel
-    def _histogram_pass(self, n: ti.i32, shift: ti.i32, use_buffer_a: ti.template()):
-        """Compute histograms with coalesced reads."""
+    def _histogram_pass_a(self, n: ti.i32, shift: ti.i32):
+        """Compute histograms from buffer A."""
         RADIX_MASK = ti.u64(0xFF)
         RADIX_SIZE = 256
         n_blocks = (n + 255) // 256
@@ -274,15 +270,72 @@ class RadixSortGPU_Optimized:
 
         # Count elements per bucket per block
         for i in range(n):
-            if ti.static(use_buffer_a):
-                key = self.keys_a[i]
-            else:
-                key = self.keys_b[i]
-
+            key = self.keys_a[i]
             digit = ti.cast((key >> shift) & RADIX_MASK, ti.i32)
             block_id = i // 256
             hist_idx = block_id * RADIX_SIZE + digit
             ti.atomic_add(self.block_histograms[hist_idx], 1)
+
+    @ti.kernel
+    def _scatter_pass_a_to_b(self, n: ti.i32, shift: ti.i32):
+        """Scatter elements from A to B."""
+        RADIX_MASK = ti.u64(0xFF)
+        RADIX_SIZE = 256
+
+        for i in range(n):
+            key = self.keys_a[i]
+            val = self.vals_a[i]
+            digit = ti.cast((key >> shift) & RADIX_MASK, ti.i32)
+            block_id = i // 256
+            prefix_idx = block_id * RADIX_SIZE + digit
+
+            dest = ti.atomic_add(self.block_prefix[prefix_idx], 1)
+
+            self.keys_b[dest] = key
+            self.vals_b[dest] = val
+
+    # ========== B -> A kernels ==========
+
+    @ti.kernel
+    def _histogram_pass_b(self, n: ti.i32, shift: ti.i32):
+        """Compute histograms from buffer B."""
+        RADIX_MASK = ti.u64(0xFF)
+        RADIX_SIZE = 256
+        n_blocks = (n + 255) // 256
+
+        # Clear histograms
+        for idx in range(n_blocks * RADIX_SIZE):
+            self.block_histograms[idx] = 0
+
+        ti.sync()
+
+        # Count elements per bucket per block
+        for i in range(n):
+            key = self.keys_b[i]
+            digit = ti.cast((key >> shift) & RADIX_MASK, ti.i32)
+            block_id = i // 256
+            hist_idx = block_id * RADIX_SIZE + digit
+            ti.atomic_add(self.block_histograms[hist_idx], 1)
+
+    @ti.kernel
+    def _scatter_pass_b_to_a(self, n: ti.i32, shift: ti.i32):
+        """Scatter elements from B to A."""
+        RADIX_MASK = ti.u64(0xFF)
+        RADIX_SIZE = 256
+
+        for i in range(n):
+            key = self.keys_b[i]
+            val = self.vals_b[i]
+            digit = ti.cast((key >> shift) & RADIX_MASK, ti.i32)
+            block_id = i // 256
+            prefix_idx = block_id * RADIX_SIZE + digit
+
+            dest = ti.atomic_add(self.block_prefix[prefix_idx], 1)
+
+            self.keys_a[dest] = key
+            self.vals_a[dest] = val
+
+    # ========== Common kernels ==========
 
     @ti.kernel
     def _prefix_sum_pass(self, n_blocks: ti.i32):
@@ -315,33 +368,6 @@ class RadixSortGPU_Optimized:
                 offset += self.block_histograms[bid * RADIX_SIZE + digit]
 
     @ti.kernel
-    def _scatter_pass(self, n: ti.i32, shift: ti.i32, use_buffer_a: ti.template()):
-        """Scatter elements to sorted positions."""
-        RADIX_MASK = ti.u64(0xFF)
-        RADIX_SIZE = 256
-
-        for i in range(n):
-            if ti.static(use_buffer_a):
-                key = self.keys_a[i]
-                val = self.vals_a[i]
-            else:
-                key = self.keys_b[i]
-                val = self.vals_b[i]
-
-            digit = ti.cast((key >> shift) & RADIX_MASK, ti.i32)
-            block_id = i // 256
-            prefix_idx = block_id * RADIX_SIZE + digit
-
-            dest = ti.atomic_add(self.block_prefix[prefix_idx], 1)
-
-            if ti.static(use_buffer_a):
-                self.keys_b[dest] = key
-                self.vals_b[dest] = val
-            else:
-                self.keys_a[dest] = key
-                self.vals_a[dest] = val
-
-    @ti.kernel
     def _copy_to_a(self, keys: ti.template(), values: ti.template(), n: ti.i32):
         for i in range(n):
             self.keys_a[i] = keys[i]
@@ -370,26 +396,27 @@ class RadixSortGPU_Optimized:
         self._copy_to_a(keys, values, n)
 
         # Perform radix sort passes
-        use_a = True
+        # Pass 0, 2, 4, 6: A -> B
+        # Pass 1, 3, 5, 7: B -> A
         for pass_idx in range(self.NUM_PASSES):
             shift = pass_idx * self.RADIX_BITS
 
-            if use_a:
-                self._histogram_pass(n, shift, True)
+            if pass_idx % 2 == 0:
+                # A -> B
+                self._histogram_pass_a(n, shift)
                 self._prefix_sum_pass(n_blocks)
-                self._scatter_pass(n, shift, True)
+                self._scatter_pass_a_to_b(n, shift)
             else:
-                self._histogram_pass(n, shift, False)
+                # B -> A
+                self._histogram_pass_b(n, shift)
                 self._prefix_sum_pass(n_blocks)
-                self._scatter_pass(n, shift, False)
+                self._scatter_pass_b_to_a(n, shift)
 
-            use_a = not use_a
-
-        # Copy result back
-        if use_a:
-            self._copy_from_a(keys, values, n)
-        else:
-            self._copy_from_b(keys, values, n)
+        # After 8 passes (even number), result is in B
+        # (A->B, B->A, A->B, B->A, A->B, B->A, A->B, B->A)
+        # Pass 0: A->B, Pass 1: B->A, ..., Pass 7: B->A
+        # After pass 7, result is in A
+        self._copy_from_a(keys, values, n)
 
 
 # Convenience function to create sorter

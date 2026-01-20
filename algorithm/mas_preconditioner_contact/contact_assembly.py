@@ -103,33 +103,6 @@ def barrier_H_cubic(d: ti.f32, dHat: ti.f32, kappa: ti.f32) -> ti.f32:
 
 
 # ============================================================================
-# Adaptive Kappa Versions (for cubic barrier)
-# ============================================================================
-
-@ti.func
-def barrier_g_cubic_adaptive(d: ti.f32, dHat: ti.f32, kappa_local: ti.f32) -> ti.f32:
-    """
-    Cubic barrier gradient with local adaptive kappa.
-    """
-    g = 0.0
-    if d < dHat:
-        y = d - dHat
-        g = -2.0 * kappa_local * (y * y) / dHat
-    return g
-
-
-@ti.func
-def barrier_H_cubic_adaptive(d: ti.f32, dHat: ti.f32, kappa_local: ti.f32) -> ti.f32:
-    """
-    Cubic barrier Hessian with local adaptive kappa.
-    """
-    H = 0.0
-    if d < dHat:
-        H = 4.0 * kappa_local * (1.0 - d / dHat)
-    return H
-
-
-# ============================================================================
 # Contact Hessian Structure Utilities
 # ============================================================================
 

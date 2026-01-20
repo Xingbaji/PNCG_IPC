@@ -68,7 +68,7 @@ class StiffnessConvergenceTest:
         # Manually build the demo_dict with custom E
         demo_dict = {
             'E': E, 'nu': 0.4, 'density': 50.0, 'gravity': -9.8, 'dt': 0.01,
-            'epsilon': 1e-6, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
+            'epsilon': 1e-4, 'iter_max': 100, 'height': 100.0, 'elastic_type': 'ARAP_SPD',
             'model_paths': ['../model/mesh/e_2/e_2.node' for _ in range(8)],
             'rotations': [[0.0, 0.0, 0.0] for _ in range(8)],
             'scales': [[1.0, 1.0, 1.0] for _ in range(8)],
