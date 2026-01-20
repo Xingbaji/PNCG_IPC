@@ -1,0 +1,35 @@
+# Soft cubes drop demo - Multiple soft cubes falling with IPC contact
+# Used for testing MAS Contact Solver with Woodbury updates
+
+material:
+  E: 5.0e3                    # Young's modulus (soft material)
+  nu: 0.4                     # Poisson's ratio
+  density: 100.0              # Mass density (kg/m^3)
+  elastic_type: NH            # Neo-Hookean constitutive model
+
+solver:
+  epsilon: 1e-4               # Convergence tolerance
+  iter_max: 50                # Max PNCG iterations
+  dt: 0.01                    # Time step (seconds)
+
+scene:
+  ground_height: 0.0          # Ground at y=0
+  gravity: -9.8               # Gravity acceleration
+  meshes:
+    # Grid of 8 soft cubes: 2 rows x 2 cols x 2 layers
+    - path: ../model/mesh/cube_10/cube_10.node
+      grid:
+        rows: 2               # 2 rows in x direction
+        cols: 2               # 2 columns in z direction
+        layers: 2             # 2 layers in y direction (stacked)
+        spacing: [0.7, 0.7, 0.7]  # Spacing between cubes
+      translation: [0.0, 0.5, 0.0]  # Start above ground
+  camera_position: [2.5, 1.5, 3.0]
+  camera_lookat: [0.5, 0.5, 0.5]
+
+ipc:
+  enabled: true
+  dHat: 0.02                  # Distance threshold
+  kappa: 1.0                  # Barrier stiffness
+  ground_barrier: true        # Enable ground collision
+  barrier_type: log           # Log barrier (more accurate)
