@@ -677,6 +677,150 @@ class PrecondDirectionTester:
 
         return metrics
 
+    def test_hessian_matvec_accuracy(self, verbose=True):
+        """
+        Test MAS hessian_matvec accuracy against ground truth compute_zHz.
+
+        This test verifies that z^T H z computed via MAS hessian_matvec is
+        consistent with the ground truth computed via:
+            z^T H z = sum_verts(z^T * m * z) + sum_cells(z^T * H_elastic * z)
+
+        Note: MAS hessian_matvec is an APPROXIMATION because:
+        - Level 0 stores only intra-block coupling
+        - Cross-block coupling is stored in coarse levels with aggregation
+        """
+        print(f"\n{'='*70}")
+        print("MAS hessian_matvec Accuracy Test")
+        print(f"{'='*70}\n")
+
+        # Initialize state
+        self.init_v(-1.0)
+        self.assign_xn_xhat()
+        self.compute_grad_and_diagH()
+
+        # Build hierarchy first (only once, avoid recompilation)
+        if not self.mas.hierarchy_built:
+            self.mas.build_hierarchy()
+
+        # Assemble and invert block matrices
+        self.mas.assemble_block_matrices(self)
+        self.mas.invert_block_matrices()
+
+        # Apply preconditioner
+        self.mas.apply()
+
+        z_np = self.mesh.verts.z.to_numpy().flatten()
+        g_np = self.mesh.verts.grad.to_numpy().flatten()
+        print(f"|z| = {np.linalg.norm(z_np):.6e}")
+        print(f"|g| = {np.linalg.norm(g_np):.6e}")
+
+        # Compute g^T z
+        gTz = np.dot(g_np, z_np)
+        print(f"g^T z = {gTz:.6e}")
+
+        # Method 1: Ground truth z^T H z using sparse Hessian
+        print("\nComputing ground truth z^T H z via sparse Hessian...")
+        H = self.build_sparse_hessian()
+        Hz_gt = H @ z_np
+        zHz_gt = np.dot(z_np, Hz_gt)
+        print(f"z^T H z (ground truth) = {zHz_gt:.6e}")
+        print(f"|H @ z| (ground truth) = {np.linalg.norm(Hz_gt):.6e}")
+
+        # Method 2: MAS hessian_matvec (approximate - uses coarse level approximation)
+        print("\nComputing z^T H z via MAS hessian_matvec (APPROXIMATE)...")
+        z_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        Hz_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+
+        # Copy z to buffer
+        z_reshaped = z_np.reshape(-1, 3)
+        z_buffer.from_numpy(z_reshaped.astype(np.float64))
+
+        # Apply hessian_matvec (approximate)
+        self.mas.hessian_matvec(z_buffer, Hz_buffer)
+
+        Hz_mas_approx = Hz_buffer.to_numpy().flatten()
+        zHz_mas_approx = np.dot(z_np, Hz_mas_approx)
+        print(f"z^T H z (MAS approx) = {zHz_mas_approx:.6e}")
+        print(f"|H @ z| (MAS approx) = {np.linalg.norm(Hz_mas_approx):.6e}")
+
+        # Method 3: MAS hessian_matvec_exact (uses triplet storage for cross-block)
+        print("\nComputing z^T H z via MAS hessian_matvec_exact (EXACT)...")
+        Hz_buffer_exact = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+
+        # Apply hessian_matvec_exact
+        self.mas.hessian_matvec_exact(z_buffer, Hz_buffer_exact)
+
+        Hz_mas = Hz_buffer_exact.to_numpy().flatten()
+        zHz_mas = np.dot(z_np, Hz_mas)
+        print(f"z^T H z (MAS exact) = {zHz_mas:.6e}")
+        print(f"|H @ z| (MAS exact) = {np.linalg.norm(Hz_mas):.6e}")
+
+        # Show cross-block statistics
+        stats = self.mas.get_cross_block_stats()
+        print(f"\nCross-block storage: {stats['n_triplets']} triplets ({stats['usage_percent']:.1f}% of max)")
+
+        # Comparison
+        print(f"\n{'='*70}")
+        print("Comparison")
+        print(f"{'='*70}")
+
+        ratio = zHz_mas / zHz_gt if abs(zHz_gt) > 1e-15 else float('inf')
+        print(f"Ratio (MAS / GT) = {ratio:.4f}")
+
+        # Compare Hz vectors
+        Hz_rel_error = np.linalg.norm(Hz_mas - Hz_gt) / np.linalg.norm(Hz_gt) if np.linalg.norm(Hz_gt) > 1e-15 else float('inf')
+        print(f"|H@z_MAS - H@z_GT| / |H@z_GT| = {Hz_rel_error:.4e}")
+
+        # Cosine similarity between Hz vectors
+        if np.linalg.norm(Hz_mas) > 1e-15 and np.linalg.norm(Hz_gt) > 1e-15:
+            cos_Hz = np.dot(Hz_mas, Hz_gt) / (np.linalg.norm(Hz_mas) * np.linalg.norm(Hz_gt))
+        else:
+            cos_Hz = 0.0
+        print(f"cos(H@z_MAS, H@z_GT) = {cos_Hz:.6f}")
+
+        # Compute alpha using both methods
+        alpha_gt = gTz / zHz_gt if abs(zHz_gt) > 1e-15 else 0.0
+        alpha_mas = gTz / zHz_mas if abs(zHz_mas) > 1e-15 else 0.0
+
+        print(f"\nalpha = g^T z / z^T H z:")
+        print(f"  alpha (GT):  {alpha_gt:.6f}")
+        print(f"  alpha (MAS): {alpha_mas:.6f}")
+        print(f"  Ratio:       {alpha_mas/alpha_gt if abs(alpha_gt) > 1e-15 else float('inf'):.4f}")
+
+        # Step size comparison
+        print(f"\nStep size |alpha * z|:")
+        print(f"  GT:  {abs(alpha_gt) * np.linalg.norm(z_np):.6e}")
+        print(f"  MAS: {abs(alpha_mas) * np.linalg.norm(z_np):.6e}")
+
+        # Status assessment
+        print(f"\n{'='*70}")
+        print("Assessment")
+        print(f"{'='*70}")
+
+        if abs(ratio - 1.0) < 0.1:
+            status = "EXCELLENT (<10% error)"
+        elif abs(ratio - 1.0) < 0.5:
+            status = "GOOD (<50% error)"
+        elif 0.01 < ratio < 100.0:
+            status = "APPROXIMATE (same order of magnitude)"
+        else:
+            status = "POOR (>2 orders of magnitude off)"
+
+        print(f"z^T H z ratio status: {status}")
+        print(f"Note: MAS stores block approximation, so some deviation is expected.")
+
+        # Return results
+        return {
+            'zHz_gt': zHz_gt,
+            'zHz_mas': zHz_mas,
+            'ratio': ratio,
+            'Hz_rel_error': Hz_rel_error,
+            'cos_Hz': cos_Hz,
+            'alpha_gt': alpha_gt,
+            'alpha_mas': alpha_mas,
+            'status': status,
+        }
+
 
 def main():
     parser = argparse.ArgumentParser(description='MAS-Small Direction Accuracy Test at iter=0')
@@ -692,6 +836,8 @@ def main():
                         help='Disable Taichi offline cache')
     parser.add_argument('--no-exact', action='store_true',
                         help='Skip ground truth computation')
+    parser.add_argument('--hessian-matvec', action='store_true',
+                        help='Run hessian_matvec accuracy test (compare z^T H z)')
     args = parser.parse_args()
 
     # Enable MAS verbose if requested
@@ -708,6 +854,17 @@ def main():
 
     # Create tester and run
     tester = PrecondDirectionTester(demo=args.demo)
+
+    # Run hessian_matvec test if requested
+    if args.hessian_matvec:
+        results = tester.test_hessian_matvec_accuracy(verbose=args.verbose or True)
+        # Return 0 if ratio is reasonable (0.01 < ratio < 100)
+        if 0.01 < results['ratio'] < 100.0:
+            return 0
+        else:
+            return 1
+
+    # Run standard direction accuracy test
     results = tester.run_test(
         initial_vy=args.vy,
         verbose=args.verbose or True,

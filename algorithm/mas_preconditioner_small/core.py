@@ -362,6 +362,11 @@ class MASPreconditionerSmall:
             self.block_matrices[block_id, sym_idx] = ti.Matrix.zero(ti.f32, 3, 3)
 
     @ti.kernel
+    def _clear_cross_block_storage(self):
+        """Clear cross-block triplet storage counter."""
+        self.cross_block_count[None] = 0
+
+    @ti.kernel
     def _add_inertia_contribution(self, dt: ti.f32):
         """Add mass matrix to diagonal blocks using MeshTaichi iterator.
 
@@ -459,7 +464,7 @@ class MASPreconditionerSmall:
                                     ti.atomic_add(self.block_matrices[warp_i, s_idx][di, dj],
                                                   sub_block[dj, di])
                     else:
-                        # Cross-warp: propagate to coarse level
+                        # Cross-warp: propagate to coarse level AND store in triplet format
                         vert_i = v_ids[i]
                         vert_j = v_ids[j]
 
@@ -468,6 +473,25 @@ class MASPreconditionerSmall:
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
 
+                        # Store cross-block entry in triplet format for exact Hessian matvec
+                        # Use original vertex IDs (not coarse), store upper triangle (i < j)
+                        orig_i = v_ids[i]
+                        orig_j = v_ids[j]
+                        triplet_idx = ti.atomic_add(self.cross_block_count[None], 1)
+                        if triplet_idx < self.max_cross_block_entries:
+                            if orig_i <= orig_j:
+                                self.cross_block_row[triplet_idx] = orig_i
+                                self.cross_block_col[triplet_idx] = orig_j
+                                self.cross_block_val[triplet_idx] = sub_block
+                            else:
+                                # Store as (j, i) with transposed block
+                                self.cross_block_row[triplet_idx] = orig_j
+                                self.cross_block_col[triplet_idx] = orig_i
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        self.cross_block_val[triplet_idx][di, dj] = sub_block[dj, di]
+
+                        # Also propagate to coarse levels for preconditioning
                         for _ in range(self.level_num - 1):
                             vert_i = self.going_next[vert_i]
                             vert_j = self.going_next[vert_j]
@@ -560,7 +584,7 @@ class MASPreconditionerSmall:
                                     ti.atomic_add(self.block_matrices[block_i, s_idx][di, dj],
                                                   sub_block[dj, di])
                     else:
-                        # Cross-partition: propagate to coarse level
+                        # Cross-partition: propagate to coarse level AND store in triplet format
                         vert_i = v_ids[i]
                         vert_j = v_ids[j]
 
@@ -569,6 +593,23 @@ class MASPreconditionerSmall:
                             for dj in ti.static(range(3)):
                                 sub_block[di, dj] = H_e[i * 3 + di, j * 3 + dj]
 
+                        # Store cross-block entry in triplet format for exact Hessian matvec
+                        orig_i = v_ids[i]
+                        orig_j = v_ids[j]
+                        triplet_idx = ti.atomic_add(self.cross_block_count[None], 1)
+                        if triplet_idx < self.max_cross_block_entries:
+                            if orig_i <= orig_j:
+                                self.cross_block_row[triplet_idx] = orig_i
+                                self.cross_block_col[triplet_idx] = orig_j
+                                self.cross_block_val[triplet_idx] = sub_block
+                            else:
+                                self.cross_block_row[triplet_idx] = orig_j
+                                self.cross_block_col[triplet_idx] = orig_i
+                                for di in ti.static(range(3)):
+                                    for dj in ti.static(range(3)):
+                                        self.cross_block_val[triplet_idx][di, dj] = sub_block[dj, di]
+
+                        # Also propagate to coarse levels for preconditioning
                         for _ in range(self.level_num - 1):
                             vert_i = self.going_next[vert_i]
                             vert_j = self.going_next[vert_j]
@@ -773,8 +814,12 @@ class MASPreconditionerSmall:
                                 break
 
     def assemble_block_matrices(self, solver):
-        """Assemble Hessian contributions into block matrices."""
+        """Assemble Hessian contributions into block matrices.
+
+        Also stores cross-block coupling in triplet format for exact Hessian matvec.
+        """
         self._clear_block_matrices()
+        self._clear_cross_block_storage()  # Clear triplet storage
 
         if self.use_metis:
             self._add_inertia_contribution_metis(solver.dt)
@@ -791,6 +836,7 @@ class MASPreconditionerSmall:
             self._aggregate_fine_to_coarse()
 
         self.matrices_assembled = True
+        self.has_cross_block_data = True  # Cross-block triplets are now available
 
     # ========================================================================
     # Block Inversion (IC(0))
@@ -1463,6 +1509,124 @@ class MASPreconditionerSmall:
         self._copy_z_to_buffer(z_buffer)
         self.hessian_matvec(z_buffer, result_buffer)
         self._copy_buffer_to_grad(result_buffer)
+
+    # ========================================================================
+    # EXACT Hessian Matrix-Vector Multiplication
+    # ========================================================================
+    #
+    # The functions below compute EXACT H @ v by:
+    # 1. Level 0 block-diagonal contribution (intra-block coupling)
+    # 2. Cross-block coupling from triplet storage (stored during assembly)
+    #
+    # This is the correct way to compute H @ v, unlike the approximate version
+    # that uses coarse-level matrices.
+    # ========================================================================
+
+    @ti.kernel
+    def _cross_block_spmv(self, v: ti.template(), result: ti.template(), n_triplets: ti.i32):
+        """
+        Compute cross-block contribution to H @ v using triplet format.
+
+        For each triplet (row, col, H_block):
+          result[row] += H_block @ v[col]
+          result[col] += H_block^T @ v[row]  (symmetric matrix)
+
+        The triplets store upper triangle entries only (row <= col).
+        """
+        for t in range(n_triplets):
+            row = self.cross_block_row[t]
+            col = self.cross_block_col[t]
+
+            if row < 0 or col < 0:
+                continue
+
+            H_block = self.cross_block_val[t]
+            v_row = v[row]
+            v_col = v[col]
+
+            # H @ v contribution: result[row] += H_block @ v[col]
+            r0_row = H_block[0, 0] * v_col[0] + H_block[0, 1] * v_col[1] + H_block[0, 2] * v_col[2]
+            r1_row = H_block[1, 0] * v_col[0] + H_block[1, 1] * v_col[1] + H_block[1, 2] * v_col[2]
+            r2_row = H_block[2, 0] * v_col[0] + H_block[2, 1] * v_col[1] + H_block[2, 2] * v_col[2]
+
+            ti.atomic_add(result[row][0], r0_row)
+            ti.atomic_add(result[row][1], r1_row)
+            ti.atomic_add(result[row][2], r2_row)
+
+            # Symmetric contribution: result[col] += H_block^T @ v[row]
+            if row != col:
+                r0_col = H_block[0, 0] * v_row[0] + H_block[1, 0] * v_row[1] + H_block[2, 0] * v_row[2]
+                r1_col = H_block[0, 1] * v_row[0] + H_block[1, 1] * v_row[1] + H_block[2, 1] * v_row[2]
+                r2_col = H_block[0, 2] * v_row[0] + H_block[1, 2] * v_row[1] + H_block[2, 2] * v_row[2]
+
+                ti.atomic_add(result[col][0], r0_col)
+                ti.atomic_add(result[col][1], r1_col)
+                ti.atomic_add(result[col][2], r2_col)
+
+    def hessian_matvec_exact(self, v: ti.template(), result: ti.template()):
+        """
+        Compute result = H @ v EXACTLY using block-diagonal + cross-block triplets.
+
+        This function computes the EXACT Hessian matrix-vector product by:
+        1. Level 0 block-diagonal contribution (intra-block coupling)
+        2. Cross-block coupling from triplet storage
+
+        Unlike hessian_matvec() which uses an approximate coarse-level reconstruction,
+        this function uses the exact cross-block entries stored during assembly.
+
+        Args:
+            v: Input vector field with 3D vectors (indexed by vertex id)
+            result: Output vector field with 3D vectors (indexed by vertex id)
+
+        Example usage:
+            v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            preconditioner.hessian_matvec_exact(v, result)
+        """
+        if not self.matrices_assembled:
+            raise RuntimeError("Matrices not assembled. Call assemble_block_matrices first.")
+        if not self.has_cross_block_data:
+            raise RuntimeError("Cross-block data not available. Call assemble_block_matrices first.")
+
+        # Step 1: Compute level 0 block-diagonal contribution
+        if self.use_metis:
+            self._hessian_matvec_level0_metis(v, result)
+        else:
+            self._hessian_matvec_level0_block_diag(v, result)
+
+        # Step 2: Add cross-block contributions from triplet storage
+        n_triplets = self.cross_block_count[None]
+        if n_triplets > 0:
+            self._cross_block_spmv(v, result, n_triplets)
+
+    def hessian_matvec_exact_mesh(self, z_buffer: ti.template(), result_buffer: ti.template()):
+        """
+        Compute EXACT H @ z where z comes from mesh.verts.z, result goes to mesh.verts.grad.
+
+        This is a convenience wrapper that:
+        1. Copies mesh.verts.z to z_buffer
+        2. Computes EXACT H @ z_buffer -> result_buffer
+        3. Copies result_buffer to mesh.verts.grad
+
+        Args:
+            z_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+            result_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+        """
+        self._copy_z_to_buffer(z_buffer)
+        self.hessian_matvec_exact(z_buffer, result_buffer)
+        self._copy_buffer_to_grad(result_buffer)
+
+    def get_cross_block_stats(self):
+        """Get statistics about cross-block coupling storage."""
+        n_triplets = int(self.cross_block_count[None])
+        max_entries = self.max_cross_block_entries
+        usage_pct = 100.0 * n_triplets / max_entries if max_entries > 0 else 0.0
+        return {
+            'n_triplets': n_triplets,
+            'max_entries': max_entries,
+            'usage_percent': usage_pct,
+            'memory_mb': n_triplets * (4 + 4 + 9 * 4) / (1024 * 1024)  # row + col + 3x3 float
+        }
 
     # ========================================================================
     # High-level API
