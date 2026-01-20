@@ -620,3 +620,102 @@ class MASPreconditionerContact(MASPreconditionerSmall):
             'usage_percent': usage_pct,
             'memory_mb': n_contact_triplets * (4 + 4 + 9 * 4) / (1024 * 1024)
         }
+
+    # =========================================================================
+    # Woodbury Update Support
+    # =========================================================================
+
+    def init_woodbury(self):
+        """
+        Initialize Woodbury update structures.
+
+        Call this once before using Woodbury updates. Can be called lazily
+        on first use or explicitly at initialization.
+        """
+        from .woodbury import WoodburySupport
+        self._woodbury = WoodburySupport(self)
+        self._woodbury.init_woodbury_structures()
+
+    def save_base_state(self, solver):
+        """
+        Save current contact state as base for Woodbury updates.
+
+        Call this after a full rebuild to establish the baseline.
+
+        Args:
+            solver: The IPC solver containing contact information
+        """
+        if not hasattr(self, '_woodbury'):
+            self.init_woodbury()
+        self._woodbury.save_base_contact_state(solver)
+
+    def woodbury_update(self, solver):
+        """
+        Compute Woodbury updates from contact changes.
+
+        Call this instead of full rebuild when contacts change incrementally.
+
+        Args:
+            solver: The IPC solver containing current contact information
+        """
+        if not hasattr(self, '_woodbury'):
+            self.init_woodbury()
+        self._woodbury.compute_woodbury_updates(solver)
+
+    def apply_with_woodbury(self):
+        """
+        Apply preconditioner with Woodbury corrections.
+
+        Use this instead of apply() when Woodbury updates have been computed.
+        """
+        if not hasattr(self, '_woodbury') or not self._woodbury.initialized:
+            raise RuntimeError("Woodbury not initialized. Call init_woodbury() first.")
+        self._woodbury.apply_with_woodbury()
+
+    def should_use_woodbury(self, solver) -> bool:
+        """
+        Determine if Woodbury update is appropriate.
+
+        Returns True if:
+        1. Woodbury is initialized
+        2. Base contacts exist (not first iteration)
+        3. Contact change is incremental (< 50% change in count)
+
+        Args:
+            solver: The IPC solver containing contact information
+
+        Returns:
+            bool: True if Woodbury update should be used
+        """
+        if not hasattr(self, '_woodbury') or not self._woodbury.initialized:
+            return False
+
+        n_base = len(self._woodbury.base_contacts)
+        if n_base == 0:
+            return False
+
+        n_curr = solver.n_contacts[None]
+        change_ratio = abs(n_curr - n_base) / max(n_base, 1)
+        return change_ratio < 0.5
+
+    def get_woodbury_stats(self):
+        """
+        Get statistics about Woodbury updates.
+
+        Returns:
+            dict: Statistics including number of updates, base contacts, etc.
+        """
+        if not hasattr(self, '_woodbury') or not self._woodbury.initialized:
+            return {
+                'initialized': False,
+                'n_base_contacts': 0,
+                'n_updates_total': 0
+            }
+
+        return {
+            'initialized': True,
+            'n_base_contacts': len(self._woodbury.base_contacts),
+            'n_updates_total': self._woodbury.get_num_updates_total(),
+            'top_k': self._woodbury.top_k,
+            'n_blocks': self._woodbury.n_blocks
+        }

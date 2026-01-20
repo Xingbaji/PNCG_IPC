@@ -8,11 +8,17 @@ Key features:
 - Same-block contacts: Direct assembly to level-0 blocks
 - Cross-block contacts: Triplet storage for exact matvec + coarse propagation
 - SPD preservation: Contact Hessian structure is naturally PSD
+- Woodbury updates: Efficient incremental preconditioner updates
 
 SPD Contact Hessian (PPF-Contact-Solver style):
 - Barrier Hessian: H = curvature * (e⊗e^T) / ||e||² (PSD by construction)
 - Friction Hessian: H = λ * P where P = I - n⊗n^T (PSD projection matrix)
 - No eigenvalue decomposition needed, efficient GPU implementation
+
+Woodbury Update (MAS-PNCG paper Section 3.1):
+- Efficient incremental updates when contacts change slightly
+- Formula: (A + U*S*U^T)^{-1} = A^{-1} - A^{-1}*U*(S^{-1} + U^T*A^{-1}*U)^{-1}*U^T*A^{-1}
+- Only updates level 0 blocks; coarse levels use frozen cached inverses
 
 Usage:
 ======
@@ -21,16 +27,25 @@ Usage:
     # Create preconditioner (mesh must be METIS pre-reordered)
     precond = MASPreconditionerContact(mesh, max_contacts=MAX_C)
 
-    # In solver step (without friction):
+    # Standard usage (full rebuild):
     precond.rebuild_with_contacts(solver)
     precond.apply()
 
-    # With friction (SPD formulation):
-    precond.rebuild_with_contacts_spd(solver, mu=0.5, friction_eps=1e-4)
-    precond.apply()
+    # With Woodbury updates (incremental):
+    precond.rebuild_with_contacts(solver)
+    precond.save_base_state(solver)     # Save baseline
+    # ... later, when contacts change slightly ...
+    if precond.should_use_woodbury(solver):
+        precond.woodbury_update(solver)
+        precond.apply_with_woodbury()
+    else:
+        precond.rebuild_with_contacts(solver)
+        precond.save_base_state(solver)
+        precond.apply()
 """
 
 from .core import MASPreconditionerContact
+from .woodbury import WoodburySupport
 
 # Export SPD contact assembly functions
 from .contact_assembly import (
@@ -67,6 +82,8 @@ from algorithm.mas_preconditioner_small import (
 __all__ = [
     # Main class
     'MASPreconditionerContact',
+    # Woodbury support
+    'WoodburySupport',
     # SPD barrier functions
     'barrier_curvature_cubic',
     'barrier_curvature_log',

@@ -321,6 +321,10 @@ class MASPNCGSolver(collision_detection_bvh_module):
         """Apply MAS preconditioner."""
         self.mas_preconditioner.apply()
 
+    def apply_preconditioner_woodbury(self):
+        """Apply MAS preconditioner with Woodbury updates."""
+        self.mas_preconditioner.apply_with_woodbury()
+
     # ========================================================================
     # Hessian-Vector Products
     # ========================================================================
@@ -599,19 +603,23 @@ class MASPNCGSolver(collision_detection_bvh_module):
 
         return False
 
-    def step(self, verbose=False):
+    def step(self, verbose=False, use_woodbury=True):
         """
         Main MAS-PNCG step with IPC contact.
+
+        Args:
+            verbose: Print detailed iteration info
+            use_woodbury: Enable Woodbury updates for incremental contact changes
 
         Returns: number of iterations
         """
         if verbose:
-            print(f'\n{"="*110}')
+            print(f'\n{"="*120}')
             print(f'Frame {self.frame}')
-            print(f'{"="*110}')
+            print(f'{"="*120}')
             print(f'{"iter":>4} {"E":>12} {"|g|_inf":>10} {"|z|":>10} {"mu":>10} {"nu":>10} '
-                  f'{"r_k":>8} {"rst":>3} {"n_cnt":>6} {"t_cnt":>7} {"t_rbd":>7} {"t_app":>7}')
-            print(f'{"-"*110}')
+                  f'{"r_k":>8} {"rst":>3} {"upd":>8} {"n_cnt":>6} {"t_cnt":>7} {"t_rbd":>7} {"t_app":>7}')
+            print(f'{"-"*120}')
 
         self.assign_xn_xhat()
         self.energy_history.clear()
@@ -619,6 +627,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
         do_restart = True
         mu, nu = 0.0, 0.0
         r_k = 0.0
+        first_iter = True
 
         for iter in range(self.iter_max):
             # Step 1: Find contacts
@@ -639,22 +648,43 @@ class MASPNCGSolver(collision_detection_bvh_module):
             if grad_inf < self.epsilon:
                 if verbose:
                     print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
-                          f'{"--":>8} {"--":>3} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
+                          f'{"--":>8} {"--":>3} {"--":>8} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
                     print(f'  => Converged at iter {iter}, |g|_inf={grad_inf:.2e}')
                 break
 
             if self.check_energy_stagnation(energy):
                 if verbose:
                     print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {"--":>10} {"--":>10} {"--":>10} '
-                          f'{"--":>8} {"--":>3} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
+                          f'{"--":>8} {"--":>3} {"--":>8} {n_contacts:>6} {t_cnt:>6.2f}ms {"--":>7} {"--":>7}')
                     print(f'  => Converged at iter {iter}, energy stagnated')
                 break
 
-            # Step 4: Rebuild preconditioner on restart
+            # Step 4: Update preconditioner
             t_rebuild_start = time.perf_counter()
-            if do_restart:
+            update_type = "cached"
+
+            if first_iter:
+                # First iteration: full rebuild + save base state for Woodbury
                 self.mas_preconditioner.rebuild_with_contacts(self)
+                if use_woodbury:
+                    self.mas_preconditioner.save_base_state(self)
                 ti.sync()
+                update_type = "full"
+                first_iter = False
+            elif do_restart:
+                # Restart: check if Woodbury update is appropriate
+                if use_woodbury and self.mas_preconditioner.should_use_woodbury(self):
+                    # Incremental update with Woodbury
+                    self.mas_preconditioner.woodbury_update(self)
+                    update_type = "woodbury"
+                else:
+                    # Large contact change: full rebuild + update base state
+                    self.mas_preconditioner.rebuild_with_contacts(self)
+                    if use_woodbury:
+                        self.mas_preconditioner.save_base_state(self)
+                    ti.sync()
+                    update_type = "full"
+
             t_rebuild = (time.perf_counter() - t_rebuild_start) * 1000
 
             # Step 5: Cache z_prev
@@ -663,7 +693,10 @@ class MASPNCGSolver(collision_detection_bvh_module):
 
             # Step 6: Apply preconditioner
             t_apply_start = time.perf_counter()
-            self.apply_preconditioner()
+            if update_type == "woodbury":
+                self.apply_preconditioner_woodbury()
+            else:
+                self.apply_preconditioner()
             t_apply = (time.perf_counter() - t_apply_start) * 1000
 
             # Step 7: Compute Hv = H * z
@@ -690,7 +723,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
                 restart_str = "Y" if do_restart else "N"
                 r_k_str = f'{r_k:>8.4f}' if iter > 0 else f'{"--":>8}'
                 print(f'{iter:>4} {energy:>12.4e} {grad_inf:>10.2e} {z_norm:>10.2e} {mu:>10.4f} {nu:>10.4f} '
-                      f'{r_k_str} {restart_str:>3} {n_contacts:>6} {t_cnt:>6.2f}ms {t_rebuild:>6.2f}ms {t_apply:>6.2f}ms')
+                      f'{r_k_str} {restart_str:>3} {update_type:>8} {n_contacts:>6} {t_cnt:>6.2f}ms {t_rebuild:>6.2f}ms {t_apply:>6.2f}ms')
 
             # Step 10: Line search with CCD
             alpha = self.compute_ccd_alpha()
