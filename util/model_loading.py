@@ -7,6 +7,11 @@ and prepares mesh data for simulation.
 Configuration Priority:
 1. YAML files in demo_settings/ (new system - recommended)
 2. Legacy hardcoded configs (for backward compatibility)
+
+METIS Reordering:
+- All meshes are automatically METIS-reordered during loading
+- This provides optimal vertex ordering for MAS preconditioner
+- Vertex IDs directly map to block/lane: block_id = vid // 16, lane_id = vid % 16
 """
 
 import numpy as np
@@ -15,6 +20,72 @@ np.set_printoptions(suppress=True)
 import meshtaichi_patcher as Patcher
 from scipy.spatial.transform import Rotation
 import os
+
+# Import METIS reordering utilities
+try:
+    from algorithm.mas_preconditioner_small import (
+        reorder_mesh_data_metis,
+        check_pymetis_available,
+        BANKSIZE,
+    )
+    _METIS_AVAILABLE = check_pymetis_available()
+except ImportError:
+    _METIS_AVAILABLE = False
+    BANKSIZE = 16
+
+    def reorder_mesh_data_metis(vertices, cells, block_size=16):
+        """Fallback: return data unchanged if METIS not available."""
+        return vertices, cells, None
+
+
+def _merge_and_reorder_models(models, use_metis=True):
+    """
+    Merge multiple models and apply METIS reordering.
+
+    Args:
+        models: List of model data from add_object (each is a list: [vertices, ...cells...])
+        use_metis: Whether to apply METIS reordering (default: True)
+
+    Returns:
+        Tuple of (reordered_models_dict, metis_result)
+        - reordered_models_dict: Dict format for Patcher.load_mesh
+        - metis_result: MetisReorderResult or None
+    """
+    if not models:
+        return {}, None
+
+    # Extract vertices (index 0) and cells (index 3) from each model
+    all_vertices = []
+    all_cells = []
+    vertex_offset = 0
+
+    for model in models:
+        verts = model[0]  # vertices
+        cells = model[3]  # tetrahedral cells (4 vertices per cell)
+        all_vertices.append(verts)
+        all_cells.append(cells + vertex_offset)
+        vertex_offset += len(verts)
+
+    merged_vertices = np.vstack(all_vertices)
+    merged_cells = np.vstack(all_cells).astype(np.int32)
+
+    # Apply METIS reordering if available
+    metis_result = None
+    if use_metis and _METIS_AVAILABLE:
+        print(f"[model_loading] Applying METIS reordering to {len(merged_vertices)} vertices...")
+        reordered_verts, reordered_cells, metis_result = reorder_mesh_data_metis(
+            merged_vertices, merged_cells, BANKSIZE
+        )
+    else:
+        if use_metis and not _METIS_AVAILABLE:
+            print("[model_loading] WARNING: METIS not available, using original vertex ordering")
+        reordered_verts = merged_vertices
+        reordered_cells = merged_cells
+
+    # Create dict format for Patcher.load_mesh
+    reordered_dict = {0: reordered_verts, 3: reordered_cells}
+
+    return reordered_dict, metis_result
 
 
 def compute_auto_camera(vertices, fov_degrees=45.0, padding=1.5):
@@ -856,7 +927,10 @@ class model_loading:
             models.append(model_i)
             if i == 0:
                 self.ground = np.min(model_i[0][:, 1]) - demo_dict['height']
-        self.mesh = Patcher.load_mesh(models, relations=["CV"])
+
+        # Apply METIS reordering for optimal MAS preconditioner performance
+        reordered_dict, self.metis_result = _merge_and_reorder_models(models)
+        self.mesh = Patcher.load_mesh(reordered_dict, relations=["CV"])
         self.auto_camera_from_models(models)
         print('load finish')
 
@@ -874,7 +948,7 @@ class model_loading:
 
         self.ground = ground_min - demo_dict['height']
         print('load mesh')
-        self.load_mesh_and_boundarys(demo, models)
+        self.load_mesh_and_boundarys_metis(demo, models)
         self.auto_camera_from_models(models)
 
     def load_demo_n_object_dirichlet(self, demo, demo_dict):
@@ -891,12 +965,115 @@ class model_loading:
 
         self.ground = ground_min - demo_dict['height']
         print('load mesh')
-        self.load_mesh_and_boundarys(demo, models)
+        self.load_mesh_and_boundarys_metis(demo, models)
         self.auto_camera_from_models(models)
         self.mesh.verts.place({'is_dirichlet': ti.i32})
         dirichlet_path = demo_dict['dirichlet_path']
         dirichlet_np = np.load(dirichlet_path)
-        self.mesh.verts.is_dirichlet.from_numpy(dirichlet_np)
+        # Apply METIS reordering to dirichlet flags if METIS was used
+        if self.metis_result is not None and hasattr(self.metis_result, 'sort_index'):
+            # Reorder dirichlet flags according to METIS order
+            dirichlet_reordered = dirichlet_np[self.metis_result.sort_index]
+            self.mesh.verts.is_dirichlet.from_numpy(dirichlet_reordered)
+        else:
+            self.mesh.verts.is_dirichlet.from_numpy(dirichlet_np)
+
+    def load_mesh_and_boundarys_metis(self, demo, models):
+        """
+        Load mesh with METIS reordering and boundary information.
+
+        This method:
+        1. Merges models and applies METIS reordering
+        2. Computes or loads boundary information
+        3. Remaps boundary vertex IDs according to METIS reordering
+        """
+        save_path = '../demo_results/final/' + demo + '_metis/boundary/'
+
+        # First, compute METIS reordering
+        reordered_dict, self.metis_result = _merge_and_reorder_models(models)
+
+        # Check if boundary data exists for this METIS-reordered version
+        if not os.path.exists(save_path + '/boundary_points.npy'):
+            self.load_and_save_boundarys_metis(demo, reordered_dict)
+
+        # Load mesh with METIS-reordered data
+        self.mesh = Patcher.load_mesh(reordered_dict, relations=["CV"])
+
+        # Load boundary data (already in METIS-reordered vertex IDs)
+        boundary_points_np = np.load(save_path + '/boundary_points.npy')
+        boundary_edges_np = np.load(save_path + '/boundary_edges.npy')
+        boundary_triangles_np = np.load(save_path + '/boundary_triangles.npy')
+
+        n_boundary_points = boundary_points_np.shape[0]
+        n_boundary_edges = boundary_edges_np.shape[0]
+        n_boundary_triangles = boundary_triangles_np.shape[0]
+        print('load n_boundary_points: ', n_boundary_points, 'n_boundary_edges: ', n_boundary_edges, 'n_boundary_triangles: ', n_boundary_triangles)
+
+        self.boundary_points = ti.field(ti.i32)
+        self.boundary_edges = ti.field(ti.i32)
+        self.boundary_triangles = ti.field(ti.i32)
+        ti.root.dense(ti.i, n_boundary_points).place(self.boundary_points)
+        print('new boundary ')
+
+        ti.root.dense(ti.ij, (n_boundary_edges, 2)).place(self.boundary_edges)
+        ti.root.dense(ti.ij, (n_boundary_triangles, 3)).place(self.boundary_triangles)
+        self.boundary_points.from_numpy(boundary_points_np)
+        self.boundary_edges.from_numpy(boundary_edges_np)
+        self.boundary_triangles.from_numpy(boundary_triangles_np)
+        print('load finish')
+
+    def load_and_save_boundarys_metis(self, demo, reordered_dict):
+        """
+        Compute and save boundary information using METIS-reordered mesh.
+
+        The boundary data is saved with METIS-reordered vertex IDs so it can
+        be used directly with the METIS-reordered mesh.
+        """
+        save_path = '../demo_results/final/' + demo + '_metis/boundary/'
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        print('assign boundarys (METIS-reordered)... ')
+
+        # Load mesh with METIS-reordered data for boundary computation
+        self.mesh_tmp = Patcher.load_mesh(reordered_dict, relations=['FC', 'FE', 'FV', 'EV'])
+        self.mesh_tmp.faces.place({'is_boundary': ti.i32})
+        self.mesh_tmp.edges.place({'is_boundary': ti.i32})
+        self.mesh_tmp.verts.place({'is_boundary': ti.i32})
+
+        n_points = len(self.mesh_tmp.verts)
+        n_edges = len(self.mesh_tmp.edges)
+        n_triangles = len(self.mesh_tmp.faces)
+        print('n_points', n_points, 'n_edges', n_edges, 'n_triangles', n_triangles)
+
+        self.find_boundarys_tmp()
+        self.edges = ti.field(ti.i32)
+        self.triangles = ti.field(ti.i32)
+        ti.root.dense(ti.ij, (n_edges, 2)).place(self.edges)
+        ti.root.dense(ti.ij, (n_triangles, 3)).place(self.triangles)
+        self.assign_relations()
+
+        edges_np = self.edges.to_numpy()
+        triangles_np = self.triangles.to_numpy()
+        point_boundary_id = self.mesh_tmp.verts.is_boundary.to_numpy()
+        point_ids = [i for i in range(n_points) if point_boundary_id[i] == 1]
+
+        edge_boundary_id = self.mesh_tmp.edges.is_boundary.to_numpy()
+        edge_ids = [i for i in range(n_edges) if edge_boundary_id[i] == 1]
+        triangle_boundary_id = self.mesh_tmp.faces.is_boundary.to_numpy()
+        triangle_ids = [i for i in range(n_triangles) if triangle_boundary_id[i] == 1]
+
+        boundary_points = np.asarray(point_ids)
+        boundary_edges = edges_np[edge_ids]
+        boundary_triangles = triangles_np[triangle_ids]
+
+        print('save boundary points...')
+        np.save(save_path + 'boundary_points.npy', boundary_points)
+        print('save boundary edges...')
+        np.save(save_path + 'boundary_edges.npy', boundary_edges)
+        print('save boundary triangles...')
+        np.save(save_path + 'boundary_triangles.npy', boundary_triangles)
+        print('boundary size', boundary_points.shape, boundary_edges.shape, boundary_triangles.shape)
+        del self.mesh_tmp, self.edges, self.triangles
 
     def load_mesh_and_boundarys(self, demo, models):
         save_path = '../demo_results/final/' + demo + '/boundary/'
