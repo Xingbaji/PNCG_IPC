@@ -650,10 +650,10 @@ class MASPNCGSolver(collision_detection_bvh_module):
             # Step 1: Find contacts
             self.find_cnts(PRINT=False)
 
-            # Step 2: Compute gradient and diagonal Hessian
-            self.compute_grad_and_diagH()
+            # Step 2: Compute gradient
+            self.compute_grad()
             if self.ground_barrier == 1:
-                self.add_grad_and_diagH_ground_barrier()
+                self.add_grad_ground_barrier()
 
             # Step 3: Rebuild preconditioner on restart
             if do_restart:
@@ -663,7 +663,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
             self.mas_preconditioner.apply()
 
             # Step 5: Compute Hessian-vector product Hv = H * z
-            self.compute_Hv(True)
+            self.compute_Hv_z()
 
             # Step 6: Compute search direction via 2D subspace or 1D
             if iter == 0 or do_restart:
@@ -671,7 +671,7 @@ class MASPNCGSolver(collision_detection_bvh_module):
                 # p = -mu * z where mu = z·g / z·H·z
                 self.compute_init_search_direction()
                 # Compute w = H * p for next iteration's 2D subspace
-                self.compute_Hv(False)
+                self.compute_Hv_p()
             else:
                 # 2D subspace optimization (Section 3.2, Eq. 6)
                 # w = H * p was computed in previous iteration

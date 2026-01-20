@@ -97,6 +97,7 @@ class PrecondDirectionTester:
             'grad': ti.types.vector(3, float),
             'diagH': ti.types.vector(3, float),
             'z': ti.types.vector(3, float),
+            'p': ti.types.vector(3, float),  # For compute_pHp
         })
 
         # Place cell fields
@@ -132,44 +133,54 @@ class PrecondDirectionTester:
         if elastic == 'ARAP':
             self.compute_dPsidx = compute_dPsidx_ARAP
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP
+            self.compute_p_d2Psidx2_p = compute_pHp_ARAP
             self.elastic_type = 0
         elif elastic == 'SNH':
             self.compute_dPsidx = compute_dPsidx_SNH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_SNH
+            self.compute_p_d2Psidx2_p = compute_pHp_SNH
             self.elastic_type = 1
         elif elastic == 'ARAP_filter':
             self.compute_dPsidx = compute_dPsidx_ARAP
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_filter
+            self.compute_p_d2Psidx2_p = compute_pHp_ARAP_filter
             self.elastic_type = 0
         elif elastic == 'FCR':
             self.compute_dPsidx = compute_dPsidx_FCR
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_FCR
+            self.compute_p_d2Psidx2_p = compute_pHp_FCR
             self.elastic_type = 2
         elif elastic == 'FCR_filter':
             self.compute_dPsidx = compute_dPsidx_FCR
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_FCR_filter
+            self.compute_p_d2Psidx2_p = compute_pHp_FCR_filter
             self.elastic_type = 2
         elif elastic == 'NH':
             self.compute_dPsidx = compute_dPsidx_NH
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH
+            self.compute_p_d2Psidx2_p = compute_pHp_NH
             self.elastic_type = 1  # Map NH to SNH for MAS assembly
         # SPD-projected Hessian materials (eigenanalysis-based)
         elif elastic == 'ARAP_SPD':
             self.compute_dPsidx = compute_dPsidx_ARAP_SPD
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_ARAP_SPD
             self.elastic_type = 3
         elif elastic == 'NH_SPD':
             self.compute_dPsidx = compute_dPsidx_NH_SPD
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_NH_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_NH_SPD
             self.elastic_type = 4
         elif elastic == 'STVK_SPD':
             self.compute_dPsidx = compute_dPsidx_STVK_SPD
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_STVK_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_STVK_SPD
             self.elastic_type = 5
         else:
             print(f'Warning: Unknown elastic type {elastic}, using ARAP_SPD')
             self.compute_dPsidx = compute_dPsidx_ARAP_SPD
             self.compute_diag_d2Psidx2 = compute_diag_d2Psidx2_ARAP_SPD
+            self.compute_p_d2Psidx2_p = compute_pHp_ARAP_SPD
             self.elastic_type = 3
         self.elastic_type_str = elastic
 
@@ -230,6 +241,42 @@ class PrecondDirectionTester:
                     vert.z[i] = vert.grad[i] / vert.diagH[i]
                 else:
                     vert.z[i] = vert.grad[i]
+
+    @ti.kernel
+    def copy_z_to_p(self):
+        """Copy z field to p field for compute_pHp."""
+        for vert in self.mesh.verts:
+            vert.p = vert.z
+
+    @ti.kernel
+    def compute_pHp(self) -> float:
+        """
+        Compute p^T H p using ground truth Hessian (same as pncg_base_ipc.compute_pHp).
+
+        p^T H p = sum_verts(p^T * m * p) + sum_cells(p^T * H_elastic * p)
+        """
+        ret = 0.0
+
+        # Inertia contribution
+        for vert in self.mesh.verts:
+            ret += vert.p.norm_sqr() * vert.m
+
+        # Elastic contribution
+        for c in self.mesh.cells:
+            Ds = ti.Matrix.cols([c.verts[i].x - c.verts[0].x for i in ti.static(range(1, 4))])
+            B = c.B
+            F = Ds @ B
+
+            p_cell = ti.Vector.zero(float, 12)
+            p_cell[0:3] = c.verts[0].p
+            p_cell[3:6] = c.verts[1].p
+            p_cell[6:9] = c.verts[2].p
+            p_cell[9:12] = c.verts[3].p
+
+            tmp = self.compute_p_d2Psidx2_p(F, B, p_cell, self.mu, self.la)
+            ret += c.W * self.dt ** 2 * ti.max(tmp, 0.0)
+
+        return ret
 
     def extract_cell_verts(self):
         """Extract cell-vertex connectivity using Taichi kernel."""
@@ -733,13 +780,11 @@ class PrecondDirectionTester:
         gTz = np.dot(g_np, z_np)
         print(f"g^T z = {gTz:.6e}")
 
-        # Ground truth z^T H z using sparse Hessian
-        print("\n[Ground Truth] Computing z^T H z via sparse Hessian...")
-        H = self.build_sparse_hessian()
-        Hz_gt = H @ z_np
-        zHz_gt = np.dot(z_np, Hz_gt)
+        # Ground truth z^T H z using compute_pHp (same as pncg_base_ipc)
+        print("\n[Ground Truth] Computing z^T H z via compute_pHp...")
+        self.copy_z_to_p()  # Copy z to p field
+        zHz_gt = self.compute_pHp()
         print(f"  z^T H z = {zHz_gt:.6e}")
-        print(f"  |H @ z| = {np.linalg.norm(Hz_gt):.6e}")
 
         # Prepare buffers
         z_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
@@ -768,12 +813,10 @@ class PrecondDirectionTester:
         Hz_mas = Hz_buffer.to_numpy().flatten()
         zHz_mas = np.dot(z_np, Hz_mas)
         ratio = zHz_mas / zHz_gt if abs(zHz_gt) > 1e-15 else float('inf')
-        Hz_rel_error = np.linalg.norm(Hz_mas - Hz_gt) / np.linalg.norm(Hz_gt)
 
         print(f"  z^T H z = {zHz_mas:.6e}")
         print(f"  |H @ z| = {np.linalg.norm(Hz_mas):.6e}")
         print(f"  Ratio (MAS/GT) = {ratio:.4f}")
-        print(f"  Relative error = {Hz_rel_error:.4e}")
         print(f"  Time: {t_matvec:.3f} ms")
 
         # Show cross-block statistics
@@ -788,19 +831,11 @@ class PrecondDirectionTester:
         print("Summary")
         print(f"{'='*70}")
 
-        # Cosine similarity
-        if np.linalg.norm(Hz_mas) > 1e-15 and np.linalg.norm(Hz_gt) > 1e-15:
-            cos_Hz = np.dot(Hz_mas, Hz_gt) / (np.linalg.norm(Hz_mas) * np.linalg.norm(Hz_gt))
-        else:
-            cos_Hz = 0.0
-
         # Compute alpha
         alpha_gt = gTz / zHz_gt if abs(zHz_gt) > 1e-15 else 0.0
         alpha_mas = gTz / zHz_mas if abs(zHz_mas) > 1e-15 else 0.0
 
         print(f"  z^T H z ratio: {ratio:.4f}")
-        print(f"  Relative error: {Hz_rel_error:.4e}")
-        print(f"  cos(Hz_mas, Hz_gt): {cos_Hz:.6f}")
         print(f"  alpha_gt = {alpha_gt:.6f}, alpha_mas = {alpha_mas:.6f}")
 
         # Status assessment
@@ -820,12 +855,10 @@ class PrecondDirectionTester:
             'zHz_gt': zHz_gt,
             'zHz_mas': zHz_mas,
             'ratio_exact': ratio,
-            'Hz_rel_error_exact': Hz_rel_error,
-            'cos_Hz_exact': cos_Hz,
             'alpha_gt': alpha_gt,
-            'alpha_exact': alpha_mas,
+            'alpha_mas': alpha_mas,
             't_assembly': t_assembly,
-            't_exact': t_matvec,
+            't_matvec': t_matvec,
             'status': status,
             'n_triplets': stats['n_triplets'],
         }
