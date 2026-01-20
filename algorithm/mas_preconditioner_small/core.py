@@ -263,7 +263,13 @@ class MASPreconditionerSmall:
 
     @ti.kernel
     def _add_inertia_contribution(self, dt: ti.f32):
-        """Add mass matrix to diagonal blocks using MeshTaichi iterator."""
+        """Add mass matrix to diagonal blocks using MeshTaichi iterator.
+
+        Note: The inertia Hessian is just 'm' (not m/dt²) to match the gradient scaling.
+        Energy: E_inertia = 0.5 * m * ||x - x_hat||²
+        Gradient: g_inertia = m * (x - x_hat)
+        Hessian: H_inertia = m * I
+        """
         for vert in self.mesh.verts:
             idx = vert.id
             warp_id = idx // BANKSIZE
@@ -272,13 +278,17 @@ class MASPreconditionerSmall:
             # Access mass directly from vertex
             m = vert.m
             sym_idx = sym_index(lane_id, lane_id)
-            mass_val = m / (dt * dt)
+            # Use m directly (not m/dt²) to match gradient scaling
+            mass_val = m
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[warp_id, sym_idx][d, d], mass_val)
 
     @ti.kernel
     def _add_inertia_contribution_metis(self, dt: ti.f32):
-        """Add mass matrix to diagonal blocks using METIS mapping."""
+        """Add mass matrix to diagonal blocks using METIS mapping.
+
+        Note: The inertia Hessian is just 'm' (not m/dt²) to match the gradient scaling.
+        """
         for vert in self.mesh.verts:
             idx = vert.id
             # Get block and lane from METIS partition
@@ -289,7 +299,8 @@ class MASPreconditionerSmall:
             # Access mass directly from vertex
             m = vert.m
             sym_idx = sym_index(lane_id, lane_id)
-            mass_val = m / (dt * dt)
+            # Use m directly (not m/dt²) to match gradient scaling
+            mass_val = m
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[block_id, sym_idx][d, d], mass_val)
 
@@ -744,12 +755,18 @@ class MASPreconditionerSmall:
                         ti.atomic_add(self.multi_level_r[coarse_idx][d], r[d])
 
     @ti.kernel
-    def _schwarz_local_solve_banded(self):
-        """Banded sparse matrix-vector multiplication for IC(0)."""
-        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
-        NODE_BANDWIDTH = 2
+    def _schwarz_local_solve_full(self):
+        """
+        Full block matrix-vector multiplication: z = P^{-1} @ r.
 
-        # Level 0
+        This implements the CORRECT local Schwarz solve using the FULL 16x16 block
+        inverse matrix (stored as 136 3x3 blocks in symmetric format).
+
+        Reference: Stiff-GIPC _schwarzLocalXSym6 uses hessianSize = BANKSIZE * BANKSIZE
+        """
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        # Level 0: Full block matvec
         for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
             idx_i = block_id * BANKSIZE + lane_i
             if idx_i < self.n_verts:
@@ -757,14 +774,13 @@ class MASPreconditionerSmall:
                 z1 = ti.f32(0.0)
                 z2 = ti.f32(0.0)
 
-                lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
-                lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
-
-                for lane_j in range(lane_j_start, lane_j_end):
+                # Iterate over ALL nodes in the block (full 16x16 block)
+                for lane_j in range(BANKSIZE):
                     idx_j = block_id * BANKSIZE + lane_j
                     if idx_j < self.n_verts:
                         r_j = self.multi_level_r[idx_j]
 
+                        # Compute symmetric storage index
                         min_lane = ti.min(lane_i, lane_j)
                         max_lane = ti.max(lane_i, lane_j)
                         s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
@@ -772,17 +788,19 @@ class MASPreconditionerSmall:
                         inv_block = self.inv_block_matrices[block_id, s_idx]
 
                         if lane_i <= lane_j:
+                            # Upper triangle: use directly
                             z0 += inv_block[0, 0] * r_j[0] + inv_block[0, 1] * r_j[1] + inv_block[0, 2] * r_j[2]
                             z1 += inv_block[1, 0] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[1, 2] * r_j[2]
                             z2 += inv_block[2, 0] * r_j[0] + inv_block[2, 1] * r_j[1] + inv_block[2, 2] * r_j[2]
                         else:
+                            # Lower triangle: use transpose
                             z0 += inv_block[0, 0] * r_j[0] + inv_block[1, 0] * r_j[1] + inv_block[2, 0] * r_j[2]
                             z1 += inv_block[0, 1] * r_j[0] + inv_block[1, 1] * r_j[1] + inv_block[2, 1] * r_j[2]
                             z2 += inv_block[0, 2] * r_j[0] + inv_block[1, 2] * r_j[1] + inv_block[2, 2] * r_j[2]
 
                 self.multi_level_z[idx_i] = ti.Vector([z0, z1, z2], dt=ti.f32)
 
-        # Coarse levels
+        # Coarse levels: Full block matvec
         for level in range(1, self.level_num):
             level_offset = self.level_size[level][1]
             level_size_val = self.level_size[level][0]
@@ -798,10 +816,8 @@ class MASPreconditionerSmall:
                     z1 = ti.f32(0.0)
                     z2 = ti.f32(0.0)
 
-                    lane_j_start = ti.max(0, lane_i - NODE_BANDWIDTH)
-                    lane_j_end = ti.min(BANKSIZE, lane_i + NODE_BANDWIDTH + 1)
-
-                    for lane_j in range(lane_j_start, lane_j_end):
+                    # Full block iteration
+                    for lane_j in range(BANKSIZE):
                         idx_j = level_offset + local_block_id * BANKSIZE + lane_j
                         if idx_j < level_offset + level_size_val:
                             r_j = self.multi_level_r[idx_j]
@@ -937,17 +953,273 @@ class MASPreconditionerSmall:
             vert.z = z_total
 
     def apply(self):
-        """Apply MAS preconditioner: z = P * grad"""
+        """Apply MAS preconditioner: z = P * grad
+
+        Uses FULL block matrix multiplication (not banded) to match
+        the reference CUDA implementation.
+        """
         self._clear_multi_level_buffers()
 
         if self.use_metis:
             self._build_multi_level_r_metis()
+            # TODO: Add _schwarz_local_solve_full_metis for METIS support
             self._schwarz_local_solve_banded_metis()
         else:
             self._build_multi_level_r()
-            self._schwarz_local_solve_banded()
+            # Use FULL block matvec (not banded) to match reference impl
+            self._schwarz_local_solve_full()
 
         self._collect_final_z(self.level_num)
+
+    # ========================================================================
+    # Hessian Matrix-Vector Multiplication
+    # ========================================================================
+
+    @ti.kernel
+    def _hessian_matvec_level0_block_diag(self, v: ti.template(), result: ti.template()):
+        """
+        Compute block-diagonal part of Hessian @ v for level 0 only.
+
+        This only computes the block-diagonal contribution (intra-block coupling).
+        Cross-block coupling is stored in coarse levels.
+        """
+        n_blocks = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+
+        for block_id, lane_i in ti.ndrange(n_blocks, BANKSIZE):
+            idx_i = block_id * BANKSIZE + lane_i
+            if idx_i < self.n_verts:
+                r0 = ti.f64(0.0)
+                r1 = ti.f64(0.0)
+                r2 = ti.f64(0.0)
+
+                for lane_j in range(BANKSIZE):
+                    idx_j = block_id * BANKSIZE + lane_j
+                    if idx_j < self.n_verts:
+                        v_j = v[idx_j]
+
+                        min_lane = ti.min(lane_i, lane_j)
+                        max_lane = ti.max(lane_i, lane_j)
+                        s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                        H_block = self.block_matrices[block_id, s_idx]
+
+                        if lane_i <= lane_j:
+                            r0 += H_block[0, 0] * v_j[0] + H_block[0, 1] * v_j[1] + H_block[0, 2] * v_j[2]
+                            r1 += H_block[1, 0] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[1, 2] * v_j[2]
+                            r2 += H_block[2, 0] * v_j[0] + H_block[2, 1] * v_j[1] + H_block[2, 2] * v_j[2]
+                        else:
+                            r0 += H_block[0, 0] * v_j[0] + H_block[1, 0] * v_j[1] + H_block[2, 0] * v_j[2]
+                            r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
+                            r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
+
+                result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
+
+    @ti.kernel
+    def _restrict_v_to_coarse(self, v: ti.template(), v_coarse: ti.template(), level_num: ti.i32):
+        """
+        Restrict input vector v to all coarse levels.
+
+        For each fine vertex, aggregate v to its parent in going_next hierarchy.
+        v_coarse stores aggregated values for all levels (including level 0 copy).
+        """
+        # Copy level 0
+        for i in range(self.n_verts):
+            v_coarse[i] = v[i]
+
+        # Aggregate to coarse levels
+        for i in range(self.n_verts):
+            v_i = v[i]
+            coarse_idx = self.going_next[i]
+            if coarse_idx >= 0:
+                for d in ti.static(range(3)):
+                    ti.atomic_add(v_coarse[coarse_idx][d], v_i[d])
+
+        # Propagate to higher levels
+        for level in range(1, level_num - 1):
+            level_offset = self.level_size[level][1]
+            level_size_val = self.level_size[level][0]
+
+            for i in range(level_size_val):
+                idx = level_offset + i
+                v_i = v_coarse[idx]
+                coarse_idx = self.going_next[idx]
+                if coarse_idx >= 0:
+                    for d in ti.static(range(3)):
+                        ti.atomic_add(v_coarse[coarse_idx][d], v_i[d])
+
+    @ti.kernel
+    def _hessian_matvec_coarse_levels(self, v_coarse: ti.template(), result: ti.template(), level_num: ti.i32):
+        """
+        Compute coarse-level Hessian contributions and add to result.
+
+        For each fine vertex i:
+          result[i] += sum over coarse levels of H_coarse[parent(i), :] @ v_coarse[:]
+
+        The coarse-level matrices store the cross-block coupling from the fine level.
+        """
+        # For each fine vertex, traverse hierarchy and accumulate contributions
+        for i in range(self.n_verts):
+            coarse_idx = self.going_next[i]
+
+            for level in range(1, level_num):
+                if coarse_idx < 0:
+                    break
+
+                level_offset = self.level_size[level][1]
+                level_size_val = self.level_size[level][0]
+
+                # Compute block and lane for this coarse node
+                local_idx = coarse_idx - level_offset
+                block_id = coarse_idx // BANKSIZE
+                lane_i = local_idx % BANKSIZE
+
+                r0 = ti.f64(0.0)
+                r1 = ti.f64(0.0)
+                r2 = ti.f64(0.0)
+
+                # Iterate over all nodes in the coarse block
+                local_block_id = local_idx // BANKSIZE
+
+                for lane_j in range(BANKSIZE):
+                    idx_j = level_offset + local_block_id * BANKSIZE + lane_j
+                    if idx_j < level_offset + level_size_val:
+                        v_j = v_coarse[idx_j]
+
+                        min_lane = ti.min(lane_i, lane_j)
+                        max_lane = ti.max(lane_i, lane_j)
+                        s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                        H_block = self.block_matrices[block_id, s_idx]
+
+                        if lane_i <= lane_j:
+                            r0 += H_block[0, 0] * v_j[0] + H_block[0, 1] * v_j[1] + H_block[0, 2] * v_j[2]
+                            r1 += H_block[1, 0] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[1, 2] * v_j[2]
+                            r2 += H_block[2, 0] * v_j[0] + H_block[2, 1] * v_j[1] + H_block[2, 2] * v_j[2]
+                        else:
+                            r0 += H_block[0, 0] * v_j[0] + H_block[1, 0] * v_j[1] + H_block[2, 0] * v_j[2]
+                            r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
+                            r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
+
+                # Add to result
+                result[i][0] += r0
+                result[i][1] += r1
+                result[i][2] += r2
+
+                # Move to next coarse level
+                coarse_idx = self.going_next[coarse_idx]
+
+    def hessian_matvec(self, v: ti.template(), result: ti.template()):
+        """
+        Compute result = H @ v where H is the full assembled Hessian matrix.
+
+        This includes both:
+        1. Level 0 block-diagonal contributions (intra-block coupling)
+        2. Coarse-level contributions (cross-block coupling)
+
+        The full Hessian is:
+            H_full = H_level0_block_diag + sum_coarse_levels(P^T @ H_coarse @ P)
+
+        where P is the prolongation (restriction^T) operator.
+
+        Args:
+            v: Input vector field with 3D vectors (indexed by vertex id)
+            result: Output vector field with 3D vectors (indexed by vertex id)
+
+        Example usage:
+            v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            preconditioner.hessian_matvec(v, result)
+        """
+        if not self.matrices_assembled:
+            raise RuntimeError("Matrices not assembled. Call assemble_block_matrices first.")
+
+        # Step 1: Compute level 0 block-diagonal contribution
+        if self.use_metis:
+            self._hessian_matvec_level0_metis(v, result)
+        else:
+            self._hessian_matvec_level0_block_diag(v, result)
+
+        # Step 2: Add coarse-level contributions (cross-block coupling)
+        if self.level_num > 1:
+            # Restrict v to coarse levels
+            self._clear_multi_level_buffers()  # Reuse multi_level_r as v_coarse buffer
+            self._restrict_v_to_coarse(v, self.multi_level_r, self.level_num)
+            # Compute and add coarse contributions
+            self._hessian_matvec_coarse_levels(self.multi_level_r, result, self.level_num)
+
+    @ti.kernel
+    def _hessian_matvec_level0_metis(self, v: ti.template(), result: ti.template()):
+        """
+        Compute block-diagonal part of Hessian @ v using METIS partition mapping.
+        """
+        for block_id in range(self.n_parts):
+            for lane_i in range(BANKSIZE):
+                part_idx_i = block_id * BANKSIZE + lane_i
+                idx_i = self.partId_map_real[part_idx_i]
+
+                if idx_i >= 0 and idx_i < self.n_verts:
+                    r0 = ti.f64(0.0)
+                    r1 = ti.f64(0.0)
+                    r2 = ti.f64(0.0)
+
+                    for lane_j in range(BANKSIZE):
+                        part_idx_j = block_id * BANKSIZE + lane_j
+                        idx_j = self.partId_map_real[part_idx_j]
+
+                        if idx_j >= 0 and idx_j < self.n_verts:
+                            v_j = v[idx_j]
+
+                            min_lane = ti.min(lane_i, lane_j)
+                            max_lane = ti.max(lane_i, lane_j)
+                            s_idx = BANKSIZE * min_lane - min_lane * (min_lane + 1) // 2 + max_lane
+
+                            H_block = self.block_matrices[block_id, s_idx]
+
+                            if lane_i <= lane_j:
+                                r0 += H_block[0, 0] * v_j[0] + H_block[0, 1] * v_j[1] + H_block[0, 2] * v_j[2]
+                                r1 += H_block[1, 0] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[1, 2] * v_j[2]
+                                r2 += H_block[2, 0] * v_j[0] + H_block[2, 1] * v_j[1] + H_block[2, 2] * v_j[2]
+                            else:
+                                r0 += H_block[0, 0] * v_j[0] + H_block[1, 0] * v_j[1] + H_block[2, 0] * v_j[2]
+                                r1 += H_block[0, 1] * v_j[0] + H_block[1, 1] * v_j[1] + H_block[2, 1] * v_j[2]
+                                r2 += H_block[0, 2] * v_j[0] + H_block[1, 2] * v_j[1] + H_block[2, 2] * v_j[2]
+
+                    result[idx_i] = ti.Vector([r0, r1, r2], dt=ti.f64)
+
+    @ti.kernel
+    def _copy_z_to_buffer(self, z_buffer: ti.template()):
+        """Copy mesh.verts.z to a buffer field."""
+        for vert in self.mesh.verts:
+            z_buffer[vert.id] = vert.z
+
+    @ti.kernel
+    def _copy_buffer_to_grad(self, result_buffer: ti.template()):
+        """Copy result buffer to mesh.verts.grad."""
+        for vert in self.mesh.verts:
+            vert.grad = result_buffer[vert.id]
+
+    def hessian_matvec_mesh(self, z_buffer: ti.template(), result_buffer: ti.template()):
+        """
+        Compute H @ z where z comes from mesh.verts.z, result goes to mesh.verts.grad.
+
+        This is a convenience wrapper that:
+        1. Copies mesh.verts.z to z_buffer
+        2. Computes H @ z_buffer -> result_buffer
+        3. Copies result_buffer to mesh.verts.grad
+
+        Args:
+            z_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+            result_buffer: Temporary ti.Vector.field(3, ti.f64, shape=n_verts)
+
+        Example usage:
+            z_buf = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            result_buf = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            preconditioner.hessian_matvec_mesh(z_buf, result_buf)
+            # Now mesh.verts.grad contains H @ z
+        """
+        self._copy_z_to_buffer(z_buffer)
+        self.hessian_matvec(z_buffer, result_buffer)
+        self._copy_buffer_to_grad(result_buffer)
 
     # ========================================================================
     # High-level API

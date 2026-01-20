@@ -74,7 +74,13 @@ class AssemblyMixin:
 
     @ti.kernel
     def _add_inertia_contribution(self, dt: ti.f32):
-        """Add mass matrix to diagonal blocks."""
+        """Add mass matrix to diagonal blocks.
+
+        Note: The inertia Hessian is just 'm' (not m/dt²) to match the gradient scaling.
+        Energy: E_inertia = 0.5 * m * ||x - x_hat||²
+        Gradient: g_inertia = m * (x - x_hat)
+        Hessian: H_inertia = m * I
+        """
         for idx in range(self.n_verts):
             warp_id = idx // BANKSIZE
             lane_id = idx % BANKSIZE
@@ -85,8 +91,8 @@ class AssemblyMixin:
             # Diagonal block index in symmetric storage
             sym_idx = self._sym_index(lane_id, lane_id)
 
-            # Add mass to diagonal (scaled by 1/dt^2 for implicit)
-            mass_val = m / (dt * dt)
+            # Use m directly (not m/dt²) to match gradient scaling
+            mass_val = m
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[warp_id, sym_idx][d, d], mass_val)
 

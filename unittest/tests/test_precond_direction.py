@@ -57,7 +57,8 @@ builtins.print = _filtered_print
 import taichi as ti
 from math_utils.elastic_util import *
 from util.model_loading import model_loading
-from algorithm.mas_preconditioner_pkg import MASPreconditioner
+# Use the simplified MAS implementation for testing
+from algorithm.mas_preconditioner_small import MASPreconditionerSmall
 
 
 @ti.data_oriented
@@ -73,7 +74,7 @@ class PrecondDirectionTester:
     5. Compares all three using various metrics
     """
 
-    def __init__(self, demo='cube_freefall_10', inversion_method='ic'):
+    def __init__(self, demo='cube_freefall_10'):
         """Initialize tester with given demo configuration."""
         # Load model
         model = model_loading(demo=demo)
@@ -85,7 +86,6 @@ class PrecondDirectionTester:
         self.gravity = model.gravity
         self.mesh = model.mesh
         self.epsilon = model.epsilon
-        self.inversion_method = inversion_method
 
         # Place vertex fields
         self.mesh.verts.place({
@@ -118,13 +118,10 @@ class PrecondDirectionTester:
         # Assign elastic type
         self.assign_elastic_type(model.elastic_type)
 
-        # Initialize MAS preconditioner
-        print(f"Initializing MAS preconditioner...")
-        self.mas = MASPreconditioner(
-            self.n_verts, self.n_cells, self.mesh,
-            use_metis=False
-        )
-        print(f"MAS initialized with {self.mas.level_num} levels")
+        # Initialize MAS preconditioner (using simplified version)
+        print(f"Initializing MAS-Small preconditioner...")
+        self.mas = MASPreconditionerSmall(self.mesh)
+        print(f"MAS-Small initialized with {self.mas.level_num} levels")
 
     def assign_elastic_type(self, elastic):
         """Set elastic type functions.
@@ -443,11 +440,11 @@ class PrecondDirectionTester:
             dict with test results
         """
         print(f"\n{'='*70}")
-        print(f"MAS Preconditioner Direction Accuracy Test (iter=0)")
+        print(f"MAS-Small Preconditioner Direction Accuracy Test (iter=0)")
         print(f"{'='*70}")
         print(f"Demo: {self.demo}")
         print(f"Elastic: {self.elastic_type_str}")
-        print(f"Inversion: {self.inversion_method}")
+        print(f"MAS Implementation: mas_preconditioner_small (IC(0) only)")
         print(f"{'='*70}\n")
 
         # Initialize
@@ -470,21 +467,10 @@ class PrecondDirectionTester:
         self.apply_diagonal_preconditioner()
         z_diag = self.mesh.verts.z.to_numpy().flatten()
 
-        # 2. Apply MAS preconditioner
-        print("\n[2] Applying MAS preconditioner: z_mas = P_MAS @ g")
-        if not self.mas.hierarchy_built:
-            self.mas.build_hierarchy()
-        self.mas.assemble_block_matrices(self, use_full_hessian=True)
-
-        method_map = {
-            'gauss_jordan': 'gauss_jordan',
-            'oneway_gj': 'oneway_gj',
-            'cholesky': 'cholesky',
-            'incomplete': 'ic',
-            'ic': 'ic',
-        }
-        method = method_map.get(self.inversion_method, 'ic')
-        self.mas.invert_block_matrices(method=method)
+        # 2. Apply MAS preconditioner (using simplified MAS-Small)
+        print("\n[2] Applying MAS-Small preconditioner: z_mas = P_MAS @ g")
+        # MAS-Small uses rebuild() which does: build_hierarchy + assemble + invert
+        self.mas.rebuild(self)  # self has mu, la, dt attributes needed
         self.mas.apply()
         z_mas = self.mesh.verts.z.to_numpy().flatten()
 
@@ -693,14 +679,11 @@ class PrecondDirectionTester:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MAS Direction Accuracy Test at iter=0')
+    parser = argparse.ArgumentParser(description='MAS-Small Direction Accuracy Test at iter=0')
     parser.add_argument('--demo', type=str, default='cube_freefall_10',
                         help='Demo configuration')
     parser.add_argument('--vy', type=float, default=-1.0,
                         help='Initial downward velocity')
-    parser.add_argument('--inversion', type=str, default='ic',
-                        choices=['ic', 'cholesky', 'gauss_jordan', 'oneway_gj'],
-                        help='MAS block inversion method')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose output')
     parser.add_argument('--mas-verbose', action='store_true',
@@ -724,7 +707,7 @@ def main():
         ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
 
     # Create tester and run
-    tester = PrecondDirectionTester(demo=args.demo, inversion_method=args.inversion)
+    tester = PrecondDirectionTester(demo=args.demo)
     results = tester.run_test(
         initial_vy=args.vy,
         verbose=args.verbose or True,

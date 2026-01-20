@@ -106,8 +106,9 @@ docs/
 
 | 报告 | 日期 | 主题 | 状态 |
 |------|------|------|------|
+| [MAS_DIRECTION_ACCURACY_ANALYSIS.md](../experiment_reports/MAS_DIRECTION_ACCURACY_ANALYSIS.md) | 2026-01-20 | **MAS方向精度分析** | ✅ 完成 |
 | [MAS_PKG_SPEED_TEST_REPORT.md](../experiment_reports/MAS_PKG_SPEED_TEST_REPORT.md) | 2026-01-19 | MAS包性能测试 | ✅ 完成 |
-| [MAS_SYMMETRY_BUG_ANALYSIS.md](../experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md) | 2026-01-19 | 矩阵对称性问题分析 | 🔄 进行中 |
+| [MAS_SYMMETRY_BUG_ANALYSIS.md](../experiment_reports/MAS_SYMMETRY_BUG_ANALYSIS.md) | 2026-01-19 | 矩阵对称性问题分析 | ✅ 已修复 |
 
 ---
 

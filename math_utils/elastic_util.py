@@ -102,7 +102,7 @@ def compute_diag_d2Psidx2_ARAP_filter(F, B, mu, la):
     if s0 + s2 < 2.0:
         lambda1 = 1.0
     if s0 + s1 < 2.0:
-        lambda0 = 1.0
+        lambda2 = 1.0
     U0, U1, U2 = U[:, 0], U[:, 1], U[:, 2]
     V0, V1, V2 = V[:, 0], V[:, 1], V[:, 2]
     Q0 = V1.outer_product(U2) - V2.outer_product(U1)

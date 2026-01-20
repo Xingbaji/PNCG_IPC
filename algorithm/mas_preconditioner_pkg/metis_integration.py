@@ -1260,7 +1260,10 @@ class METISMixin:
 
     @ti.kernel
     def _add_inertia_contribution_metis(self, dt: ti.f32):
-        """Add mass matrix to diagonal blocks using METIS mapping."""
+        """Add mass matrix to diagonal blocks using METIS mapping.
+
+        Note: The inertia Hessian is just 'm' (not m/dt²) to match the gradient scaling.
+        """
         for idx in range(self.n_verts):
             # Get block and lane from METIS partition
             part_info = self.real_map_partId[idx]
@@ -1273,8 +1276,8 @@ class METISMixin:
             # Diagonal block index in symmetric storage
             sym_idx = self._sym_index(lane_id, lane_id)
 
-            # Add mass to diagonal (scaled by 1/dt^2 for implicit)
-            mass_val = m / (dt * dt)
+            # Use m directly (not m/dt²) to match gradient scaling
+            mass_val = m
             for d in ti.static(range(3)):
                 ti.atomic_add(self.block_matrices[block_id, sym_idx][d, d], mass_val)
 
