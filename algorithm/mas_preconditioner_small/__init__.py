@@ -34,6 +34,8 @@ from .metis_reorder import (
     compute_optimized_cell_data,
     extract_cells_from_mesh,
     check_pymetis_available,
+    reorder_mesh_data_metis,
+    merge_models,
     BANKSIZE,
 )
 
@@ -44,5 +46,7 @@ __all__ = [
     'compute_optimized_cell_data',
     'extract_cells_from_mesh',
     'check_pymetis_available',
+    'reorder_mesh_data_metis',
+    'merge_models',
     'BANKSIZE',
 ]

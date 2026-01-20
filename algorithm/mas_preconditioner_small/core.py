@@ -40,14 +40,25 @@ class MASPreconditionerSmall:
     - Correct prolongation using going_next hierarchy
     """
 
-    def __init__(self, mesh, metis_result=None, max_verts: int = None):
+    def __init__(self, mesh, metis_result=None, metis_reordered: bool = False, max_verts: int = None):
         """
         Initialize MAS Preconditioner.
 
         Args:
             mesh: MeshTaichi mesh object
             metis_result: Pre-computed MetisReorderResult (computed once at sim start)
+                         Used for runtime mapping when metis_reordered=False.
+            metis_reordered: If True, mesh data was reordered with reorder_mesh_data_metis()
+                            BEFORE creating mesh. In this mode:
+                            - Vertex IDs directly correspond to METIS partitions
+                            - block_id = vertex_id // BANKSIZE
+                            - No runtime mapping lookups needed (fastest mode)
             max_verts: Maximum number of vertices (default: mesh.verts.size)
+
+        Usage modes:
+            1. No METIS: MASPreconditionerSmall(mesh)
+            2. Runtime mapping: MASPreconditionerSmall(mesh, metis_result=result)
+            3. Pre-reordered (fastest): MASPreconditionerSmall(mesh, metis_reordered=True)
         """
         self.mesh = mesh
         self.n_verts = len(mesh.verts)
@@ -56,13 +67,19 @@ class MASPreconditionerSmall:
         if max_verts is None:
             max_verts = self.n_verts
 
-        # METIS reordering (computed once, reused throughout simulation)
-        self.use_metis = metis_result is not None and metis_result.is_valid()
+        # METIS mode selection
+        self.metis_reordered = metis_reordered  # Mesh data already in METIS order
+        self.use_metis = metis_reordered or (metis_result is not None and metis_result.is_valid())
         self.metis_result = metis_result
 
-        if self.use_metis:
+        if metis_reordered:
+            # Pre-reordered mode: vertex IDs are already in METIS partition order
+            # block_id = vertex_id // BANKSIZE, lane_id = vertex_id % BANKSIZE
+            self.n_parts = (self.n_verts + BANKSIZE - 1) // BANKSIZE
+            print(f"[MAS-Small] METIS pre-reordered mode: {self.n_parts} partitions (no mapping)")
+        elif self.use_metis:
             self.n_parts = metis_result.n_parts
-            print(f"[MAS-Small] Using METIS reordering: {self.n_parts} partitions")
+            print(f"[MAS-Small] Using METIS runtime mapping: {self.n_parts} partitions")
         else:
             self.n_parts = (self.n_verts + BANKSIZE - 1) // BANKSIZE
             print(f"[MAS-Small] No METIS: {self.n_parts} sequential blocks")
@@ -96,11 +113,16 @@ class MASPreconditionerSmall:
         self.multi_level_z = ti.Vector.field(3, dtype=ti.f32, shape=self.total_nodes_all_levels)
 
         # METIS partition mappings (Taichi fields for GPU access)
-        if self.use_metis:
+        # Only needed for runtime mapping mode (not for pre-reordered mode)
+        if self.use_metis and not self.metis_reordered and metis_result is not None:
             self.partId_map_real = ti.field(dtype=ti.i32, shape=self.n_parts * BANKSIZE)
             self.real_map_partId = ti.field(dtype=ti.i32, shape=self.n_verts)
             self.partId_map_real.from_numpy(metis_result.partId_map_real)
             self.real_map_partId.from_numpy(metis_result.real_map_partId)
+        else:
+            # Pre-reordered or no-METIS mode: no mapping needed
+            self.partId_map_real = None
+            self.real_map_partId = None
 
         # State flags
         self.hierarchy_built = False
@@ -817,11 +839,22 @@ class MASPreconditionerSmall:
         """Assemble Hessian contributions into block matrices.
 
         Also stores cross-block coupling in triplet format for exact Hessian matvec.
+
+        Three modes:
+        1. No METIS: sequential blocks, direct vertex ID mapping
+        2. METIS runtime mapping: uses real_map_partId lookup
+        3. METIS pre-reordered: mesh already in METIS order, uses direct mapping (same as mode 1)
         """
         self._clear_block_matrices()
         self._clear_cross_block_storage()  # Clear triplet storage
 
-        if self.use_metis:
+        if self.metis_reordered:
+            # Pre-reordered mode: vertex IDs are already in METIS partition order
+            # Use the same kernels as non-METIS (no mapping lookup needed!)
+            self._add_inertia_contribution(solver.dt)
+            self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
+        elif self.use_metis:
+            # Runtime mapping mode: need real_map_partId lookup
             self._add_inertia_contribution_metis(solver.dt)
             # Use optimized assembly if available, otherwise fallback
             if self.use_optimized_assembly and self.sorted_cells is not None:
@@ -829,6 +862,7 @@ class MASPreconditionerSmall:
             else:
                 self._add_elastic_contribution_arap_metis(solver.mu, solver.la, solver.dt)
         else:
+            # No METIS: sequential blocks
             self._add_inertia_contribution(solver.dt)
             self._add_elastic_contribution_arap(solver.mu, solver.la, solver.dt)
 
@@ -1225,14 +1259,26 @@ class MASPreconditionerSmall:
 
         Uses FULL block matrix multiplication (not banded) to match
         the reference CUDA implementation.
+
+        Three modes:
+        1. No METIS: sequential blocks, direct access
+        2. METIS runtime mapping: uses partId_map_real lookup
+        3. METIS pre-reordered: mesh already in METIS order, uses direct access (same as mode 1)
         """
         self._clear_multi_level_buffers()
 
-        if self.use_metis:
+        if self.metis_reordered:
+            # Pre-reordered mode: vertex IDs are already in METIS partition order
+            # Use the same kernels as non-METIS (no mapping lookup needed!)
+            self._build_multi_level_r()
+            self._schwarz_local_solve_full()
+        elif self.use_metis:
+            # Runtime mapping mode: need partId_map_real lookup
             self._build_multi_level_r_metis()
             # TODO: Add _schwarz_local_solve_full_metis for METIS support
             self._schwarz_local_solve_banded_metis()
         else:
+            # No METIS: sequential blocks
             self._build_multi_level_r()
             # Use FULL block matvec (not banded) to match reference impl
             self._schwarz_local_solve_full()
@@ -1392,9 +1438,33 @@ class MASPreconditionerSmall:
                 # Move to next coarse level
                 coarse_idx = self.going_next[coarse_idx]
 
-    def hessian_matvec(self, v: ti.template(), result: ti.template()):
+    def hessian_matvec(self, v: ti.template(), result: ti.template(), exact: bool = True):
         """
-        Compute result ≈ H @ v using the multi-level block matrices.
+        Compute result = H @ v using the MAS block matrices.
+
+        By default, uses the EXACT method with cross-block triplet storage.
+        Set exact=False to use the approximate coarse-level reconstruction.
+
+        Args:
+            v: Input vector field with 3D vectors (indexed by vertex id)
+            result: Output vector field with 3D vectors (indexed by vertex id)
+            exact: If True (default), use exact cross-block triplets.
+                   If False, use approximate coarse-level reconstruction.
+
+        Example usage:
+            v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
+            preconditioner.hessian_matvec(v, result)  # exact by default
+            preconditioner.hessian_matvec(v, result, exact=False)  # approximate
+        """
+        if exact:
+            self.hessian_matvec_exact(v, result)
+        else:
+            self.hessian_matvec_approx(v, result)
+
+    def hessian_matvec_approx(self, v: ti.template(), result: ti.template()):
+        """
+        Compute result ≈ H @ v using approximate coarse-level reconstruction.
 
         WARNING: This is an APPROXIMATION, not exact Hessian matvec!
 
@@ -1407,17 +1477,11 @@ class MASPreconditionerSmall:
         1. Level 0 block-diagonal contribution
         2. Coarse-level contributions via restriction/prolongation
 
-        For EXACT H @ v, use the original triplet-format sparse Hessian
-        (like the reference implementation's spmv.cu).
+        For EXACT H @ v, use hessian_matvec() or hessian_matvec_exact().
 
         Args:
             v: Input vector field with 3D vectors (indexed by vertex id)
             result: Output vector field with 3D vectors (indexed by vertex id)
-
-        Example usage:
-            v = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-            result = ti.Vector.field(3, dtype=ti.f64, shape=n_verts)
-            preconditioner.hessian_matvec(v, result)
         """
         if not self.matrices_assembled:
             raise RuntimeError("Matrices not assembled. Call assemble_block_matrices first.")

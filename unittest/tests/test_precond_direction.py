@@ -756,18 +756,18 @@ class PrecondDirectionTester:
         z_buffer.from_numpy(z_reshaped.astype(np.float64))
 
         # ====================================================================
-        # Method 2: MAS hessian_matvec (approximate)
+        # Method 2: MAS hessian_matvec_approx (approximate)
         # ====================================================================
-        print(f"\n[Approximate] MAS hessian_matvec (uses coarse level approximation)...")
+        print(f"\n[Approximate] MAS hessian_matvec_approx (uses coarse level approximation)...")
 
         # Warmup
-        self.mas.hessian_matvec(z_buffer, Hz_buffer)
+        self.mas.hessian_matvec_approx(z_buffer, Hz_buffer)
         ti.sync()
 
         # Timing
         t_start = time.perf_counter()
         for _ in range(n_timing_iters):
-            self.mas.hessian_matvec(z_buffer, Hz_buffer)
+            self.mas.hessian_matvec_approx(z_buffer, Hz_buffer)
             ti.sync()
         t_approx = (time.perf_counter() - t_start) / n_timing_iters * 1000  # ms
 

@@ -299,6 +299,138 @@ def extract_cells_from_mesh(mesh) -> np.ndarray:
     return np.array(cells_list, dtype=np.int32)
 
 
+def reorder_mesh_data_metis(
+    vertices: np.ndarray,
+    cells: np.ndarray,
+    block_size: int = BANKSIZE
+) -> Tuple[np.ndarray, np.ndarray, MetisReorderResult]:
+    """
+    Reorder mesh data using METIS partitioning BEFORE creating MeshTaichi mesh.
+
+    This is the recommended way to use METIS with MAS preconditioner:
+    1. Load raw mesh data (vertices, cells)
+    2. Call this function to reorder
+    3. Create MeshTaichi mesh with reordered data
+    4. Create MASPreconditionerSmall with metis_reordered=True
+
+    After reordering, vertex IDs directly correspond to METIS partitions:
+    - block_id = vertex_id // BANKSIZE
+    - lane_id = vertex_id % BANKSIZE
+
+    No runtime mapping lookups needed!
+
+    Args:
+        vertices: Vertex positions array of shape (n_verts, 3)
+        cells: Cell connectivity array of shape (n_cells, 4)
+        block_size: Maximum partition size (default: BANKSIZE=16)
+
+    Returns:
+        Tuple of:
+            - reordered_vertices: Vertices in METIS order (n_verts, 3)
+            - reordered_cells: Cells with updated vertex IDs (n_cells, 4)
+            - metis_result: MetisReorderResult for reference/output mapping
+
+    Example:
+        # Load raw data
+        raw_verts, raw_cells = load_mesh_rawdata("model.node")
+
+        # Reorder with METIS
+        verts, cells, metis_result = reorder_mesh_data_metis(raw_verts, raw_cells)
+
+        # Create mesh with reordered data
+        mesh = Patcher.load_mesh([(verts, cells)], relations=["CV"])
+
+        # Create preconditioner (no mapping needed!)
+        precond = MASPreconditionerSmall(mesh, metis_reordered=True)
+    """
+    n_verts = len(vertices)
+    n_cells = len(cells)
+
+    print(f"[METIS] Reordering mesh data: {n_verts} vertices, {n_cells} cells")
+
+    # Step 1: Compute METIS reordering
+    metis_result = compute_metis_reorder(n_verts, cells, block_size)
+
+    if not metis_result.is_valid():
+        print("[METIS] WARNING: Reordering failed, returning original data")
+        return vertices.copy(), cells.copy(), metis_result
+
+    # Step 2: Reorder vertices
+    # new_vertices[new_idx] = old_vertices[sort_index[new_idx]]
+    # sort_index[new_idx] = old_idx means vertex at new position came from old position
+    reordered_vertices = vertices[metis_result.sort_index].copy()
+
+    # Step 3: Reorder cell vertex IDs
+    # old_to_new[old_idx] = new_idx
+    reordered_cells = metis_result.old_to_new[cells].astype(np.int32)
+
+    print(f"[METIS] Mesh reordering complete:")
+    print(f"  - Vertices reordered: {n_verts}")
+    print(f"  - Cells updated: {n_cells}")
+    print(f"  - Partitions: {metis_result.n_parts}")
+
+    return reordered_vertices, reordered_cells, metis_result
+
+
+def merge_models(models: List[Tuple[np.ndarray, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Merge multiple models into a single mesh for METIS reordering.
+
+    Args:
+        models: List of (vertices, cells) tuples
+
+    Returns:
+        Tuple of (merged_vertices, merged_cells)
+    """
+    if len(models) == 1:
+        return models[0][0].copy(), models[0][1].copy()
+
+    all_vertices = []
+    all_cells = []
+    vertex_offset = 0
+
+    for verts, cells in models:
+        all_vertices.append(verts)
+        # Offset cell vertex IDs
+        all_cells.append(cells + vertex_offset)
+        vertex_offset += len(verts)
+
+    merged_vertices = np.vstack(all_vertices)
+    merged_cells = np.vstack(all_cells).astype(np.int32)
+
+    return merged_vertices, merged_cells
+
+
+def split_reordered_models(
+    reordered_vertices: np.ndarray,
+    reordered_cells: np.ndarray,
+    original_model_sizes: List[int],
+    metis_result: MetisReorderResult
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Split reordered mesh back into individual models.
+
+    Note: After METIS reordering, vertices from different original models
+    may be interleaved. This function returns models with correct vertices
+    but the model boundaries may not be preserved.
+
+    For simplicity, this returns a single merged model.
+    Use this only if you need to maintain the original model structure.
+
+    Args:
+        reordered_vertices: Reordered vertices
+        reordered_cells: Reordered cells
+        original_model_sizes: List of vertex counts for each original model
+        metis_result: METIS reordering result
+
+    Returns:
+        List containing a single (vertices, cells) tuple
+    """
+    # For now, return as single merged model
+    # Splitting back while preserving METIS order is complex and usually not needed
+    return [(reordered_vertices, reordered_cells)]
+
+
 def compute_optimized_cell_data(cells: np.ndarray, metis_result: MetisReorderResult,
                                  block_size: int = BANKSIZE) -> dict:
     """
