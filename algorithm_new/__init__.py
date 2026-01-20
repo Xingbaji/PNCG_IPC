@@ -68,6 +68,13 @@ from .preconditioner import (
     MASPreconditioner,
     MASPreconditionerContact,
     ContactAssembler,
+    create_mas_preconditioner,
+)
+
+# Optimizer
+from .optimizer import (
+    PNCGOptimizer,
+    SubdomainCCD,
 )
 
 # Solver
@@ -110,6 +117,10 @@ __all__ = [
     'MASPreconditioner',
     'MASPreconditionerContact',
     'ContactAssembler',
+    'create_mas_preconditioner',
+    # Optimizer
+    'PNCGOptimizer',
+    'SubdomainCCD',
     # Solver
     'SolverBuilder',
     'Solver',
