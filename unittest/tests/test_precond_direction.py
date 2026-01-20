@@ -677,7 +677,7 @@ class PrecondDirectionTester:
 
         return metrics
 
-    def test_hessian_matvec_accuracy(self, verbose=True):
+    def test_hessian_matvec_accuracy(self, verbose=True, n_timing_iters=10):
         """
         Test MAS hessian_matvec accuracy against ground truth compute_zHz.
 
@@ -688,9 +688,13 @@ class PrecondDirectionTester:
         Note: MAS hessian_matvec is an APPROXIMATION because:
         - Level 0 stores only intra-block coupling
         - Cross-block coupling is stored in coarse levels with aggregation
+
+        Args:
+            verbose: Print detailed output
+            n_timing_iters: Number of iterations for timing (default 10)
         """
         print(f"\n{'='*70}")
-        print("MAS hessian_matvec Accuracy Test")
+        print("MAS hessian_matvec Accuracy & Timing Test")
         print(f"{'='*70}\n")
 
         # Initialize state
@@ -702,8 +706,24 @@ class PrecondDirectionTester:
         if not self.mas.hierarchy_built:
             self.mas.build_hierarchy()
 
-        # Assemble and invert block matrices
+        # ====================================================================
+        # Timing: Assembly (with and without cross-block storage)
+        # ====================================================================
+        print(f"[Timing] Assembly comparison ({n_timing_iters} iterations)...")
+
+        # Warmup
         self.mas.assemble_block_matrices(self)
+        ti.sync()
+
+        # Time assembly (includes cross-block triplet storage)
+        t_start = time.perf_counter()
+        for _ in range(n_timing_iters):
+            self.mas.assemble_block_matrices(self)
+            ti.sync()
+        t_assembly = (time.perf_counter() - t_start) / n_timing_iters * 1000  # ms
+        print(f"  Assembly time: {t_assembly:.3f} ms")
+
+        # Invert block matrices
         self.mas.invert_block_matrices()
 
         # Apply preconditioner
@@ -711,7 +731,7 @@ class PrecondDirectionTester:
 
         z_np = self.mesh.verts.z.to_numpy().flatten()
         g_np = self.mesh.verts.grad.to_numpy().flatten()
-        print(f"|z| = {np.linalg.norm(z_np):.6e}")
+        print(f"\n|z| = {np.linalg.norm(z_np):.6e}")
         print(f"|g| = {np.linalg.norm(g_np):.6e}")
 
         # Compute g^T z
@@ -719,106 +739,152 @@ class PrecondDirectionTester:
         print(f"g^T z = {gTz:.6e}")
 
         # Method 1: Ground truth z^T H z using sparse Hessian
-        print("\nComputing ground truth z^T H z via sparse Hessian...")
+        print("\n[Ground Truth] Computing z^T H z via sparse Hessian...")
         H = self.build_sparse_hessian()
         Hz_gt = H @ z_np
         zHz_gt = np.dot(z_np, Hz_gt)
-        print(f"z^T H z (ground truth) = {zHz_gt:.6e}")
-        print(f"|H @ z| (ground truth) = {np.linalg.norm(Hz_gt):.6e}")
+        print(f"  z^T H z = {zHz_gt:.6e}")
+        print(f"  |H @ z| = {np.linalg.norm(Hz_gt):.6e}")
 
-        # Method 2: MAS hessian_matvec (approximate - uses coarse level approximation)
-        print("\nComputing z^T H z via MAS hessian_matvec (APPROXIMATE)...")
+        # Prepare buffers
         z_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
         Hz_buffer = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        Hz_buffer_exact = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
 
         # Copy z to buffer
         z_reshaped = z_np.reshape(-1, 3)
         z_buffer.from_numpy(z_reshaped.astype(np.float64))
 
-        # Apply hessian_matvec (approximate)
+        # ====================================================================
+        # Method 2: MAS hessian_matvec (approximate)
+        # ====================================================================
+        print(f"\n[Approximate] MAS hessian_matvec (uses coarse level approximation)...")
+
+        # Warmup
         self.mas.hessian_matvec(z_buffer, Hz_buffer)
+        ti.sync()
+
+        # Timing
+        t_start = time.perf_counter()
+        for _ in range(n_timing_iters):
+            self.mas.hessian_matvec(z_buffer, Hz_buffer)
+            ti.sync()
+        t_approx = (time.perf_counter() - t_start) / n_timing_iters * 1000  # ms
 
         Hz_mas_approx = Hz_buffer.to_numpy().flatten()
         zHz_mas_approx = np.dot(z_np, Hz_mas_approx)
-        print(f"z^T H z (MAS approx) = {zHz_mas_approx:.6e}")
-        print(f"|H @ z| (MAS approx) = {np.linalg.norm(Hz_mas_approx):.6e}")
+        ratio_approx = zHz_mas_approx / zHz_gt if abs(zHz_gt) > 1e-15 else float('inf')
+        Hz_rel_error_approx = np.linalg.norm(Hz_mas_approx - Hz_gt) / np.linalg.norm(Hz_gt)
 
-        # Method 3: MAS hessian_matvec_exact (uses triplet storage for cross-block)
-        print("\nComputing z^T H z via MAS hessian_matvec_exact (EXACT)...")
-        Hz_buffer_exact = ti.Vector.field(3, dtype=ti.f64, shape=self.n_verts)
+        print(f"  z^T H z = {zHz_mas_approx:.6e}")
+        print(f"  |H @ z| = {np.linalg.norm(Hz_mas_approx):.6e}")
+        print(f"  Ratio (approx/GT) = {ratio_approx:.4f}")
+        print(f"  Relative error = {Hz_rel_error_approx:.4e}")
+        print(f"  Time: {t_approx:.3f} ms")
 
-        # Apply hessian_matvec_exact
+        # ====================================================================
+        # Method 3: MAS hessian_matvec_exact (uses triplet storage)
+        # ====================================================================
+        print(f"\n[Exact] MAS hessian_matvec_exact (uses triplet storage)...")
+
+        # Warmup
         self.mas.hessian_matvec_exact(z_buffer, Hz_buffer_exact)
+        ti.sync()
+
+        # Timing
+        t_start = time.perf_counter()
+        for _ in range(n_timing_iters):
+            self.mas.hessian_matvec_exact(z_buffer, Hz_buffer_exact)
+            ti.sync()
+        t_exact = (time.perf_counter() - t_start) / n_timing_iters * 1000  # ms
 
         Hz_mas = Hz_buffer_exact.to_numpy().flatten()
         zHz_mas = np.dot(z_np, Hz_mas)
-        print(f"z^T H z (MAS exact) = {zHz_mas:.6e}")
-        print(f"|H @ z| (MAS exact) = {np.linalg.norm(Hz_mas):.6e}")
+        ratio_exact = zHz_mas / zHz_gt if abs(zHz_gt) > 1e-15 else float('inf')
+        Hz_rel_error = np.linalg.norm(Hz_mas - Hz_gt) / np.linalg.norm(Hz_gt)
+
+        print(f"  z^T H z = {zHz_mas:.6e}")
+        print(f"  |H @ z| = {np.linalg.norm(Hz_mas):.6e}")
+        print(f"  Ratio (exact/GT) = {ratio_exact:.4f}")
+        print(f"  Relative error = {Hz_rel_error:.4e}")
+        print(f"  Time: {t_exact:.3f} ms")
 
         # Show cross-block statistics
         stats = self.mas.get_cross_block_stats()
-        print(f"\nCross-block storage: {stats['n_triplets']} triplets ({stats['usage_percent']:.1f}% of max)")
+        print(f"\nCross-block storage: {stats['n_triplets']} triplets "
+              f"({stats['usage_percent']:.1f}% of max, {stats['memory_mb']:.2f} MB)")
 
-        # Comparison
+        # ====================================================================
+        # Comparison Summary
+        # ====================================================================
         print(f"\n{'='*70}")
-        print("Comparison")
+        print("Comparison Summary")
         print(f"{'='*70}")
 
-        ratio = zHz_mas / zHz_gt if abs(zHz_gt) > 1e-15 else float('inf')
-        print(f"Ratio (MAS / GT) = {ratio:.4f}")
-
-        # Compare Hz vectors
-        Hz_rel_error = np.linalg.norm(Hz_mas - Hz_gt) / np.linalg.norm(Hz_gt) if np.linalg.norm(Hz_gt) > 1e-15 else float('inf')
-        print(f"|H@z_MAS - H@z_GT| / |H@z_GT| = {Hz_rel_error:.4e}")
-
-        # Cosine similarity between Hz vectors
+        # Cosine similarity
         if np.linalg.norm(Hz_mas) > 1e-15 and np.linalg.norm(Hz_gt) > 1e-15:
-            cos_Hz = np.dot(Hz_mas, Hz_gt) / (np.linalg.norm(Hz_mas) * np.linalg.norm(Hz_gt))
+            cos_Hz_exact = np.dot(Hz_mas, Hz_gt) / (np.linalg.norm(Hz_mas) * np.linalg.norm(Hz_gt))
         else:
-            cos_Hz = 0.0
-        print(f"cos(H@z_MAS, H@z_GT) = {cos_Hz:.6f}")
+            cos_Hz_exact = 0.0
+        if np.linalg.norm(Hz_mas_approx) > 1e-15 and np.linalg.norm(Hz_gt) > 1e-15:
+            cos_Hz_approx = np.dot(Hz_mas_approx, Hz_gt) / (np.linalg.norm(Hz_mas_approx) * np.linalg.norm(Hz_gt))
+        else:
+            cos_Hz_approx = 0.0
+
+        print(f"\n{'Metric':<25} {'Approximate':<15} {'Exact':<15} {'Improvement':<15}")
+        print(f"{'-'*70}")
+        print(f"{'z^T H z ratio':<25} {ratio_approx:<15.4f} {ratio_exact:<15.4f} {abs(ratio_exact-1)/abs(ratio_approx-1):.1f}x better" if abs(ratio_approx-1) > 1e-10 else f"{'z^T H z ratio':<25} {ratio_approx:<15.4f} {ratio_exact:<15.4f} N/A")
+        print(f"{'Relative error':<25} {Hz_rel_error_approx:<15.4e} {Hz_rel_error:<15.4e} {Hz_rel_error_approx/Hz_rel_error:.1f}x better" if Hz_rel_error > 1e-15 else f"{'Relative error':<25} {Hz_rel_error_approx:<15.4e} {Hz_rel_error:<15.4e} N/A")
+        print(f"{'cos(Hz, Hz_gt)':<25} {cos_Hz_approx:<15.6f} {cos_Hz_exact:<15.6f}")
+        print(f"{'Matvec time (ms)':<25} {t_approx:<15.3f} {t_exact:<15.3f} {t_exact/t_approx:.2f}x slower" if t_approx > 0 else f"{'Matvec time (ms)':<25} {t_approx:<15.3f} {t_exact:<15.3f}")
 
         # Compute alpha using both methods
         alpha_gt = gTz / zHz_gt if abs(zHz_gt) > 1e-15 else 0.0
-        alpha_mas = gTz / zHz_mas if abs(zHz_mas) > 1e-15 else 0.0
+        alpha_approx = gTz / zHz_mas_approx if abs(zHz_mas_approx) > 1e-15 else 0.0
+        alpha_exact = gTz / zHz_mas if abs(zHz_mas) > 1e-15 else 0.0
 
         print(f"\nalpha = g^T z / z^T H z:")
-        print(f"  alpha (GT):  {alpha_gt:.6f}")
-        print(f"  alpha (MAS): {alpha_mas:.6f}")
-        print(f"  Ratio:       {alpha_mas/alpha_gt if abs(alpha_gt) > 1e-15 else float('inf'):.4f}")
-
-        # Step size comparison
-        print(f"\nStep size |alpha * z|:")
-        print(f"  GT:  {abs(alpha_gt) * np.linalg.norm(z_np):.6e}")
-        print(f"  MAS: {abs(alpha_mas) * np.linalg.norm(z_np):.6e}")
+        print(f"  Ground Truth: {alpha_gt:.6f}")
+        print(f"  Approximate:  {alpha_approx:.6f} (ratio: {alpha_approx/alpha_gt if abs(alpha_gt) > 1e-15 else float('inf'):.4f})")
+        print(f"  Exact:        {alpha_exact:.6f} (ratio: {alpha_exact/alpha_gt if abs(alpha_gt) > 1e-15 else float('inf'):.4f})")
 
         # Status assessment
         print(f"\n{'='*70}")
         print("Assessment")
         print(f"{'='*70}")
 
-        if abs(ratio - 1.0) < 0.1:
+        if abs(ratio_exact - 1.0) < 0.1:
             status = "EXCELLENT (<10% error)"
-        elif abs(ratio - 1.0) < 0.5:
+        elif abs(ratio_exact - 1.0) < 0.5:
             status = "GOOD (<50% error)"
-        elif 0.01 < ratio < 100.0:
+        elif 0.01 < ratio_exact < 100.0:
             status = "APPROXIMATE (same order of magnitude)"
         else:
             status = "POOR (>2 orders of magnitude off)"
 
-        print(f"z^T H z ratio status: {status}")
-        print(f"Note: MAS stores block approximation, so some deviation is expected.")
+        print(f"\nExact hessian_matvec status: {status}")
+        print(f"Approximate vs Exact improvement: {Hz_rel_error_approx/Hz_rel_error:.1f}x" if Hz_rel_error > 1e-15 else "N/A")
+        print(f"Exact matvec overhead: {t_exact/t_approx:.2f}x" if t_approx > 0 else "N/A")
 
         # Return results
         return {
             'zHz_gt': zHz_gt,
-            'zHz_mas': zHz_mas,
-            'ratio': ratio,
-            'Hz_rel_error': Hz_rel_error,
-            'cos_Hz': cos_Hz,
+            'zHz_mas_approx': zHz_mas_approx,
+            'zHz_mas_exact': zHz_mas,
+            'ratio_approx': ratio_approx,
+            'ratio_exact': ratio_exact,
+            'Hz_rel_error_approx': Hz_rel_error_approx,
+            'Hz_rel_error_exact': Hz_rel_error,
+            'cos_Hz_approx': cos_Hz_approx,
+            'cos_Hz_exact': cos_Hz_exact,
             'alpha_gt': alpha_gt,
-            'alpha_mas': alpha_mas,
+            'alpha_approx': alpha_approx,
+            'alpha_exact': alpha_exact,
+            't_assembly': t_assembly,
+            't_approx': t_approx,
+            't_exact': t_exact,
             'status': status,
+            'n_triplets': stats['n_triplets'],
         }
 
 
@@ -858,8 +924,9 @@ def main():
     # Run hessian_matvec test if requested
     if args.hessian_matvec:
         results = tester.test_hessian_matvec_accuracy(verbose=args.verbose or True)
-        # Return 0 if ratio is reasonable (0.01 < ratio < 100)
-        if 0.01 < results['ratio'] < 100.0:
+        # Return 0 if exact ratio is reasonable (0.5 < ratio < 2.0)
+        ratio_exact = results['ratio_exact']
+        if 0.5 < ratio_exact < 2.0:
             return 0
         else:
             return 1
