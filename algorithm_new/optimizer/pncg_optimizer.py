@@ -72,6 +72,12 @@ class PNCGOptimizer(PrecisionMixin):
 
         self.n_verts = len(mesh.verts)
 
+        # Expose material parameters for preconditioner (from mesh_system)
+        self.mu = mesh_system.mu
+        self.la = mesh_system.la
+        self.density = mesh_system.density
+        self.gravity = mesh_system.gravity
+
         # Module registrations
         self._gradient_contributors: List['GradientContributor'] = []
         self._hessian_contributors: List['HessianContributor'] = []

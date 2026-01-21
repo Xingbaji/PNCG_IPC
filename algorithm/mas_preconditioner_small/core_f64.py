@@ -8,6 +8,7 @@ Key changes from core.py:
 - All ti.f32 -> ti.f64
 - All np.float32 -> np.float64
 - Block matrices, buffers, and triplets use f64
+- Inline f64 versions of compute_dFdx and compute_d2PsidF2_ARAP_filter
 
 Usage:
     from algorithm.mas_preconditioner_small.core_f64 import MASPreconditionerSmallF64
@@ -23,9 +24,146 @@ SYM_BLOCK_COUNT = 136  # BANKSIZE * (BANKSIZE + 1) // 2
 BLOCK_DOF = BANKSIZE * 3  # 48
 MAX_LEVELS = 6
 
-# Import ARAP Hessian computation
-from math_utils.matrix_util import compute_dFdx
-from math_utils.elastic_util import compute_d2PsidF2_ARAP_filter
+
+# ============================================================================
+# Inline f64 versions of math utility functions
+# ============================================================================
+
+@ti.func
+def ssvd_f64(F):
+    """Signed SVD for f64 matrices."""
+    U, sig, V = ti.svd(F)
+    if U.determinant() < 0:
+        for i in ti.static(range(3)):
+            U[i, 2] *= -1
+        sig[2, 2] = -sig[2, 2]
+    if V.determinant() < 0:
+        for i in ti.static(range(3)):
+            V[i, 2] *= -1
+        sig[2, 2] = -sig[2, 2]
+    return U, sig, V
+
+
+@ti.func
+def flatten_matrix_f64(A):
+    """Flatten 3x3 A to 9x1 vector (column first), f64 version."""
+    return ti.Matrix([
+        A[0, 0], A[1, 0], A[2, 0],
+        A[0, 1], A[1, 1], A[2, 1],
+        A[0, 2], A[1, 2], A[2, 2]
+    ], ti.f64)
+
+
+@ti.func
+def compute_dFdx_f64(DmInv):
+    """Compute dFdx matrix (9x12), f64 version."""
+    dFdx = ti.Matrix.zero(ti.f64, 9, 12)
+    m = DmInv[0, 0]
+    n = DmInv[0, 1]
+    o = DmInv[0, 2]
+    p = DmInv[1, 0]
+    q = DmInv[1, 1]
+    r = DmInv[1, 2]
+    s = DmInv[2, 0]
+    t = DmInv[2, 1]
+    u = DmInv[2, 2]
+    t1 = -m - p - s
+    t2 = -n - q - t
+    t3 = -o - r - u
+
+    dFdx[0, 0] = t1
+    dFdx[0, 3] = m
+    dFdx[0, 6] = p
+    dFdx[0, 9] = s
+
+    dFdx[1, 1] = t1
+    dFdx[1, 4] = m
+    dFdx[1, 7] = p
+    dFdx[1, 10] = s
+
+    dFdx[2, 2] = t1
+    dFdx[2, 5] = m
+    dFdx[2, 8] = p
+    dFdx[2, 11] = s
+
+    dFdx[3, 0] = t2
+    dFdx[3, 3] = n
+    dFdx[3, 6] = q
+    dFdx[3, 9] = t
+
+    dFdx[4, 1] = t2
+    dFdx[4, 4] = n
+    dFdx[4, 7] = q
+    dFdx[4, 10] = t
+
+    dFdx[5, 2] = t2
+    dFdx[5, 5] = n
+    dFdx[5, 8] = q
+    dFdx[5, 11] = t
+
+    dFdx[6, 0] = t3
+    dFdx[6, 3] = o
+    dFdx[6, 6] = r
+    dFdx[6, 9] = u
+
+    dFdx[7, 1] = t3
+    dFdx[7, 4] = o
+    dFdx[7, 7] = r
+    dFdx[7, 10] = u
+
+    dFdx[8, 2] = t3
+    dFdx[8, 5] = o
+    dFdx[8, 8] = r
+    dFdx[8, 11] = u
+
+    return dFdx
+
+
+@ti.func
+def compute_d2PsidF2_ARAP_filter_f64(F, mu, la):
+    """
+    Compute ARAP Hessian with eigenvalue filtering, f64 version.
+    Returns 9x9 matrix.
+    """
+    U, sig, V = ssvd_f64(F)
+    s0 = sig[0, 0]
+    s1 = sig[1, 1]
+    s2 = sig[2, 2]
+
+    lambda0 = ti.f64(2.0) / (s1 + s2)
+    lambda1 = ti.f64(2.0) / (s0 + s2)
+    lambda2 = ti.f64(2.0) / (s0 + s1)
+
+    if s1 + s2 < ti.f64(2.0):
+        lambda0 = ti.f64(1.0)
+    if s0 + s2 < ti.f64(2.0):
+        lambda1 = ti.f64(1.0)
+    if s0 + s1 < ti.f64(2.0):
+        lambda2 = ti.f64(1.0)
+
+    U0 = U[:, 0]
+    U1 = U[:, 1]
+    U2 = U[:, 2]
+    V0 = V[:, 0]
+    V1 = V[:, 1]
+    V2 = V[:, 2]
+
+    Q0 = V1.outer_product(U2) - V2.outer_product(U1)
+    Q1 = V2.outer_product(U0) - V0.outer_product(U2)
+    Q2 = V1.outer_product(U0) - V0.outer_product(U1)
+
+    q0 = flatten_matrix_f64(Q0)
+    q1 = flatten_matrix_f64(Q1)
+    q2 = flatten_matrix_f64(Q2)
+
+    d2PsidF2 = -mu * (lambda0 * q0.outer_product(q0) +
+                       lambda1 * q1.outer_product(q1) +
+                       lambda2 * q2.outer_product(q2))
+
+    for i in ti.static(range(9)):
+        d2PsidF2[i, i] += ti.f64(2.0) * mu
+
+    return d2PsidF2
 
 
 @ti.func
@@ -255,8 +393,8 @@ class MASPreconditionerSmallF64:
             F = Ds @ B
 
             # Compute element Hessian in f64
-            dFdx = compute_dFdx(B)
-            d2PsidF2 = compute_d2PsidF2_ARAP_filter(F, mu, la)
+            dFdx = compute_dFdx_f64(B)
+            d2PsidF2 = compute_d2PsidF2_ARAP_filter_f64(F, mu, la)
             temp = d2PsidF2 @ dFdx
             H_e = dFdx.transpose() @ temp
             H_e = para * H_e
