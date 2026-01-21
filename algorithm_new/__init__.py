@@ -68,6 +68,8 @@ from .preconditioner import (
     MASPreconditioner,
     MASPreconditionerContact,
     ContactAssembler,
+    MASPreconditioner8Contact,
+    WoodburySupport8,
     create_mas_preconditioner,
 )
 
@@ -84,6 +86,10 @@ from .solver.presets import (
     create_collision_free_solver,
     create_ipc_solver,
     create_mas_ipc_solver,
+    create_mas_collision_free_solver,
+    create_gcp_solver,
+    create_mas8_ipc_solver,
+    create_abd_ipc_solver,
 )
 
 __all__ = [
@@ -117,6 +123,8 @@ __all__ = [
     'MASPreconditioner',
     'MASPreconditionerContact',
     'ContactAssembler',
+    'MASPreconditioner8Contact',
+    'WoodburySupport8',
     'create_mas_preconditioner',
     # Optimizer
     'PNCGOptimizer',
@@ -127,4 +135,9 @@ __all__ = [
     'create_collision_free_solver',
     'create_ipc_solver',
     'create_mas_ipc_solver',
+    'create_mas_collision_free_solver',
+    # New presets
+    'create_gcp_solver',
+    'create_mas8_ipc_solver',
+    'create_abd_ipc_solver',
 ]

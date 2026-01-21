@@ -313,6 +313,100 @@ class MASPreconditioner(PrecisionMixin):
 
 
 # ============================================================================
+# BANKSIZE=8 MAS Preconditioner with Contact
+# ============================================================================
+
+@PreconditionerRegistry.register('mas8_contact')
+@ti.data_oriented
+class MASPreconditioner8(PrecisionMixin):
+    """
+    MAS preconditioner with BANKSIZE=8 and contact support.
+
+    Optimizations over BANKSIZE=16:
+    - One-way Gauss-Jordan elimination for matrix inverse (~3x faster)
+    - Compact block storage (36 sym blocks vs 136)
+    - Two-pass symmetric matvec with reduced branching
+
+    Usage:
+        precond = MASPreconditioner8(mesh, precision='f64')
+        precond.rebuild(solver, dt)
+        precond.apply()
+    """
+
+    def __init__(
+        self,
+        mesh: Any,
+        precision: PrecisionType = 'f32',
+        metis_reordered: bool = True,
+        max_contacts: int = 2**18,
+        **kwargs
+    ):
+        """
+        Initialize MAS-8 preconditioner.
+
+        Args:
+            mesh: MeshTaichi mesh object
+            precision: Float precision ('f32' or 'f64')
+            metis_reordered: Whether mesh is METIS reordered
+            max_contacts: Maximum number of contact pairs
+            **kwargs: Additional arguments
+        """
+        self.init_precision(precision)
+        self.mesh = mesh
+        self.n_verts = len(mesh.verts)
+        self.banksize = 8
+
+        # Use the new algorithm_new implementation
+        from .mas_8_contact import MASPreconditioner8Contact
+        self._impl = MASPreconditioner8Contact(
+            mesh=mesh,
+            precision=precision,
+            metis_reordered=metis_reordered,
+            max_contacts=max_contacts,
+            **kwargs
+        )
+
+        print(f'[MASPreconditioner8] Initialized with {self._impl.level_num} levels, '
+              f'n_verts={self.n_verts}')
+
+    @property
+    def level_num(self) -> int:
+        """Number of hierarchy levels."""
+        return self._impl.level_num
+
+    def rebuild(self, solver: Any, dt: float = None) -> None:
+        """Rebuild preconditioner with current solver state."""
+        self._impl.rebuild(solver, dt)
+
+    def rebuild_with_contacts(self, solver: Any, dt: float = None) -> None:
+        """Rebuild preconditioner including contact Hessians."""
+        self._impl.rebuild_with_contacts(solver, dt)
+
+    def rebuild_with_contacts_spd(
+        self,
+        solver: Any,
+        dt: float = None,
+        mu: float = 0.0,
+        friction_eps: float = 1e-4,
+    ) -> None:
+        """Rebuild using SPD contact Hessian formulation."""
+        self._impl.rebuild_with_contacts_spd(solver, dt, mu, friction_eps)
+
+    def apply(self) -> None:
+        """Apply preconditioner: z = M^{-1} g."""
+        self._impl.apply()
+
+    def hessian_matvec(self, v: Any, result: Any) -> None:
+        """Compute Hessian-vector product: result = H * v."""
+        self._impl.hessian_matvec(v, result)
+
+    @property
+    def impl(self):
+        """Access the underlying implementation."""
+        return self._impl
+
+
+# ============================================================================
 # Factory Functions
 # ============================================================================
 
